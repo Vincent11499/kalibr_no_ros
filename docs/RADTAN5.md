@@ -1,5 +1,8 @@
 # OpenCV five-coefficient pinhole model
 
+更详细的中文代码修改和设计原因说明见
+[`RADTAN5_IMPLEMENTATION_CN.md`](RADTAN5_IMPLEMENTATION_CN.md)。
+
 `kalibr_no_ros` adds an out-of-tree global-shutter pinhole model that is
 compatible with OpenCV's five-coefficient `plumb_bob` convention. Kalibr's
 upstream snapshot is not modified, and its existing four-coefficient
