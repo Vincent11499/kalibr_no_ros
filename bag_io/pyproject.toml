@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=45"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kalibr-bag-io"
+version = "0.1.0"
+description = "ROS-free ROS1 bag I/O boundary for Kalibr"
+requires-python = ">=3.8"
+dependencies = ["numpy", "rosbags>=0.9.20,<0.10"]
+
+[project.scripts]
+kalibr-bag-info = "kalibr_bag_io.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
