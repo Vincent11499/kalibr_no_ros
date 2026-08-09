@@ -1,0 +1,25 @@
+--- a/include/aslam/backend/implementation/BSplineMotionError.hpp
++++ b/include/aslam/backend/implementation/BSplineMotionError.hpp
+@@ -93,17 +93,11 @@
+         void BSplineMotionError<SPLINE_T>::buildHessianImplementation(SparseBlockMatrix & outHessian, Eigen::VectorXd & outRhs, bool /* useMEstimator */) {
+             
+             
+-            // get the coefficients:
+-            Eigen::MatrixXd coeff = _splineDV->spline().coefficients();
+-            // create a column vector of spline coefficients
+-            int dim = coeff.rows(); 
+-            int seg = coeff.cols();
+-            // build a vector of coefficients:
+-            Eigen::VectorXd c(dim*seg);
+-            // rows are spline dimension
+-            for(int i = 0; i < seg; i++) {
+-                c.block(i*dim,0,dim,1) = coeff.block(0, i, dim,1);
+-            }
++            // The spline coefficients are already stored column-major in the
++            // vector order expected by Q. Map them directly instead of making
++            // a matrix copy followed by a second vector copy every iteration.
++            const double* cMat = &((_splineDV->spline()).coefficients()(0,0));
++            Eigen::Map<const Eigen::VectorXd> c(cMat, _coefficientVectorLength);
+             
+             // right hand side:
+             Eigen::VectorXd b_u(_Q.rows());  // number of rows of Q:

@@ -1,0 +1,27 @@
+--- a/src/BlockCholeskyLinearSystemSolver.cpp
++++ b/src/BlockCholeskyLinearSystemSolver.cpp
+@@ -3,6 +3,7 @@
+ #include <sparse_block_matrix/linear_solver_spqr.h>
+ #include <aslam/backend/ErrorTerm.hpp>
+ #include <sm/PropertyTree.hpp>
++#include <sm/timing/Timer.hpp>
+ 
+ namespace aslam {
+   namespace backend {
+@@ -57,6 +58,7 @@
+ 
+   void BlockCholeskyLinearSystemSolver::buildSystem(size_t /* nThreads */, bool useMEstimator)
+     {
++      sm::timing::Timer timer("BlockCholesky: build Hessian");
+       // \todo make multithreaded. This is complicated as it requires synchronized access to the block matrix.
+       //       A little bit of effort should make this possible by initializing the structure and adding
+       //       a mutex for each block and having writers for each jacobian that have a list of mutexes.
+@@ -72,6 +74,7 @@
+     }
+ 
+     bool BlockCholeskyLinearSystemSolver::solveSystem(Eigen::VectorXd& outDx)
+     {
++      sm::timing::Timer timer("BlockCholesky: factorize and solve");
+       if (_useDiagonalConditioner) {
+         Eigen::VectorXd d = _diagonalConditioner.cwiseProduct(_diagonalConditioner);
+         // Augment the diagonal

@@ -1,0 +1,27 @@
+--- a/include/aslam/backend/Optimizer2.hpp
++++ b/include/aslam/backend/Optimizer2.hpp
+@@ -6,9 +6,9 @@
+ //#include <boost/function.hpp>
+ #include <sm/assert_macros.hpp>
+ #include <Eigen/Core>
+-#include "Optimizer2Options.hpp"
+-#include "backend.hpp"
+-#include "OptimizationProblemBase.hpp"
++#include <aslam/backend/Optimizer2Options.hpp>
++#include <aslam/backend/backend.hpp>
++#include <aslam/backend/OptimizationProblemBase.hpp>
+ #include <aslam/Exceptions.hpp>
+ #include <sm/timing/Timer.hpp>
+ #include <boost/thread.hpp>
+@@ -50,9 +50,8 @@
+  */
+     class Optimizer2 {
+     public:
+-        //  typedef sm::timing::Timer Timer;
+-      /// Swapping this to the dummy timer will disable timing
+-       typedef sm::timing::DummyTimer Timer;
++      /// Phase timing is collected only by the optimized overlay build.
++      typedef sm::timing::Timer Timer;
+       typedef sparse_block_matrix::SparseBlockMatrix<Eigen::MatrixXd> SparseBlockMatrix;
+ 
+       SM_DEFINE_EXCEPTION(Exception, aslam::Exception);

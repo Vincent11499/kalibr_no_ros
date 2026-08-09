@@ -3,6 +3,8 @@ project(kalibr_no_ros LANGUAGES CXX)
 
 option(KALIBR_BUILD_NATIVE "Build the unchanged Kalibr native libraries" ON)
 option(KALIBR_ENABLE_TESTING "Build upstream C++ tests" OFF)
+option(KALIBR_ENABLE_NATIVE_OPTIMIZATIONS
+  "Enable the out-of-tree, numerically compatible native optimizer overlays" ON)
 
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,6 +18,58 @@ set(KALIBR_UPSTREAM "${CMAKE_CURRENT_SOURCE_DIR}/upstream/kalibr")
 set(KALIBR_PYTHON_DIR "${CMAKE_BINARY_DIR}/python")
 set(KALIBR_LIBEXEC_DIR "${CMAKE_BINARY_DIR}/libexec/kalibr")
 file(MAKE_DIRECTORY "${KALIBR_PYTHON_DIR}" "${KALIBR_LIBEXEC_DIR}" "${CMAKE_BINARY_DIR}/bin")
+
+# Keep upstream/kalibr immutable. Optimized sources and headers are prepared in
+# the build tree from small, reviewable patches and can be disabled to produce
+# a byte-for-byte native Kalibr baseline from the same checkout.
+set(KALIBR_NATIVE_OPTIMIZER_SOURCE_DIR
+  "${CMAKE_CURRENT_SOURCE_DIR}/extensions/native_optimizer")
+set(KALIBR_NATIVE_OPTIMIZER_BINARY_DIR
+  "${CMAKE_BINARY_DIR}/native_optimizer_overlay")
+if(KALIBR_ENABLE_NATIVE_OPTIMIZATIONS)
+  find_program(PATCH_EXECUTABLE patch REQUIRED)
+  file(REMOVE_RECURSE "${KALIBR_NATIVE_OPTIMIZER_BINARY_DIR}")
+  file(MAKE_DIRECTORY
+    "${KALIBR_NATIVE_OPTIMIZER_BINARY_DIR}/src"
+    "${KALIBR_NATIVE_OPTIMIZER_BINARY_DIR}/include/aslam/backend/implementation")
+
+  configure_file(
+    "${KALIBR_UPSTREAM}/aslam_optimizer/aslam_backend/src/JacobianContainer.cpp"
+    "${KALIBR_NATIVE_OPTIMIZER_BINARY_DIR}/src/JacobianContainer.cpp" COPYONLY)
+  configure_file(
+    "${KALIBR_UPSTREAM}/aslam_optimizer/aslam_backend/src/BlockCholeskyLinearSystemSolver.cpp"
+    "${KALIBR_NATIVE_OPTIMIZER_BINARY_DIR}/src/BlockCholeskyLinearSystemSolver.cpp" COPYONLY)
+  configure_file(
+    "${KALIBR_UPSTREAM}/aslam_optimizer/aslam_backend/include/aslam/backend/Optimizer2.hpp"
+    "${KALIBR_NATIVE_OPTIMIZER_BINARY_DIR}/include/aslam/backend/Optimizer2.hpp" COPYONLY)
+  configure_file(
+    "${KALIBR_UPSTREAM}/aslam_nonparametric_estimation/aslam_splines/include/aslam/backend/BSplineMotionError.hpp"
+    "${KALIBR_NATIVE_OPTIMIZER_BINARY_DIR}/include/aslam/backend/BSplineMotionError.hpp" COPYONLY)
+  configure_file(
+    "${KALIBR_UPSTREAM}/aslam_nonparametric_estimation/aslam_splines/include/aslam/backend/implementation/BSplineMotionError.hpp"
+    "${KALIBR_NATIVE_OPTIMIZER_BINARY_DIR}/include/aslam/backend/implementation/BSplineMotionError.hpp" COPYONLY)
+
+  foreach(overlay_patch IN ITEMS
+      jacobian_container.patch
+      block_cholesky_timing.patch
+      optimizer2_timing.patch
+      bspline_motion_error.patch)
+    execute_process(
+      COMMAND "${PATCH_EXECUTABLE}" --batch --forward -p1
+        -i "${KALIBR_NATIVE_OPTIMIZER_SOURCE_DIR}/patches/${overlay_patch}"
+      WORKING_DIRECTORY "${KALIBR_NATIVE_OPTIMIZER_BINARY_DIR}"
+      RESULT_VARIABLE patch_result
+      OUTPUT_VARIABLE patch_output
+      ERROR_VARIABLE patch_error)
+    if(NOT patch_result EQUAL 0)
+      message(FATAL_ERROR
+        "Failed to prepare native optimizer overlay ${overlay_patch}:\n"
+        "${patch_output}${patch_error}")
+    endif()
+  endforeach()
+
+  include_directories(BEFORE "${KALIBR_NATIVE_OPTIMIZER_BINARY_DIR}/include")
+endif()
 
 # Make find_package(catkin) resolve only to the local, ROS-free compatibility
 # facade. It supplies build macros, not ROS libraries or runtime behavior.
@@ -93,6 +147,25 @@ copy_python_package("${CMAKE_CURRENT_SOURCE_DIR}/bag_io/src" kalibr_bag_io)
 copy_python_package("${CMAKE_CURRENT_SOURCE_DIR}/core/src" kalibr_no_ros)
 copy_python_package("${CMAKE_CURRENT_SOURCE_DIR}/extensions/radtan5/python" kalibr_radtan5)
 
+if(KALIBR_ENABLE_NATIVE_OPTIMIZATIONS)
+  # Add an optional optimizer timing hook without modifying the immutable
+  # upstream Python package.
+  set(_icc_calibrator
+    "${KALIBR_PYTHON_DIR}/kalibr_imu_camera_calibration/IccCalibrator.py")
+  file(READ "${_icc_calibrator}" _icc_calibrator_content)
+  string(REPLACE
+    "def optimize(self, options=None, maxIterations=30, recoverCov=False):"
+    "def optimize(self, options=None, maxIterations=30, recoverCov=False, profileOptimizer=False):"
+    _icc_calibrator_content "${_icc_calibrator_content}")
+  string(REPLACE
+    "            retval = self.optimizer.optimize()"
+    "            retval = self.optimizer.optimize()\n            if profileOptimizer:\n                self.optimizer.printTiming()"
+    _icc_calibrator_content "${_icc_calibrator_content}")
+  file(WRITE "${_icc_calibrator}" "${_icc_calibrator_content}")
+  install(FILES "${_icc_calibrator}"
+    DESTINATION lib/python3/dist-packages/kalibr_imu_camera_calibration)
+endif()
+
 # rosbuild-era manifest calls only modified sys.path. The standalone launcher
 # already owns sys.path, so generated package initializers use direct imports.
 file(READ "${KALIBR_PYTHON_DIR}/aslam_cv_backend/__init__.py" _cv_backend_init)
@@ -119,11 +192,19 @@ configure_file(core/overlays/kalibr_common/ImageDatasetReader.py
   "${KALIBR_PYTHON_DIR}/kalibr_common/ImageDatasetReader.py" COPYONLY)
 configure_file(core/overlays/kalibr_common/ImuDatasetReader.py
   "${KALIBR_PYTHON_DIR}/kalibr_common/ImuDatasetReader.py" COPYONLY)
+if(KALIBR_ENABLE_NATIVE_OPTIMIZATIONS)
+  configure_file(extensions/native_optimizer/python/kalibr_common/TargetExtractor.py
+    "${KALIBR_PYTHON_DIR}/kalibr_common/TargetExtractor.py" COPYONLY)
+endif()
 install(FILES
   core/overlays/kalibr_common/ImageDatasetReader.py
   core/overlays/kalibr_common/ImuDatasetReader.py
   DESTINATION lib/python3/dist-packages/kalibr_common
 )
+if(KALIBR_ENABLE_NATIVE_OPTIMIZATIONS)
+  install(FILES extensions/native_optimizer/python/kalibr_common/TargetExtractor.py
+    DESTINATION lib/python3/dist-packages/kalibr_common)
+endif()
 
 function(prepare_cli name)
   set(source "${KALIBR_UPSTREAM}/aslam_offline_calibration/kalibr/python/${name}")
@@ -136,6 +217,17 @@ function(prepare_cli name)
   if(name STREQUAL "kalibr_calibrate_cameras")
     string(REPLACE "                 'ds-none':        acvb.DoubleSphere}"
       "                 'ds-none':        acvb.DoubleSphere,\n                 'pinhole-radtan5': kr5.PinholeRadtan5}"
+      content "${content}")
+  endif()
+  if(KALIBR_ENABLE_NATIVE_OPTIMIZATIONS AND
+      name STREQUAL "kalibr_calibrate_imu_camera")
+    string(REPLACE
+      "    groupOpt.add_argument('--recover-covariance', action='store_true', dest='recover_cov', help='Recover the covariance of the design variables.', required=False)"
+      "    groupOpt.add_argument('--recover-covariance', action='store_true', dest='recover_cov', help='Recover the covariance of the design variables.', required=False)\n    groupOpt.add_argument('--profile-optimizer', action='store_true', dest='profile_optimizer', help='Print per-phase optimizer timing statistics.', required=False)"
+      content "${content}")
+    string(REPLACE
+      "    iCal.optimize(maxIterations=parsed.max_iter, recoverCov=parsed.recover_cov)"
+      "    iCal.optimize(maxIterations=parsed.max_iter, recoverCov=parsed.recover_cov, profileOptimizer=parsed.profile_optimizer)"
       content "${content}")
   endif()
   file(WRITE "${KALIBR_LIBEXEC_DIR}/${name}" "${content}")
@@ -192,6 +284,19 @@ if(KALIBR_BUILD_NATIVE)
   add_subdirectory(upstream/kalibr/aslam_cv/aslam_cv_python native/aslam_cv_python)
   add_subdirectory(upstream/kalibr/aslam_optimizer/sparse_block_matrix native/sparse_block_matrix)
   add_subdirectory(upstream/kalibr/aslam_optimizer/aslam_backend native/aslam_backend)
+  if(KALIBR_ENABLE_NATIVE_OPTIMIZATIONS)
+    get_target_property(_aslam_backend_sources aslam_backend SOURCES)
+    list(FILTER _aslam_backend_sources EXCLUDE REGEX "JacobianContainer\\.cpp$")
+    list(FILTER _aslam_backend_sources EXCLUDE REGEX
+      "BlockCholeskyLinearSystemSolver\\.cpp$")
+    set_property(TARGET aslam_backend PROPERTY SOURCES "${_aslam_backend_sources}")
+    target_sources(aslam_backend PRIVATE
+      "${KALIBR_NATIVE_OPTIMIZER_BINARY_DIR}/src/JacobianContainer.cpp"
+      "${KALIBR_NATIVE_OPTIMIZER_BINARY_DIR}/src/BlockCholeskyLinearSystemSolver.cpp")
+    target_include_directories(aslam_backend BEFORE PUBLIC
+      "${KALIBR_NATIVE_OPTIMIZER_BINARY_DIR}/include")
+
+  endif()
   add_subdirectory(upstream/kalibr/aslam_optimizer/aslam_backend_expressions native/aslam_backend_expressions)
   add_subdirectory(upstream/kalibr/aslam_optimizer/aslam_backend_python native/aslam_backend_python)
   add_subdirectory(upstream/kalibr/aslam_cv/aslam_cv_backend native/aslam_cv_backend)
@@ -231,6 +336,19 @@ if(KALIBR_BUILD_NATIVE)
   add_subdirectory(upstream/kalibr/aslam_incremental_calibration/incremental_calibration native/incremental_calibration)
   add_subdirectory(upstream/kalibr/aslam_incremental_calibration/incremental_calibration_python native/incremental_calibration_python)
   add_subdirectory(upstream/kalibr/aslam_offline_calibration/kalibr native/kalibr)
+
+  if(KALIBR_ENABLE_NATIVE_OPTIMIZATIONS)
+    # Keep the installed development headers consistent with the optimized
+    # library. Put these rules after all upstream subdirectories so the
+    # overlays intentionally replace only the three changed public headers.
+    install(FILES
+      "${KALIBR_NATIVE_OPTIMIZER_BINARY_DIR}/include/aslam/backend/Optimizer2.hpp"
+      "${KALIBR_NATIVE_OPTIMIZER_BINARY_DIR}/include/aslam/backend/BSplineMotionError.hpp"
+      DESTINATION include/aslam/backend)
+    install(FILES
+      "${KALIBR_NATIVE_OPTIMIZER_BINARY_DIR}/include/aslam/backend/implementation/BSplineMotionError.hpp"
+      DESTINATION include/aslam/backend/implementation)
+  endif()
 endif()
 
 enable_testing()

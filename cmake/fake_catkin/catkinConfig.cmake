@@ -13,16 +13,16 @@ set(CATKIN_GLOBAL_PYTHON_DESTINATION python)
 
 set(catkin_INCLUDE_DIRS ${KALIBR_ALL_INCLUDE_DIRS})
 set(catkin_LIBRARIES "")
-set(_kalibr_native_components
-  aslam_time ethz_apriltag2 numpy_eigen sm_common sm_boost sm_logging sm_matrix_archive
-  sm_property_tree sm_random sm_eigen sm_kinematics aslam_cameras
-  aslam_cv_serialization aslam_imgproc sm_timing aslam_cameras_april
-  sparse_block_matrix aslam_backend aslam_backend_expressions aslam_cv_backend
-  bsplines aslam_splines incremental_calibration kalibr_errorterms
-)
 foreach(component IN LISTS catkin_FIND_COMPONENTS)
-  if(component IN_LIST _kalibr_native_components)
+  # The top-level standalone build adds packages in dependency order, so a
+  # native component is linkable as soon as its CMake target exists. Keeping a
+  # hand-maintained allow-list previously omitted sm_opencv and several Python
+  # bridge libraries, leaving unresolved symbols that a sourced ROS workspace
+  # happened to mask at runtime.
+  if(TARGET ${component})
     list(APPEND catkin_LIBRARIES ${component})
+  elseif(component STREQUAL "opencv2_catkin")
+    list(APPEND catkin_LIBRARIES ${OpenCV_LIBS})
   endif()
 endforeach()
 
