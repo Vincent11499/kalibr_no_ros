@@ -2,12 +2,13 @@
 
 `kalibr_no_ros` keeps the Kalibr calibration algorithms at upstream commit
 `1f60227442d25e36365ef5f72cd80b9666d73467`, while removing ROS from the data
-boundary and runtime environment.
+boundary and runtime environment. The same calibration commands accept ROS1
+bag files and ROS2 bag directories without sourcing either ROS version.
 
 The repository contains two intentionally separate packages:
 
-- `bag_io`: ROS1 bag reading/writing based on `rosbags`. It does not import
-  Kalibr or ROS.
+- `bag_io`: ROS1 and ROS2 bag reading/writing based on `rosbags`. It does not
+  import Kalibr or ROS.
 - `core`: adapters that expose Kalibr's original dataset-reader API and feed
   data from `bag_io` into the unchanged calibration pipeline.
 
@@ -46,12 +47,20 @@ does not need a sourced ROS environment.
 
 ## Run
 
-Inspect a bag through the standalone package:
+Inspect a ROS1 bag file or ROS2 bag directory through the standalone package:
 
 ```bash
 python3 -m pip install --user -e ./bag_io
 kalibr-bag-info ../../data/euroc_cam/cam_april.bag
+kalibr-bag-info ../../data/euroc_cam_ros2/cam_april_ros2
 ```
+
+`--bag` uses the same syntax in both installed calibration commands:
+
+- ROS1: pass a `.bag` file.
+- ROS2: pass the recording directory containing `metadata.yaml` and SQLite3
+  (`.db3`) or MCAP storage. SQLite3 is covered by the full EuRoC regression;
+  MCAP is handled by the same `rosbags` rosbag2 reader.
 
 Run deterministic mono camera calibration:
 
@@ -63,6 +72,19 @@ env -u ROS_DISTRO -u ROS_ROOT -u ROS_PACKAGE_PATH \
   --models pinhole-radtan \
   --topics /cam0/image_raw \
   --bag ../../data/euroc_cam/cam_april.bag \
+  --no-shuffle --dont-show-report
+```
+
+The equivalent ROS2 invocation changes only the bag path:
+
+```bash
+env -u ROS_DISTRO -u ROS_ROOT -u ROS_PACKAGE_PATH \
+  -u CMAKE_PREFIX_PATH -u PYTHONPATH MPLBACKEND=Agg \
+  ./install/bin/kalibr_calibrate_cameras \
+  --target ../../data/euroc_cam/april_6x6.yaml \
+  --models pinhole-radtan \
+  --topics /cam0/image_raw \
+  --bag ../../data/euroc_cam_ros2/cam_april_ros2 \
   --no-shuffle --dont-show-report
 ```
 
@@ -85,6 +107,27 @@ Compare native and no-ROS outputs:
 ```bash
 python3 scripts/compare_kalibr_outputs.py \
   /path/to/native-results /path/to/no-ros-results
+```
+
+Compare the complete ROS1 and ROS2 input streams as seen by Kalibr:
+
+```bash
+python3 scripts/compare_bag_inputs.py \
+  ../../data/euroc_cam/imu_april.bag \
+  ../../data/euroc_cam_ros2/imu_april_ros2 \
+  --image-topic /cam0/image_raw \
+  --image-topic /cam1/image_raw \
+  --imu-topic /imu0
+```
+
+The command compares every image header, every pixel payload, and every IMU
+sample by default. Use `--sample-images N` only when a faster sampled check is
+preferred.
+
+To create a rosbag2 SQLite3 copy without installing ROS2:
+
+```bash
+python3 -m rosbags.convert input.bag --dst output_ros2
 ```
 
 See `docs/STATUS.md` for the validated boundary, numerical baseline, and known

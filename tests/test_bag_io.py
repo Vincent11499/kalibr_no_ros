@@ -58,6 +58,58 @@ class BagIoTest(unittest.TestCase):
     ))
 
 
+  def test_ros2_sqlite_round_trip_and_duplicate_record_times(self):
+    path = self.directory / "roundtrip_ros2"
+    record_time = 9_000_000_000
+    first = ImageRecord(
+        1_000_000_123,
+        record_time,
+        "mono8",
+        np.full((3, 4), 11, dtype=np.uint8),
+        "cam",
+        7,
+    )
+    second = ImageRecord(
+        2_000_000_123,
+        record_time,
+        "mono8",
+        np.full((3, 4), 22, dtype=np.uint8),
+        "cam",
+        8,
+    )
+    imu = ImuRecord(
+        3_000_000_123,
+        3_000_000_456,
+        np.array([1.0, 2.0, 3.0]),
+        np.array([4.0, 5.0, 6.0]),
+        "imu",
+        9,
+    )
+    with BagWriter(path) as writer:
+        self.assertEqual(writer.storage_format, "ros2")
+        writer.write_image("/cam", first)
+        writer.write_image("/cam", second)
+        writer.write_compressed_image("/compressed", first)
+        writer.write_imu("/imu", imu)
+
+    reader = BagReader(path)
+    self.assertEqual(reader.storage_format, "ros2")
+    self.assertTrue((path / "metadata.yaml").is_file())
+    images = reader.read_images("/cam", grayscale=False)
+    compressed = reader.read_images("/compressed", grayscale=False)[0]
+    measured_imu = reader.read_imu("/imu")[0]
+    self.assertEqual([x.header_timestamp_ns for x in images], [
+        first.header_timestamp_ns,
+        second.header_timestamp_ns,
+    ])
+    np.testing.assert_array_equal(images[0].image, first.image)
+    np.testing.assert_array_equal(images[1].image, second.image)
+    np.testing.assert_array_equal(compressed.image, first.image)
+    np.testing.assert_array_equal(measured_imu.angular_velocity, imu.angular_velocity)
+    # ROS2 std_msgs/Header has no sequence field; the neutral API specifies 0.
+    self.assertEqual([images[0].sequence, images[1].sequence, measured_imu.sequence], [0, 0, 0])
+
+
   def test_crop_and_decimation_preserve_header_time_order(self):
     path = self.directory / "selection.bag"
     times = [3_000_000_000, 1_000_000_000, 2_000_000_000, 4_000_000_000]

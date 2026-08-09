@@ -1,11 +1,12 @@
-"""Write the standard ROS1 messages consumed by the calibration readers."""
+"""Write the standard ROS1 or ROS2 messages consumed by the readers."""
 
 from pathlib import Path
 from typing import Dict, Optional
 
 import cv2
 import numpy as np
-from rosbags.rosbag1 import Writer
+from rosbags.rosbag1 import Writer as Ros1Writer
+from rosbags.rosbag2 import Writer as Ros2Writer
 from rosbags.typesys import Stores, get_typestore
 
 from .image_codec import encode_raw_image
@@ -13,15 +14,22 @@ from .model import ImageRecord, ImuRecord
 
 
 class BagWriter:
-    def __init__(self, bagfile):
+    def __init__(self, bagfile, *, storage_format=None):
         self.path = Path(bagfile).expanduser().resolve()
-        self._typestore = get_typestore(Stores.ROS1_NOETIC)
+        if storage_format is None:
+            storage_format = "ros1" if self.path.suffix == ".bag" else "ros2"
+        if storage_format not in ("ros1", "ros2"):
+            raise ValueError("storage_format must be 'ros1' or 'ros2'")
+        self.storage_format = storage_format
+        store = Stores.ROS1_NOETIC if storage_format == "ros1" else Stores.ROS2_HUMBLE
+        self._typestore = get_typestore(store)
         self._writer = None
         self._connections: Dict[tuple, object] = {}
 
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._writer = Writer(self.path)
+        writer_type = Ros1Writer if self.storage_format == "ros1" else Ros2Writer
+        self._writer = writer_type(self.path)
         self._writer.open()
         return self
 
@@ -47,11 +55,17 @@ class BagWriter:
         stamp_type = self._typestore.types["builtin_interfaces/msg/Time"]
         header_type = self._typestore.types["std_msgs/msg/Header"]
         seconds, nanoseconds = divmod(int(timestamp_ns), 1_000_000_000)
-        return header_type(int(sequence), stamp_type(seconds, nanoseconds), frame_id)
+        stamp = stamp_type(seconds, nanoseconds)
+        if self.storage_format == "ros1":
+            return header_type(int(sequence), stamp, frame_id)
+        return header_type(stamp, frame_id)
 
     def _write(self, topic, msgtype, message, record_timestamp_ns):
         connection = self._connection(topic, msgtype)
-        raw = self._typestore.serialize_ros1(message, msgtype)
+        if self.storage_format == "ros1":
+            raw = self._typestore.serialize_ros1(message, msgtype)
+        else:
+            raw = self._typestore.serialize_cdr(message, msgtype)
         self._writer.write(connection, int(record_timestamp_ns), raw)
 
     def write_image(self, topic: str, record: ImageRecord, *, encoding: Optional[str] = None):

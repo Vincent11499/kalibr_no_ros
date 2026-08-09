@@ -1,4 +1,4 @@
-"""Read standard camera and IMU messages from ROS1 bags."""
+"""Read standard camera and IMU messages from ROS1 and ROS2 bags."""
 
 from pathlib import Path
 from io import BytesIO
@@ -8,6 +8,7 @@ from typing import Iterator, List, Optional, Sequence, Tuple
 import numpy as np
 from rosbags.rosbag1 import Reader
 from rosbags.rosbag1.reader import Header, RecordType, read_bytes, read_uint32
+from rosbags.highlevel import AnyReader
 from rosbags.typesys import Stores, get_typestore
 
 from .image_codec import decode_compressed_image, decode_raw_image
@@ -22,17 +23,40 @@ def _header_timestamp_ns(message) -> int:
     return int(message.header.stamp.sec) * 1_000_000_000 + int(message.header.stamp.nanosec)
 
 
+def _header_sequence(message) -> int:
+    # ROS2 removed Header.seq. Keep the neutral record and Kalibr-facing API
+    # stable by using zero, which is also what most ROS1 camera drivers emit.
+    return int(getattr(message.header, "seq", 0))
+
+
 class BagReader:
-    """Stateless ROS1 bag reader whose returned records are sorted by header time."""
+    """Bag reader whose returned records are sorted by message-header time.
+
+    A ROS1 recording is a ``.bag`` file. A ROS2 recording is a directory that
+    contains ``metadata.yaml`` and SQLite3 or MCAP storage files.
+    """
 
     def __init__(self, bagfile):
         self.path = Path(bagfile).expanduser().resolve()
-        if not self.path.is_file():
+        if self.path.is_file():
+            self.storage_format = "ros1"
+        elif self.path.is_dir() and (self.path / "metadata.yaml").is_file():
+            self.storage_format = "ros2"
+        elif not self.path.exists():
             raise FileNotFoundError(str(self.path))
-        self._typestore = get_typestore(Stores.ROS1_NOETIC)
+        else:
+            raise RuntimeError(
+                "Unsupported bag path {}: expected a ROS1 .bag file or a ROS2 "
+                "bag directory containing metadata.yaml".format(self.path)
+            )
+        self._ros1_typestore = get_typestore(Stores.ROS1_NOETIC)
+        self._ros2_typestore = get_typestore(Stores.ROS2_HUMBLE)
+
+    def _any_reader(self):
+        return AnyReader([self.path], default_typestore=self._ros2_typestore)
 
     def topics(self) -> List[TopicInfo]:
-        with Reader(self.path) as reader:
+        with self._any_reader() as reader:
             return sorted(
                 (TopicInfo(c.topic, c.msgtype, int(c.msgcount)) for c in reader.connections),
                 key=lambda info: (info.name, info.msgtype),
@@ -100,16 +124,22 @@ class BagReader:
         Only headers are decoded while building the index. Pixel payloads are
         decoded on demand, matching rosbag's memory behavior during Kalibr runs.
         """
-        return IndexedImageDataset(self.path, topic, self._typestore, grayscale)
+        if self.storage_format == "ros1":
+            return IndexedRos1ImageDataset(
+                self.path, topic, self._ros1_typestore, grayscale
+            )
+        return IndexedRos2ImageDataset(
+            self.path, topic, self._ros2_typestore, grayscale
+        )
 
     def read_imu(
         self, topic: str, from_to: Optional[Tuple[float, float]] = None
     ) -> List[ImuRecord]:
         records = []
-        with Reader(self.path) as reader:
+        with self._any_reader() as reader:
             connections = self._connections(reader, topic, (IMU_TYPE,))
             for connection, record_ns, rawdata in reader.messages(connections=connections):
-                message = self._typestore.deserialize_ros1(rawdata, connection.msgtype)
+                message = reader.deserialize(rawdata, connection.msgtype)
                 vec = message.angular_velocity
                 acc = message.linear_acceleration
                 quat = message.orientation
@@ -120,7 +150,7 @@ class BagReader:
                         np.array([vec.x, vec.y, vec.z], dtype=float),
                         np.array([acc.x, acc.y, acc.z], dtype=float),
                         message.header.frame_id,
-                        int(message.header.seq),
+                        _header_sequence(message),
                         np.array([quat.x, quat.y, quat.z, quat.w], dtype=float),
                         np.asarray(message.orientation_covariance, dtype=float).copy(),
                         np.asarray(message.angular_velocity_covariance, dtype=float).copy(),
@@ -134,8 +164,8 @@ class BagReader:
         return iter(self.read_imu(*args, **kwargs))
 
 
-class IndexedImageDataset:
-    """Persistent random-access view over one image topic."""
+class IndexedRos1ImageDataset:
+    """Persistent random-access view over one ROS1 image topic."""
 
     def __init__(self, path, topic, typestore, grayscale=True):
         self.path = Path(path)
@@ -175,7 +205,7 @@ class IndexedImageDataset:
                     int(entry.offset),
                     message.encoding if msgtype == "sensor_msgs/msg/Image" else "compressed",
                     message.header.frame_id,
-                    int(message.header.seq),
+                    _header_sequence(message),
                     None if msgtype == "sensor_msgs/msg/Image" else message.format,
                 )
             )
@@ -233,6 +263,111 @@ class IndexedImageDataset:
         message = self._deserialize(connection_id, entry)
         msgtype = self.connection_by_id[connection_id].msgtype
         if msgtype == "sensor_msgs/msg/Image":
+            image = decode_raw_image(message, grayscale=self.grayscale)
+        else:
+            image = decode_compressed_image(message, grayscale=self.grayscale)
+        return ImageRecord(
+            selected.header_timestamp_ns,
+            selected.record_timestamp_ns,
+            selected.encoding,
+            image,
+            selected.frame_id,
+            selected.sequence,
+            selected.compressed_format,
+        )
+
+
+class IndexedRos2ImageDataset:
+    """Persistent random-access view over one ROS2 SQLite3 or MCAP topic.
+
+    rosbag2 storage readers expose timestamp-bounded queries. The lightweight
+    index therefore stores record timestamps and a duplicate ordinal. Pixel
+    payloads are decoded only when Kalibr asks for a selected view.
+    """
+
+    def __init__(self, path, topic, typestore, grayscale=True):
+        self.path = Path(path)
+        self.topic = topic
+        self.grayscale = grayscale
+        self.reader = AnyReader([self.path], default_typestore=typestore)
+        self.reader.open()
+        self.connections = [c for c in self.reader.connections if c.topic == topic]
+        if not self.connections:
+            self.close()
+            raise RuntimeError("Could not find topic {} in {}.".format(topic, path))
+        unsupported = [c.msgtype for c in self.connections if c.msgtype not in IMAGE_TYPES]
+        if unsupported:
+            self.close()
+            raise RuntimeError("Topic {} has unsupported type(s): {}".format(topic, unsupported))
+        self.connection_by_id = {c.id: c for c in self.connections}
+
+        occurrences = {}
+        self.index = []
+        for connection, record_ns, rawdata in self.reader.messages(
+            connections=self.connections
+        ):
+            message = self.reader.deserialize(rawdata, connection.msgtype)
+            key = (int(connection.id), int(record_ns))
+            ordinal = occurrences.get(key, 0)
+            occurrences[key] = ordinal + 1
+            self.index.append(
+                ImageIndex(
+                    _header_timestamp_ns(message),
+                    int(record_ns),
+                    int(connection.id),
+                    -1,
+                    -1,
+                    message.encoding
+                    if connection.msgtype == "sensor_msgs/msg/Image"
+                    else "compressed",
+                    message.header.frame_id,
+                    _header_sequence(message),
+                    None
+                    if connection.msgtype == "sensor_msgs/msg/Image"
+                    else message.format,
+                    ordinal,
+                )
+            )
+        self.index.sort(key=lambda item: item.header_timestamp_ns)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
+    def __del__(self):
+        self.close()
+
+    def close(self):
+        reader = getattr(self, "reader", None)
+        if reader is not None:
+            if reader.isopen:
+                reader.close()
+            self.reader = None
+
+    def get(self, position: int) -> ImageRecord:
+        return self.get_by_entry(self.index[int(position)])
+
+    def get_by_entry(self, selected: ImageIndex) -> ImageRecord:
+        reader = self.reader
+        if reader is None or not reader.isopen:
+            raise RuntimeError("IndexedRos2ImageDataset is closed")
+        connection = self.connection_by_id[selected.connection_id]
+        candidates = reader.messages(
+            connections=[connection],
+            start=selected.record_timestamp_ns,
+            stop=selected.record_timestamp_ns + 1,
+        )
+        selected_raw = None
+        for ordinal, (_, _, rawdata) in enumerate(candidates):
+            if ordinal == selected.record_ordinal:
+                selected_raw = rawdata
+                break
+        if selected_raw is None:
+            raise RuntimeError("Could not retrieve image at indexed rosbag2 position")
+        message = reader.deserialize(selected_raw, connection.msgtype)
+        if connection.msgtype == "sensor_msgs/msg/Image":
             image = decode_raw_image(message, grayscale=self.grayscale)
         else:
             image = decode_compressed_image(message, grayscale=self.grayscale)

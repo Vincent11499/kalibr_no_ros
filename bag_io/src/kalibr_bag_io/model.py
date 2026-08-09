@@ -26,6 +26,10 @@ class ImageIndex:
     frame_id: str = ""
     sequence: int = 0
     compressed_format: Optional[str] = None
+    # Position among messages that share the same connection and record time.
+    # ROS1 uses chunk_position/chunk_offset for direct lookup; ROS2 SQLite3 and
+    # MCAP use record_timestamp_ns plus this ordinal for backend-neutral lookup.
+    record_ordinal: int = 0
 
 
 @dataclass(frozen=True)
