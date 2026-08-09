@@ -88,6 +88,27 @@ env -u ROS_DISTRO -u ROS_ROOT -u ROS_PACKAGE_PATH \
   --no-shuffle --dont-show-report
 ```
 
+An OpenCV-compatible five-coefficient pinhole model is available as
+`pinhole-radtan5`. It optimizes distortion in OpenCV order
+`[k1, k2, p1, p2, k3]`, writes `distortion_model: radtan5` to the Kalibr
+camchain, and additionally produces OpenCV FileStorage YAML containing `K/D`
+and, for stereo, `R/T/E/F`:
+
+```bash
+env -u ROS_DISTRO -u ROS_ROOT -u ROS_PACKAGE_PATH \
+  -u CMAKE_PREFIX_PATH -u PYTHONPATH MPLBACKEND=Agg \
+  ./install/bin/kalibr_calibrate_cameras \
+  --target ../../data/euroc_cam/april_6x6.yaml \
+  --models pinhole-radtan5 \
+  --topics /cam0/image_raw \
+  --bag ../../data/euroc_cam/cam_april.bag \
+  --no-shuffle --dont-show-report
+```
+
+The resulting camchain can be passed unchanged to
+`kalibr_calibrate_imu_camera`. See [docs/RADTAN5.md](docs/RADTAN5.md) for the
+formula, stereo transform convention, output names, and implementation map.
+
 Run IMU-camera calibration with one of the three upstream models:
 
 ```bash

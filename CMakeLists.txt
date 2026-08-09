@@ -91,6 +91,7 @@ copy_python_package("${KALIBR_UPSTREAM}/aslam_offline_calibration/kalibr/python"
 copy_python_package("${KALIBR_UPSTREAM}/aslam_offline_calibration/kalibr/python" kalibr_imu_camera_calibration)
 copy_python_package("${CMAKE_CURRENT_SOURCE_DIR}/bag_io/src" kalibr_bag_io)
 copy_python_package("${CMAKE_CURRENT_SOURCE_DIR}/core/src" kalibr_no_ros)
+copy_python_package("${CMAKE_CURRENT_SOURCE_DIR}/extensions/radtan5/python" kalibr_radtan5)
 
 # rosbuild-era manifest calls only modified sys.path. The standalone launcher
 # already owns sys.path, so generated package initializers use direct imports.
@@ -129,6 +130,14 @@ function(prepare_cli name)
   file(READ "${source}" content)
   string(REPLACE "import rosbag\n" "" content "${content}")
   string(REPLACE "import cv_bridge\n" "" content "${content}")
+  string(REPLACE "np.set_printoptions(suppress=True)"
+    "import kalibr_radtan5 as kr5\nkr5.install()\n\nnp.set_printoptions(suppress=True)"
+    content "${content}")
+  if(name STREQUAL "kalibr_calibrate_cameras")
+    string(REPLACE "                 'ds-none':        acvb.DoubleSphere}"
+      "                 'ds-none':        acvb.DoubleSphere,\n                 'pinhole-radtan5': kr5.PinholeRadtan5}"
+      content "${content}")
+  endif()
   file(WRITE "${KALIBR_LIBEXEC_DIR}/${name}" "${content}")
   file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/scripts/kalibr_launcher.py"
     DESTINATION "${CMAKE_BINARY_DIR}/bin")
@@ -190,6 +199,28 @@ if(KALIBR_BUILD_NATIVE)
   add_subdirectory(upstream/kalibr/aslam_nonparametric_estimation/aslam_splines native/aslam_splines)
   add_subdirectory(upstream/kalibr/aslam_cv/aslam_cv_error_terms native/aslam_cv_error_terms)
   add_subdirectory(upstream/kalibr/aslam_cv/aslam_cv_backend_python native/aslam_cv_backend_python)
+
+  # OpenCV-compatible [k1, k2, p1, p2, k3] support is an out-of-tree
+  # extension.  The copied Kalibr source remains byte-for-byte unchanged.
+  add_python_export_library(kalibr_radtan5_cv_python
+    "${CMAKE_CURRENT_SOURCE_DIR}/extensions/radtan5/python/kalibr_radtan5"
+    extensions/radtan5/src/cv_module.cpp)
+  target_include_directories(kalibr_radtan5_cv_python PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/extensions/radtan5/include")
+  target_link_libraries(kalibr_radtan5_cv_python
+    aslam_cv_python aslam_cameras aslam_cv_serialization sm_python numpy_eigen
+    ${Boost_LIBRARIES})
+
+  add_python_export_library(kalibr_radtan5_backend_python
+    "${CMAKE_CURRENT_SOURCE_DIR}/extensions/radtan5/python/kalibr_radtan5"
+    extensions/radtan5/src/backend_module.cpp)
+  target_include_directories(kalibr_radtan5_backend_python PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/extensions/radtan5/include")
+  target_link_libraries(kalibr_radtan5_backend_python
+    aslam_cv_backend_python aslam_cv_backend aslam_backend_python
+    aslam_backend aslam_backend_expressions aslam_cv_python aslam_cameras
+    aslam_splines sm_python numpy_eigen ${Boost_LIBRARIES})
+
   add_subdirectory(upstream/kalibr/aslam_nonparametric_estimation/bsplines_python native/bsplines_python)
   add_subdirectory(upstream/kalibr/aslam_nonparametric_estimation/aslam_splines_python native/aslam_splines_python)
   # Two upstream packages publish a header with this same include name. Catkin
@@ -205,3 +236,9 @@ endif()
 enable_testing()
 add_test(NAME python_no_ros_tests COMMAND "${PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_tests.py")
 add_test(NAME upstream_snapshot COMMAND "${PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/verify_upstream.py")
+if(KALIBR_BUILD_NATIVE)
+  add_test(NAME radtan5_native_tests
+    COMMAND "${CMAKE_COMMAND}" -E env
+      "PYTHONPATH=${KALIBR_PYTHON_DIR}"
+      "${PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_radtan5_native.py")
+endif()

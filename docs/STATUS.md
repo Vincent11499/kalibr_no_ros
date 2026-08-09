@@ -18,6 +18,10 @@
   semantics.
 - Phase-one installed commands are `kalibr_calibrate_cameras` and
   `kalibr_calibrate_imu_camera`.
+- An out-of-tree `pinhole-radtan5` model optimizes OpenCV-order
+  `[k1, k2, p1, p2, k3]` using native Kalibr design variables and analytic
+  Jacobians. It is available to both phase-one commands without changing the
+  upstream snapshot.
 
 ## EuRoC validation
 
@@ -70,6 +74,27 @@ camera-to-IMU time shifts were approximately:
 - `calibrated`: `-9.66685e-05 s`
 - `scale-misalignment`: `-8.31345e-05 s`
 - `scale-misalignment-size-effect`: `-8.89441e-05 s`
+
+## OpenCV radtan5 validation
+
+The five-parameter implementation was compared directly against OpenCV 4.2
+projection, and its coordinate and parameter Jacobians were checked by finite
+differences. Geometry serialization, all three design-variable adapters,
+camchain parsing, and OpenCV mono/stereo exports are covered by CTest.
+
+| Case | Result |
+| --- | --- |
+| ROS1 mono, 15--18 s | Converged; 46 of 61 views used |
+| ROS2 mono, 15--18 s | Camchain and text exactly equal to ROS1 |
+| ROS1 stereo, 15--18 s | Converged; all 61 views used |
+| ROS1 mono, full bag | Converged; 90 views used; reprojection std about `[0.0966, 0.0893]` px |
+| IMU-camera `calibrated`, full bag | Converged from cost `1.53e6` to `3.91e4`; all 14,381 gyro and accelerometer samples used |
+| Existing four-parameter mono path | Text result unchanged; YAML differs only at about `1e-15` numerical roundoff |
+
+The full five-parameter IMU-camera run constructed 14,423 design variables and
+202,739 error terms with a `434238 x 64887` Jacobian. Its final camera-to-IMU
+time shift was about `-3.00e-05 s`; the output camchain retained all five fixed
+camera distortion coefficients.
 
 Use `scripts/compare_kalibr_outputs.py` to repeat the result-file comparison.
 
