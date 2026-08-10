@@ -17,8 +17,9 @@ snapshot so that algorithm changes cannot be hidden in a porting patch.
 
 ## Dependencies
 
-The native build is currently validated on Ubuntu 20.04 with Python 3.8,
-OpenCV 4.2, Boost 1.71, Eigen 3, SuiteSparse, TBB, and NumPy. Install the
+The native build is currently validated on Ubuntu 20.04 with GCC 9.4 in
+C++17 mode, Python 3.8, OpenCV 4.2, Boost 1.71, Eigen 3, SuiteSparse, TBB,
+and NumPy. Install the
 ROS-free Python bag dependency with:
 
 ```bash
@@ -41,6 +42,36 @@ cmake --install build/linux-release
 cd build/linux-release
 ctest --output-on-failure
 ```
+
+An experimental Ceres 2.2 optimizer extension can be built in an isolated
+prefix without replacing the system Ceres 1.14 package:
+
+```bash
+./scripts/bootstrap_ceres_2_2.sh
+cmake -S . -B build/ceres \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="$PWD/install/ceres" \
+  -DCMAKE_PREFIX_PATH="$PWD/.deps/install" \
+  -DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF \
+  -DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=OFF \
+  -DKALIBR_ENABLE_CERES=ON \
+  -DKALIBR_ENABLE_TESTING=OFF
+cmake --build build/ceres --parallel 2
+cmake --install build/ceres
+cd build/ceres
+ctest --output-on-failure
+```
+
+On this 8 GiB validation host, parallel build level 2 is recommended; a clean
+level-4 build can exhaust memory in large Boost.Python translation units.
+
+The optional build adds `--optimizer {native,ceres}` to both calibration CLIs,
+with `native` as the unchanged default. The IMU-camera Ceres path solves the
+joint problem for `calibrated`, `scale-misalignment`, and
+`scale-misalignment-size-effect`. The camera Ceres path keeps Kalibr's native
+incremental view-selection/rejection state machine and replaces only the final
+global BA. See [docs/CERES_OPTIMIZER_CN.md](docs/CERES_OPTIMIZER_CN.md) for the
+exact boundary, EuRoC comparisons, and current limits.
 
 The install is relocatable and contains only the two phase-one commands. It
 does not need a sourced ROS environment.
@@ -123,6 +154,28 @@ env -u ROS_DISTRO -u ROS_ROOT -u ROS_PACKAGE_PATH \
   --dont-show-report
 ```
 
+To use the Ceres 2.2 build, select the isolated install prefix and add the
+optimizer option. The data arguments and output formats are unchanged:
+
+```bash
+env -u ROS_DISTRO -u ROS_ROOT -u ROS_PACKAGE_PATH \
+  -u CMAKE_PREFIX_PATH -u PYTHONPATH MPLBACKEND=Agg \
+  ./install/ceres/bin/kalibr_calibrate_imu_camera \
+  --target ../../data/euroc_cam/april_6x6.yaml \
+  --imu ../../data/euroc_cam/imu_adis16448.yaml \
+  --imu-models scale-misalignment \
+  --cams /path/to/cam_april-camchain.yaml \
+  --bag ../../data/euroc_cam/imu_april.bag \
+  --optimizer ceres --ceres-threads 0 --dont-show-report
+```
+
+For camera calibration, pass `--optimizer ceres` to
+`./install/ceres/bin/kalibr_calibrate_cameras`. This currently means native
+incremental selection followed by a parallel Ceres final BA, not an end-to-end
+replacement of the incremental optimizer. `--ceres-threads 0` selects one less
+than the reported logical CPU count; pass a positive value to cap the worker
+count on a resource-constrained machine.
+
 Compare native and no-ROS outputs:
 
 ```bash
@@ -153,3 +206,6 @@ python3 -m rosbags.convert input.bag --dst output_ros2
 
 See `docs/STATUS.md` for the validated boundary, numerical baseline, and known
 limits.
+
+原生 Kalibr、原生优化版和 Ceres 改造版的统一精度/时间/内存对比见
+`docs/THREE_WAY_BENCHMARK_CN.md`。
