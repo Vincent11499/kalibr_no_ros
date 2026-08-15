@@ -73,6 +73,14 @@ incremental view-selection/rejection state machine and replaces only the final
 global BA. See [docs/CERES_OPTIMIZER_CN.md](docs/CERES_OPTIMIZER_CN.md) for the
 exact boundary, EuRoC comparisons, and current limits.
 
+For a source-and-equation walkthrough of the complete IMU-camera initialization
+and joint optimization chain, including a side-by-side comparison with native
+Kalibr, see
+[docs/IMU_CAMERA_JOINT_CALIBRATION_DEEP_DIVE_CN.md](docs/IMU_CAMERA_JOINT_CALIBRATION_DEEP_DIVE_CN.md).
+For a focused explanation of why the continuous pose spline is attached to
+the reference IMU/body and how both backends implement it, see
+[docs/POSE_SPLINE_REFERENCE_FRAME_CN.md](docs/POSE_SPLINE_REFERENCE_FRAME_CN.md).
+
 The install is relocatable and contains only the two phase-one commands. It
 does not need a sourced ROS environment.
 
