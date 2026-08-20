@@ -39,8 +39,25 @@ endfunction()
 
 function(catkin_add_gtest target)
   if(CATKIN_ENABLE_TESTING)
-    add_executable(${target} ${ARGN})
+    cmake_parse_arguments(_catkin_gtest "" "WORKING_DIRECTORY" "" ${ARGN})
+    add_executable(${target} ${_catkin_gtest_UNPARSED_ARGUMENTS})
     target_link_libraries(${target} GTest::gtest)
+    add_test(NAME ${target} COMMAND ${target})
+    # The private SuiteSparse sysroot is staged under the standalone build's
+    # lib directory. Upstream tests bypass the launcher, so provide the same
+    # runtime lookup path explicitly.
+    set_property(TEST ${target} APPEND PROPERTY ENVIRONMENT
+      "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/lib:$ENV{LD_LIBRARY_PATH}")
+    if(target STREQUAL "aslam_cameras_tests")
+      # This legacy executable writes test*.bin/xml into the immutable source
+      # tree and has OpenCV-version-dependent detector assertions. Keep its
+      # target buildable, but do not run it beside upstream_snapshot.
+      set_tests_properties(${target} PROPERTIES DISABLED TRUE)
+    endif()
+    if(_catkin_gtest_WORKING_DIRECTORY)
+      set_tests_properties(${target} PROPERTIES
+        WORKING_DIRECTORY "${_catkin_gtest_WORKING_DIRECTORY}")
+    endif()
   endif()
 endfunction()
 
@@ -63,7 +80,10 @@ function(add_python_export_library target python_module_directory)
   # SHARED exactly as the original helper does rather than CMake MODULE.
   add_library(${target} SHARED ${ARGN})
   target_include_directories(${target} PRIVATE ${PYTHON_INCLUDE_DIRS} ${NUMPY_INCLUDE_DIR})
-  target_link_libraries(${target} ${PYTHON_LIBRARY} ${Boost_PYTHON38_LIBRARY} ${catkin_LIBRARIES})
+  target_link_libraries(${target}
+    ${PYTHON_LIBRARY}
+    Boost::${KALIBR_BOOST_PYTHON_COMPONENT}
+    ${catkin_LIBRARIES})
   set_target_properties(${target} PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${_output_directory}"
   )

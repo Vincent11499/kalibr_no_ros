@@ -1,5 +1,6 @@
 /build/
 /install/
+/.deps/
 /Testing/
 /.pytest_cache/
 __pycache__/

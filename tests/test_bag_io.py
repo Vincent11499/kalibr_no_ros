@@ -110,6 +110,39 @@ class BagIoTest(unittest.TestCase):
     self.assertEqual([images[0].sequence, images[1].sequence, measured_imu.sequence], [0, 0, 0])
 
 
+  def test_lazy_image_timing_splits_io_deserialize_and_decode(self):
+    pixels = np.arange(20, dtype=np.uint8).reshape(4, 5)
+    for name in ("timed.bag", "timed_ros2"):
+      path = self.directory / name
+      with BagWriter(path) as writer:
+        writer.write_image(
+          "/cam",
+          ImageRecord(1_000_000_123, 1_000_000_456, "mono8", pixels),
+        )
+      reader = BagReader(path)
+      with reader.index_images("/cam") as dataset:
+        normal = dataset.get_by_entry(dataset.index[0])
+        measured, timing = dataset.get_by_entry_with_timing(dataset.index[0])
+        deferred, deferred_timing = (
+          dataset.get_deferred_by_entry_with_timing(dataset.index[0]))
+        deferred_image, worker_timing = deferred.decode_for_kalibr(True)
+      np.testing.assert_array_equal(measured.image, normal.image)
+      np.testing.assert_array_equal(deferred_image, normal.image)
+      self.assertEqual(set(timing), {
+        "bag_read_wall_seconds", "bag_read_cpu_seconds",
+        "deserialize_wall_seconds", "deserialize_cpu_seconds",
+        "decode_wall_seconds", "decode_cpu_seconds",
+      })
+      self.assertTrue(all(value >= 0.0 for value in timing.values()))
+      self.assertEqual(set(deferred_timing), {
+        "bag_read_wall_seconds", "bag_read_cpu_seconds",
+      })
+      self.assertEqual(set(worker_timing), {
+        "deserialize_wall_seconds", "deserialize_cpu_seconds",
+        "decode_wall_seconds", "decode_cpu_seconds",
+      })
+
+
   def test_crop_and_decimation_preserve_header_time_order(self):
     path = self.directory / "selection.bag"
     times = [3_000_000_000, 1_000_000_000, 2_000_000_000, 4_000_000_000]

@@ -101,6 +101,18 @@ class BagImageDatasetReader:
     def readDataset(self):
         return _Iterator(self, self.getImage, self.indices.copy())
 
+    def readDatasetWithTiming(self):
+        """Iterate images with bag-read, deserialize, and decode timings."""
+        return _Iterator(self, self.getImageWithTiming, self.indices.copy())
+
+    def readDatasetDeferred(self):
+        """Iterate raw picklable messages for detector-worker decoding."""
+        return _Iterator(self, self.getDeferredImage, self.indices.copy())
+
+    def readDatasetDeferredWithTiming(self):
+        return _Iterator(
+            self, self.getDeferredImageWithTiming, self.indices.copy())
+
     def readDatasetShuffle(self):
         # Kalibr deliberately shuffles the dataset's index array in place.
         # Preserve that observable behavior for repeated iterator creation.
@@ -115,6 +127,26 @@ class BagImageDatasetReader:
         metadata = self.index[int(idx)]
         record = self._dataset.get_by_entry(metadata)
         return self._time.convert(record.header_timestamp_ns), record.image
+
+    def getImageWithTiming(self, idx):
+        metadata = self.index[int(idx)]
+        record, timing = self._dataset.get_by_entry_with_timing(metadata)
+        return (
+            self._time.convert(record.header_timestamp_ns),
+            record.image,
+            timing,
+        )
+
+    def getDeferredImage(self, idx):
+        metadata = self.index[int(idx)]
+        payload = self._dataset.get_deferred_by_entry(metadata)
+        return self._time.convert(metadata.header_timestamp_ns), payload
+
+    def getDeferredImageWithTiming(self, idx):
+        metadata = self.index[int(idx)]
+        payload, timing = self._dataset.get_deferred_by_entry_with_timing(
+            metadata)
+        return self._time.convert(metadata.header_timestamp_ns), payload, timing
 
     def close(self):
         self._dataset.close()

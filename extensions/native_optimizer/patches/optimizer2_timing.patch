@@ -13,15 +13,18 @@
  #include <aslam/Exceptions.hpp>
  #include <sm/timing/Timer.hpp>
  #include <boost/thread.hpp>
-@@ -50,9 +50,8 @@
+@@ -50,9 +50,11 @@
   */
      class Optimizer2 {
      public:
 -        //  typedef sm::timing::Timer Timer;
 -      /// Swapping this to the dummy timer will disable timing
 -       typedef sm::timing::DummyTimer Timer;
-+      /// Phase timing is collected only by the optimized overlay build.
++#if defined(KALIBR_NATIVE_ENABLE_PROFILING)
 +      typedef sm::timing::Timer Timer;
++#else
++      typedef sm::timing::DummyTimer Timer;
++#endif
        typedef sparse_block_matrix::SparseBlockMatrix<Eigen::MatrixXd> SparseBlockMatrix;
  
        SM_DEFINE_EXCEPTION(Exception, aslam::Exception);

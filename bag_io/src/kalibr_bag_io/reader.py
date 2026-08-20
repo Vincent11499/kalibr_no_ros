@@ -3,6 +3,7 @@
 from pathlib import Path
 from io import BytesIO
 import os
+import time
 from typing import Iterator, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -17,6 +18,51 @@ from .model import ImageIndex, ImageRecord, ImuRecord, TopicInfo
 
 IMAGE_TYPES = {"sensor_msgs/msg/Image", "sensor_msgs/msg/CompressedImage"}
 IMU_TYPE = "sensor_msgs/msg/Imu"
+_DEFERRED_TYPESTORES = {}
+
+
+class DeferredImagePayload:
+    """Picklable raw image message decoded later in a detector worker."""
+
+    def __init__(self, rawdata, storage_format, msgtype, grayscale):
+        self.rawdata = rawdata
+        self.storage_format = storage_format
+        self.msgtype = msgtype
+        self.grayscale = grayscale
+
+    def decode_for_kalibr(self, collect_timing=False):
+        if collect_timing:
+            deserialize_wall_start = time.perf_counter()
+            deserialize_cpu_start = time.process_time()
+        typestore = _DEFERRED_TYPESTORES.get(self.storage_format)
+        if typestore is None:
+            store = (
+                Stores.ROS1_NOETIC
+                if self.storage_format == "ros1" else Stores.ROS2_HUMBLE
+            )
+            typestore = get_typestore(store)
+            _DEFERRED_TYPESTORES[self.storage_format] = typestore
+        if self.storage_format == "ros1":
+            message = typestore.deserialize_ros1(self.rawdata, self.msgtype)
+        else:
+            message = typestore.deserialize_cdr(self.rawdata, self.msgtype)
+        if collect_timing:
+            deserialize_wall = time.perf_counter() - deserialize_wall_start
+            deserialize_cpu = time.process_time() - deserialize_cpu_start
+            decode_wall_start = time.perf_counter()
+            decode_cpu_start = time.process_time()
+        if self.msgtype == "sensor_msgs/msg/Image":
+            image = decode_raw_image(message, grayscale=self.grayscale)
+        else:
+            image = decode_compressed_image(message, grayscale=self.grayscale)
+        if not collect_timing:
+            return image, {}
+        return image, {
+            "deserialize_wall_seconds": deserialize_wall,
+            "deserialize_cpu_seconds": deserialize_cpu,
+            "decode_wall_seconds": time.perf_counter() - decode_wall_start,
+            "decode_cpu_seconds": time.process_time() - decode_cpu_start,
+        }
 
 
 def _header_timestamp_ns(message) -> int:
@@ -256,17 +302,74 @@ class IndexedRos1ImageDataset:
         return self.get_by_entry(self.index[int(position)])
 
     def get_by_entry(self, selected: ImageIndex) -> ImageRecord:
+        return self._get_by_entry(selected, collect_timing=False)
+
+    def get_by_entry_with_timing(self, selected: ImageIndex):
+        """Return one image and independent bag/deserialize/decode timings."""
+        return self._get_by_entry(selected, collect_timing=True)
+
+    def get_deferred_by_entry(self, selected: ImageIndex):
+        return self._get_deferred_by_entry(selected, collect_timing=False)
+
+    def get_deferred_by_entry_with_timing(self, selected: ImageIndex):
+        return self._get_deferred_by_entry(selected, collect_timing=True)
+
+    def _get_deferred_by_entry(self, selected, collect_timing=False):
+        entry = self._entry_by_location[
+            (selected.connection_id, selected.chunk_position,
+             selected.chunk_offset)
+        ]
+        if collect_timing:
+            wall_start = time.perf_counter()
+            cpu_start = time.process_time()
+        rawdata = self._raw(entry)
+        timing = {}
+        if collect_timing:
+            timing = {
+                "bag_read_wall_seconds": time.perf_counter() - wall_start,
+                "bag_read_cpu_seconds": time.process_time() - cpu_start,
+            }
+        connection = self.connection_by_id[selected.connection_id]
+        payload = DeferredImagePayload(
+            rawdata, "ros1", connection.msgtype, self.grayscale)
+        return (payload, timing) if collect_timing else payload
+
+    def _get_by_entry(self, selected: ImageIndex, collect_timing=False):
         connection_id = selected.connection_id
         entry = self._entry_by_location[
             (connection_id, selected.chunk_position, selected.chunk_offset)
         ]
-        message = self._deserialize(connection_id, entry)
-        msgtype = self.connection_by_id[connection_id].msgtype
+        connection = self.connection_by_id[connection_id]
+        if collect_timing:
+            timing = {}
+            wall_start = time.perf_counter()
+            cpu_start = time.process_time()
+            rawdata = self._raw(entry)
+            timing["bag_read_wall_seconds"] = time.perf_counter() - wall_start
+            timing["bag_read_cpu_seconds"] = time.process_time() - cpu_start
+
+            wall_start = time.perf_counter()
+            cpu_start = time.process_time()
+            message = self.typestore.deserialize_ros1(
+                rawdata, connection.msgtype)
+            timing["deserialize_wall_seconds"] = (
+                time.perf_counter() - wall_start)
+            timing["deserialize_cpu_seconds"] = (
+                time.process_time() - cpu_start)
+            wall_start = time.perf_counter()
+            cpu_start = time.process_time()
+        else:
+            timing = None
+            message = self._deserialize(connection_id, entry)
+        msgtype = connection.msgtype
         if msgtype == "sensor_msgs/msg/Image":
             image = decode_raw_image(message, grayscale=self.grayscale)
         else:
             image = decode_compressed_image(message, grayscale=self.grayscale)
-        return ImageRecord(
+        if collect_timing:
+            timing["decode_wall_seconds"] = time.perf_counter() - wall_start
+            timing["decode_cpu_seconds"] = time.process_time() - cpu_start
+        record = ImageRecord(
             selected.header_timestamp_ns,
             selected.record_timestamp_ns,
             selected.encoding,
@@ -275,6 +378,7 @@ class IndexedRos1ImageDataset:
             selected.sequence,
             selected.compressed_format,
         )
+        return (record, timing) if collect_timing else record
 
 
 class IndexedRos2ImageDataset:
@@ -350,10 +454,59 @@ class IndexedRos2ImageDataset:
         return self.get_by_entry(self.index[int(position)])
 
     def get_by_entry(self, selected: ImageIndex) -> ImageRecord:
+        return self._get_by_entry(selected, collect_timing=False)
+
+    def get_by_entry_with_timing(self, selected: ImageIndex):
+        """Return one image and independent bag/deserialize/decode timings."""
+        return self._get_by_entry(selected, collect_timing=True)
+
+    def get_deferred_by_entry(self, selected: ImageIndex):
+        return self._get_deferred_by_entry(selected, collect_timing=False)
+
+    def get_deferred_by_entry_with_timing(self, selected: ImageIndex):
+        return self._get_deferred_by_entry(selected, collect_timing=True)
+
+    def _raw_by_entry(self, selected):
         reader = self.reader
         if reader is None or not reader.isopen:
             raise RuntimeError("IndexedRos2ImageDataset is closed")
         connection = self.connection_by_id[selected.connection_id]
+        candidates = reader.messages(
+            connections=[connection],
+            start=selected.record_timestamp_ns,
+            stop=selected.record_timestamp_ns + 1,
+        )
+        for ordinal, (_, _, rawdata) in enumerate(candidates):
+            if ordinal == selected.record_ordinal:
+                return connection, rawdata
+        raise RuntimeError("Could not retrieve image at indexed rosbag2 position")
+
+    def _get_deferred_by_entry(self, selected, collect_timing=False):
+        if collect_timing:
+            wall_start = time.perf_counter()
+            cpu_start = time.process_time()
+        connection, rawdata = self._raw_by_entry(selected)
+        timing = {}
+        if collect_timing:
+            timing = {
+                "bag_read_wall_seconds": time.perf_counter() - wall_start,
+                "bag_read_cpu_seconds": time.process_time() - cpu_start,
+            }
+        payload = DeferredImagePayload(
+            rawdata, "ros2", connection.msgtype, self.grayscale)
+        return (payload, timing) if collect_timing else payload
+
+    def _get_by_entry(self, selected: ImageIndex, collect_timing=False):
+        reader = self.reader
+        if reader is None or not reader.isopen:
+            raise RuntimeError("IndexedRos2ImageDataset is closed")
+        connection = self.connection_by_id[selected.connection_id]
+        if collect_timing:
+            timing = {}
+            wall_start = time.perf_counter()
+            cpu_start = time.process_time()
+        else:
+            timing = None
         candidates = reader.messages(
             connections=[connection],
             start=selected.record_timestamp_ns,
@@ -366,12 +519,27 @@ class IndexedRos2ImageDataset:
                 break
         if selected_raw is None:
             raise RuntimeError("Could not retrieve image at indexed rosbag2 position")
+        if collect_timing:
+            timing["bag_read_wall_seconds"] = time.perf_counter() - wall_start
+            timing["bag_read_cpu_seconds"] = time.process_time() - cpu_start
+            wall_start = time.perf_counter()
+            cpu_start = time.process_time()
         message = reader.deserialize(selected_raw, connection.msgtype)
+        if collect_timing:
+            timing["deserialize_wall_seconds"] = (
+                time.perf_counter() - wall_start)
+            timing["deserialize_cpu_seconds"] = (
+                time.process_time() - cpu_start)
+            wall_start = time.perf_counter()
+            cpu_start = time.process_time()
         if connection.msgtype == "sensor_msgs/msg/Image":
             image = decode_raw_image(message, grayscale=self.grayscale)
         else:
             image = decode_compressed_image(message, grayscale=self.grayscale)
-        return ImageRecord(
+        if collect_timing:
+            timing["decode_wall_seconds"] = time.perf_counter() - wall_start
+            timing["decode_cpu_seconds"] = time.process_time() - cpu_start
+        record = ImageRecord(
             selected.header_timestamp_ns,
             selected.record_timestamp_ns,
             selected.encoding,
@@ -380,3 +548,4 @@ class IndexedRos2ImageDataset:
             selected.sequence,
             selected.compressed_format,
         )
+        return (record, timing) if collect_timing else record

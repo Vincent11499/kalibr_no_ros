@@ -1,27 +1,161 @@
 --- a/src/BlockCholeskyLinearSystemSolver.cpp
 +++ b/src/BlockCholeskyLinearSystemSolver.cpp
-@@ -3,6 +3,7 @@
+@@ -3,9 +3,64 @@
  #include <sparse_block_matrix/linear_solver_spqr.h>
  #include <aslam/backend/ErrorTerm.hpp>
  #include <sm/PropertyTree.hpp>
 +#include <sm/timing/Timer.hpp>
++#include <boost/thread.hpp>
++#include <algorithm>
++#include <exception>
++#include <memory>
++#include <vector>
  
  namespace aslam {
    namespace backend {
-@@ -57,6 +58,7 @@
++  namespace {
++#if defined(KALIBR_NATIVE_ENABLE_PROFILING)
++    typedef sm::timing::Timer NativeTimingTimer;
++#else
++    typedef sm::timing::DummyTimer NativeTimingTimer;
++#endif
++
++    struct NormalEquationChunk {
++      typedef sparse_block_matrix::SparseBlockMatrix<Eigen::MatrixXd>
++          SparseBlockMatrix;
++
++      NormalEquationChunk(const std::vector<int>& blockIndices,
++                          Eigen::Index rhsSize)
++          : hessian(blockIndices, blockIndices),
++            rhs(Eigen::VectorXd::Zero(rhsSize)) {}
++
++      SparseBlockMatrix hessian;
++      Eigen::VectorXd rhs;
++    };
++
++    void mergeNormalEquationChunk(
++        const NormalEquationChunk& chunk,
++        sparse_block_matrix::SparseBlockMatrix<Eigen::MatrixXd>& hessian,
++        Eigen::VectorXd& rhs) {
++      rhs += chunk.rhs;
++      const std::vector<NormalEquationChunk::SparseBlockMatrix::IntBlockMap>&
++          blockColumns = chunk.hessian.blockCols();
++      for (size_t columnBlock = 0; columnBlock < blockColumns.size();
++           ++columnBlock) {
++        for (NormalEquationChunk::SparseBlockMatrix::IntBlockMap::const_iterator
++                 blockIt = blockColumns[columnBlock].begin();
++             blockIt != blockColumns[columnBlock].end(); ++blockIt) {
++          Eigen::MatrixXd* destination = hessian.block(
++              blockIt->first, static_cast<int>(columnBlock), true);
++          SM_ASSERT_TRUE(aslam::Exception, destination != NULL,
++                         "The Hessian block is NULL");
++          SM_ASSERT_EQ(aslam::Exception, destination->rows(),
++                       blockIt->second->rows(),
++                       "Unexpected Hessian block row count");
++          SM_ASSERT_EQ(aslam::Exception, destination->cols(),
++                       blockIt->second->cols(),
++                       "Unexpected Hessian block column count");
++          *destination += *blockIt->second;
++        }
++      }
++    }
++
++  }  // namespace
++
+   BlockCholeskyLinearSystemSolver::BlockCholeskyLinearSystemSolver(const std::string & solver, const BlockCholeskyLinearSolverOptions& options) :
+       _options(options),
+       _solverType(solver) {
+@@ -55,24 +110,83 @@
+     }
  
-   void BlockCholeskyLinearSystemSolver::buildSystem(size_t /* nThreads */, bool useMEstimator)
+ 
+-  void BlockCholeskyLinearSystemSolver::buildSystem(size_t /* nThreads */, bool useMEstimator)
++  void BlockCholeskyLinearSystemSolver::buildSystem(size_t nThreads, bool useMEstimator)
      {
-+      sm::timing::Timer timer("BlockCholesky: build Hessian");
-       // \todo make multithreaded. This is complicated as it requires synchronized access to the block matrix.
-       //       A little bit of effort should make this possible by initializing the structure and adding
-       //       a mutex for each block and having writers for each jacobian that have a list of mutexes.
-@@ -72,6 +74,7 @@
+-      // \todo make multithreaded. This is complicated as it requires synchronized access to the block matrix.
+-      //       A little bit of effort should make this possible by initializing the structure and adding
+-      //       a mutex for each block and having writers for each jacobian that have a list of mutexes.
+-      //       Save it for later.
++      NativeTimingTimer timer("BlockCholesky: build Hessian");
+       _H._M.clear(false);
+       _rhs.setZero();
+-      std::vector<ErrorTerm*>::iterator it, it_end;
+-      it = _errorTerms.begin();
+-      it_end = _errorTerms.end();
+-      for (; it != it_end; ++it) {
+-        (*it)->buildHessian(_H._M, _rhs, useMEstimator);
++
++      const size_t workerCount = std::min(nThreads, _errorTerms.size());
++      if (workerCount <= 1) {
++        // Preserve the native implementation verbatim for nThreads == 0/1
++        // (and for a single error term), including its arithmetic path.
++        std::vector<ErrorTerm*>::iterator it, it_end;
++        it = _errorTerms.begin();
++        it_end = _errorTerms.end();
++        for (; it != it_end; ++it) {
++          (*it)->buildHessian(_H._M, _rhs, useMEstimator);
++        }
++        return;
++      }
++
++      // Split the original error sequence into fixed contiguous chunks. Each
++      // worker calls the unmodified ErrorTerm::buildHessian() path in original
++      // order inside its chunk. This amortizes sparse-block allocation and
++      // full-length RHS traversal over a whole chunk instead of repeating
++      // both operations for every error term.
++      const std::vector<int>& blockIndices =
++          _H._M.rowBlockIndices();
++      const Eigen::Index rhsSize = _rhs.size();
++      std::vector<std::unique_ptr<NormalEquationChunk> > chunks;
++      chunks.reserve(workerCount);
++      for (size_t i = 0; i < workerCount; ++i) {
++        chunks.push_back(std::unique_ptr<NormalEquationChunk>(
++            new NormalEquationChunk(blockIndices, rhsSize)));
++      }
++      std::vector<std::exception_ptr> failures(workerCount);
++
++      boost::thread_group workers;
++      try {
++        for (size_t workerIndex = 0; workerIndex < workerCount;
++             ++workerIndex) {
++          NormalEquationChunk* chunk = chunks[workerIndex].get();
++          const std::vector<ErrorTerm*>* errorTerms = &_errorTerms;
++          std::exception_ptr* failure = &failures[workerIndex];
++          workers.create_thread(
++              [chunk, errorTerms, failure, workerIndex, workerCount,
++               useMEstimator]() {
++                try {
++                  const size_t begin =
++                      errorTerms->size() * workerIndex / workerCount;
++                  const size_t end =
++                      errorTerms->size() * (workerIndex + 1) / workerCount;
++                  for (size_t errorIndex = begin; errorIndex < end;
++                       ++errorIndex) {
++                    (*errorTerms)[errorIndex]->buildHessian(
++                        chunk->hessian, chunk->rhs, useMEstimator);
++                  }
++                } catch (...) {
++                  *failure = std::current_exception();
++                }
++              });
++        }
++      } catch (...) {
++        workers.join_all();
++        throw;
++      }
++      workers.join_all();
++      for (size_t chunkIndex = 0; chunkIndex < workerCount;
++           ++chunkIndex) {
++        if (failures[chunkIndex]) {
++          std::rethrow_exception(failures[chunkIndex]);
++        }
++        mergeNormalEquationChunk(*chunks[chunkIndex], _H._M, _rhs);
+       }
      }
  
      bool BlockCholeskyLinearSystemSolver::solveSystem(Eigen::VectorXd& outDx)
      {
-+      sm::timing::Timer timer("BlockCholesky: factorize and solve");
++      NativeTimingTimer timer("BlockCholesky: factorize and solve");
        if (_useDiagonalConditioner) {
          Eigen::VectorXd d = _diagonalConditioner.cwiseProduct(_diagonalConditioner);
          // Augment the diagonal

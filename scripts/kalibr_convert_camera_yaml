@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+"""Convert OpenCV FileStorage camera YAML and Kalibr camchains."""
+
+from kalibr_opencv_fisheye.yaml_io import main
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
