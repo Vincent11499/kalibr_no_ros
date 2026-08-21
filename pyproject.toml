@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kalibr-noros"
+version = "2.0.0"
+description = "ROS-free ETHZ Kalibr calibration application"
+requires-python = ">=3.8"
+dependencies = [
+  "numpy",
+  "opencv-python",
+  "PyYAML",
+  "rosbags>=0.9.20,<0.10",
+]
+
+[project.scripts]
+kalibr-noros = "kalibr_no_ros.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src/python"}
+
+[tool.setuptools.packages.find]
+where = ["src/python"]

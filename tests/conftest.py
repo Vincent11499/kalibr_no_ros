@@ -3,5 +3,4 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "bag_io" / "src"))
-sys.path.insert(0, str(ROOT / "core" / "src"))
+sys.path.insert(0, str(ROOT / "src" / "python"))

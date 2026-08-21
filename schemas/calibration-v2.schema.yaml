@@ -1,0 +1,23 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://kalibr-noros.local/schemas/calibration-v2.schema.yaml
+title: Kalibr no-ROS calibration result
+type: object
+additionalProperties: false
+required:
+  - schema_version
+  - kind
+  - calibration_type
+  - transform_convention
+  - cameras
+properties:
+  schema_version: {const: 2}
+  kind: {const: calibration_result}
+  calibration_type: {enum: [cameras, camera_imu]}
+  transform_convention:
+    const: p_target = T_target_source * p_source
+  cameras:
+    type: array
+    items: {type: object, required: [id]}
+  imus:
+    type: array
+    items: {type: object, required: [id]}

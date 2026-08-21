@@ -5,7 +5,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OVERLAY = ROOT / "core" / "overlays" / "sm" / "PlotCollection.py"
+OVERLAY = (
+    ROOT / "src" / "kalibr" / "foundation" / "sm_python"
+    / "python" / "sm" / "PlotCollection.py"
+)
 
 
 class HeadlessPlotCollectionTest(unittest.TestCase):

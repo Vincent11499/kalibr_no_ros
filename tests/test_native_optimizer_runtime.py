@@ -9,13 +9,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-NATIVE_PYTHON = ROOT / "extensions" / "native_optimizer" / "python"
+NATIVE_PYTHON = ROOT / "src" / "python"
 sys.path.insert(0, str(NATIVE_PYTHON))
 
 import kalibr_native_optimizer as native_runtime
 from kalibr_native_optimizer import runtime
-from kalibr_native_optimizer.cli_overlay import transform_cli_source
-from kalibr_native_optimizer.source_overlay import transform_source
 
 
 class FakeOptions:
@@ -224,15 +222,64 @@ class NativeOptimizerRuntimeTest(unittest.TestCase):
             )
             self.assertEqual(
                 extraction["phases"]["bag_read"]["wall_seconds"], 0.1)
+            self.assertIn("category_totals", document["summary"])
 
-    def test_all_optimizer_callsites_receive_type_preserving_source_overlay(self):
-        upstream_directory = (
-            ROOT
-            / "upstream"
-            / "kalibr"
-            / "aslam_offline_calibration"
-            / "kalibr"
-            / "python"
+    def test_summary_excludes_nested_time_from_parent_category(self):
+        runtime._set_profiling_for_tests(True)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "timing.json"
+            native_runtime.configure(
+                self.arguments(timing_json=str(output)), command="nested")
+            with native_runtime.stage("parent", category="initialization"):
+                time.sleep(0.001)
+                with native_runtime.stage("child", category="optimization"):
+                    time.sleep(0.002)
+            native_runtime.finish()
+
+            document = json.loads(output.read_text())
+            parent = next(
+                stage for stage in document["stages"]
+                if stage["name"] == "parent")
+            child = next(
+                stage for stage in document["stages"]
+                if stage["name"] == "child")
+            self.assertGreater(parent["wall_seconds"], parent["exclusive_wall_seconds"])
+            self.assertEqual(parent["nesting_depth"], 0)
+            self.assertEqual(child["nesting_depth"], 1)
+            category_total = sum(
+                row["wall_seconds"]
+                for row in document["summary"]["category_totals"])
+            self.assertLessEqual(
+                category_total, document["total_wall_seconds"] + 1e-6)
+
+    def test_repeated_incremental_stages_are_aggregated(self):
+        runtime._set_profiling_for_tests(True)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "timing.json"
+            native_runtime.configure(
+                self.arguments(timing_json=str(output)),
+                command="kalibr_calibrate_cameras",
+            )
+            estimator = self.incremental.IncrementalEstimator(0)
+            for index in range(25):
+                self.assertEqual(
+                    native_runtime.run_incremental_batch(estimator, index), index
+                )
+            native_runtime.finish()
+
+            document = json.loads(output.read_text())
+            self.assertEqual(len(document["stages"]), 1)
+            stage = document["stages"][0]
+            self.assertEqual(stage["aggregation"]["kind"], "repeated_calls")
+            self.assertEqual(stage["aggregation"]["count"], 25)
+            self.assertAlmostEqual(
+                stage["aggregation"]["wall_seconds_mean"],
+                stage["wall_seconds"] / 25,
+            )
+
+    def test_all_optimizer_callsites_are_integrated_in_project_source(self):
+        source_directory = (
+            ROOT / "src" / "kalibr" / "calibration" / "kalibr" / "python"
         )
         expectations = {
             "kalibr_camera_calibration/CameraIntializers.py": (3, 0, 3),
@@ -241,8 +288,7 @@ class NativeOptimizerRuntimeTest(unittest.TestCase):
             "kalibr_imu_camera_calibration/IccCalibrator.py": (1, 1, 2),
         }
         for relative, expected_counts in expectations.items():
-            source = (upstream_directory / relative).read_text()
-            transformed = transform_source(source, Path(relative).name)
+            transformed = (source_directory / relative).read_text()
             compile(transformed, relative, "exec")
             counts = (
                 transformed.count("native_runtime.run_optimizer"),
@@ -259,9 +305,6 @@ class NativeOptimizerRuntimeTest(unittest.TestCase):
                     "gyro_error_build",
                 ):
                     self.assertIn(stage_name, transformed)
-            self.assertEqual(
-                transform_source(transformed, Path(relative).name), transformed
-            )
 
     def test_non_positive_parallelism_is_rejected(self):
         parser = argparse.ArgumentParser()
@@ -289,16 +332,14 @@ class NativeOptimizerRuntimeTest(unittest.TestCase):
                     self.arguments(timing_json=str(output)))
             self.assertFalse(output.exists())
 
-    def test_both_calibration_commands_receive_the_same_cli_overlay(self):
-        upstream_directory = (
-            ROOT / "upstream" / "kalibr" / "aslam_offline_calibration"
-            / "kalibr" / "python"
+    def test_both_calibration_commands_have_integrated_runtime_calls(self):
+        source_directory = (
+            ROOT / "src" / "kalibr" / "calibration" / "kalibr" / "python"
         )
         for command in (
                 "kalibr_calibrate_cameras",
                 "kalibr_calibrate_imu_camera"):
-            source = (upstream_directory / command).read_text()
-            transformed = transform_cli_source(source, command)
+            transformed = (source_directory / command).read_text()
             compile(transformed, command, "exec")
             # The actual option strings live in the shared helper; each CLI
             # calls it once rather than duplicating four parser snippets.
@@ -333,8 +374,6 @@ class NativeOptimizerRuntimeTest(unittest.TestCase):
             else:
                 self.assertIn("problem_build_total", transformed)
                 self.assertIn("report_generation", transformed)
-            self.assertEqual(
-                transform_cli_source(transformed, command), transformed)
 
 
 if __name__ == "__main__":

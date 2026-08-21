@@ -144,6 +144,6 @@ The temporary result set includes:
 - `evt-chunk-timing.json` and `evt-chunk-time.txt`; and
 - `evt_ros2_chunk-{camchain-imucam,imu,results-imucam}`.
 
-Use `scripts/compare_kalibr_outputs.py` for YAML comparisons.  Text reports
+Use `tools/compare_kalibr_outputs.py` for YAML comparisons.  Text reports
 contain full-precision floating-point formatting and are expected to show the
 same last-digit differences as the YAML when thread count changes.

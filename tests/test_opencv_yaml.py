@@ -12,7 +12,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = (
     ROOT
-    / "extensions"
+    / "src"
+    / "camera_models"
     / "opencv_fisheye"
     / "python"
     / "kalibr_opencv_fisheye"

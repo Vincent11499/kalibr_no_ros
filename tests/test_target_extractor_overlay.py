@@ -14,14 +14,16 @@ import numpy as np
 
 
 ROOT = Path(__file__).resolve().parents[1]
-NATIVE_PYTHON = ROOT / "extensions" / "native_optimizer" / "python"
+NATIVE_PYTHON = ROOT / "src" / "python"
 sys.path.insert(0, str(NATIVE_PYTHON))
 from kalibr_native_optimizer import runtime as native_optimizer_runtime
 
 OVERLAY = (
     ROOT
-    / "extensions"
-    / "native_optimizer"
+    / "src"
+    / "kalibr"
+    / "calibration"
+    / "kalibr"
     / "python"
     / "kalibr_common"
     / "TargetExtractor.py"
