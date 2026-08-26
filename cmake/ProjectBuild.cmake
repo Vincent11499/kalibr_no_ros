@@ -279,6 +279,15 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/tools/kalibr-noros"
 execute_process(COMMAND chmod +x "${CMAKE_BINARY_DIR}/bin/kalibr-noros")
 install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/tools/kalibr-noros"
   DESTINATION bin)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/baselines-v1.yaml"
+  DESTINATION share/kalibr-noros/benchmarks)
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/config/"
+  DESTINATION share/kalibr-noros/config
+  FILES_MATCHING PATTERN "*.yaml" PATTERN "README_ZH.md")
+install(CODE [[
+  file(REMOVE_RECURSE
+    "${CMAKE_INSTALL_PREFIX}/share/kalibr-noros/schemas")
+]])
 
 # Remove stale programs left by earlier install trees when reconfiguring.
 install(CODE [[

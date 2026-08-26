@@ -81,6 +81,9 @@ class NativeOptimizerRuntimeTest(unittest.TestCase):
             "parallelism": None,
             "detector_processes": None,
             "optimizer_threads": None,
+            "detector_inflight_per_worker": 2,
+            "detector_opencv_threads": 1,
+            "profiling_memory_sample_interval_s": 0.25,
             "timing_json": None,
         }
         values.update(overrides)
@@ -97,6 +100,9 @@ class NativeOptimizerRuntimeTest(unittest.TestCase):
             "--parallelism",
             "--detector-processes",
             "--optimizer-threads",
+            "--detector-inflight-per-worker",
+            "--detector-opencv-threads",
+            "--memory-sample-interval",
         }.issubset(parser._option_string_actions))
         self.assertNotIn("--timing-json", parser._option_string_actions)
         self.assertFalse(native_runtime.profiling_enabled())
@@ -106,6 +112,9 @@ class NativeOptimizerRuntimeTest(unittest.TestCase):
             "parallelism": None,
             "detector_processes": None,
             "optimizer_threads": None,
+            "detector_inflight_per_worker": 2,
+            "detector_opencv_threads": 1,
+            "profiling_memory_sample_interval_s": 0.25,
         })
         self.assertIs(self.backend.Optimizer2, FakeOptimizer)
         self.assertIs(
@@ -122,6 +131,17 @@ class NativeOptimizerRuntimeTest(unittest.TestCase):
         ))
         self.assertEqual(effective["detector_processes"], 2)
         self.assertEqual(effective["optimizer_threads"], 6)
+
+    def test_pipeline_execution_controls_are_validated(self):
+        effective = native_runtime.configure(self.arguments(
+            detector_inflight_per_worker=3,
+            detector_opencv_threads=2,
+            profiling_memory_sample_interval_s=0.1,
+        ))
+        self.assertEqual(native_runtime.detector_inflight_per_worker(), 3)
+        self.assertEqual(native_runtime.detector_opencv_threads(), 2)
+        self.assertEqual(
+            native_runtime.profiling_memory_sample_interval_s(), 0.1)
 
     def test_explicit_threads_cover_direct_and_incremental_optimizers(self):
         native_runtime.configure(self.arguments(optimizer_threads=3))

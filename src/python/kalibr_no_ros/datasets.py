@@ -4,7 +4,7 @@ from typing import Optional
 
 import numpy as np
 
-from kalibr_bag_io import BagReader
+from kalibr_bag_io import BagReader, open_dataset
 
 
 class _Iterator:
@@ -82,7 +82,7 @@ class BagImageDatasetReader:
         self.bagfile = bagfile
         self.topic = imagetopic
         self.perform_synchronization = perform_synchronization
-        self.bag = reader or BagReader(bagfile)
+        self.bag = reader or open_dataset(bagfile)
         self._dataset = self.bag.index_images(imagetopic)
         all_records = self._dataset.index
         self.index = all_records
@@ -176,7 +176,7 @@ class BagImuDatasetReader:
         self.bagfile = bagfile
         self.topic = imutopic
         self.perform_synchronization = perform_synchronization
-        self.bag = reader or BagReader(bagfile)
+        self.bag = reader or open_dataset(bagfile)
         all_records = self.bag.read_imu(imutopic)
         self.index = all_records
         self._time = _TimeBridge(

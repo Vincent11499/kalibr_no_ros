@@ -1,0 +1,20 @@
+schema_version: 1
+job: camera_calibration
+
+dataset:
+  type: bag
+  path: /mnt/q/File/kalibr/data/euroc_cam/cam_april.bag
+
+target:
+  path: aprilgrid.yaml
+
+cameras:
+  - {topic: /cam0/image_raw, model: pinhole-radtan5}
+  - {topic: /cam1/image_raw, model: pinhole-radtan5}
+
+calibration:
+  shuffle: false
+
+execution:
+  detector_processes: 4
+  optimizer_threads: 4

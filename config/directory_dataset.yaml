@@ -1,0 +1,14 @@
+schema_version: 1
+type: kalibr_directory_dataset
+
+cameras:
+  - topic: /cam0/image_raw
+    timestamps: cameras/cam0/timestamps.csv
+    images: cameras/cam0/images
+  - topic: /cam1/image_raw
+    timestamps: cameras/cam1/timestamps.csv
+    images: cameras/cam1/images
+
+imus:
+  - topic: /imu0
+    data: imu/imu0.csv

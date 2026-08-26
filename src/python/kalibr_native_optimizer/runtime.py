@@ -31,6 +31,9 @@ _parallelism = {
     "parallelism": None,
     "detector_processes": None,
     "optimizer_threads": None,
+    "detector_inflight_per_worker": 2,
+    "detector_opencv_threads": 1,
+    "profiling_memory_sample_interval_s": 0.25,
 }
 _recorder = None
 _atexit_registered = False
@@ -70,6 +73,29 @@ def add_parallelism_arguments(argument_container):
         help=("Number of threads for native optimizer phases. The upstream "
               "per-phase defaults are retained when omitted."),
     )
+    argument_container.add_argument(
+        "--detector-inflight-per-worker",
+        type=positive_int,
+        default=2,
+        help=("Maximum in-flight detector tasks per worker process "
+              "(default: %(default)s)."),
+    )
+    argument_container.add_argument(
+        "--detector-opencv-threads",
+        type=positive_int,
+        default=1,
+        help=("OpenCV native threads used inside each detector worker "
+              "(default: %(default)s)."),
+    )
+    argument_container.add_argument(
+        "--memory-sample-interval",
+        type=positive_float,
+        default=0.25,
+        dest="profiling_memory_sample_interval_s",
+        metavar="SECONDS",
+        help=("Process-tree memory sampling interval in seconds "
+              "(default: %(default)s)."),
+    )
     if _profiling_enabled:
         argument_container.add_argument(
             "--timing-json",
@@ -86,6 +112,17 @@ def _argument_value(arguments, name, default=None):
     return getattr(arguments, name, default)
 
 
+def positive_float(value):
+    """Argparse type accepting finite, strictly positive floating values."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("must be a positive number")
+    if not parsed > 0.0 or not parsed < float("inf"):
+        raise argparse.ArgumentTypeError("must be a positive finite number")
+    return parsed
+
+
 def _resolve_parallelism(arguments):
     common = _argument_value(arguments, "parallelism")
     detector = _argument_value(arguments, "detector_processes")
@@ -99,10 +136,27 @@ def _resolve_parallelism(arguments):
                         ("optimizer_threads", optimizer)):
         if value is not None and (not isinstance(value, int) or value < 1):
             raise ValueError("{0} must be a positive integer".format(name))
+    inflight = _argument_value(arguments, "detector_inflight_per_worker", 2)
+    opencv_threads = _argument_value(arguments, "detector_opencv_threads", 1)
+    memory_interval = _argument_value(
+        arguments, "profiling_memory_sample_interval_s", 0.25)
+    for name, value in (
+            ("detector_inflight_per_worker", inflight),
+            ("detector_opencv_threads", opencv_threads)):
+        if not isinstance(value, int) or value < 1:
+            raise ValueError("{0} must be a positive integer".format(name))
+    if (not isinstance(memory_interval, (int, float))
+            or memory_interval <= 0.0
+            or memory_interval == float("inf")):
+        raise ValueError(
+            "profiling_memory_sample_interval_s must be a positive finite number")
     return {
         "parallelism": common,
         "detector_processes": detector,
         "optimizer_threads": optimizer,
+        "detector_inflight_per_worker": inflight,
+        "detector_opencv_threads": opencv_threads,
+        "profiling_memory_sample_interval_s": float(memory_interval),
     }
 
 
@@ -151,6 +205,18 @@ def detector_processes():
 
 def optimizer_threads():
     return _parallelism["optimizer_threads"]
+
+
+def detector_inflight_per_worker():
+    return _parallelism["detector_inflight_per_worker"]
+
+
+def detector_opencv_threads():
+    return _parallelism["detector_opencv_threads"]
+
+
+def profiling_memory_sample_interval_s():
+    return _parallelism["profiling_memory_sample_interval_s"]
 
 
 def timing_enabled():
@@ -632,6 +698,9 @@ def _reset_for_tests():
         "parallelism": None,
         "detector_processes": None,
         "optimizer_threads": None,
+        "detector_inflight_per_worker": 2,
+        "detector_opencv_threads": 1,
+        "profiling_memory_sample_interval_s": 0.25,
     }
     _profiling_enabled = bool(_BUILD_PROFILING_ENABLED)
     _recorder = None

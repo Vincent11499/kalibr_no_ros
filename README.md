@@ -11,9 +11,9 @@ compatible with the pinned ETHZ implementation.
   `1f60227442d25e36365ef5f72cd80b9666d73467`, used only by reference builds.
 - `src/kalibr`: editable production source, grouped into foundation, camera,
   optimization, trajectory, calibration and third-party domains.
-- `src/python`: ROS-free bag I/O, public CLI and runtime instrumentation.
+- `src/python`: ROS-free dataset I/O, public CLI and runtime instrumentation.
 - `src/camera_models`: OpenCV radtan5 and fisheye model extensions.
-- `schemas`: versioned task and calibration-result contracts.
+- `config`: concise camera, camera–IMU and directory-dataset YAML templates.
 - `tools`: dependency bootstrap, source audit, comparison and benchmark tools.
 
 `tools/verify_reference.py` verifies the frozen snapshot.
@@ -71,7 +71,23 @@ kalibr-noros convert job
 kalibr-noros reference verify
 ```
 
-Calibration accepts a strict `schema_version: 2` task:
+Performance candidates can be archived and compared without rerunning the
+frozen baseline:
+
+```bash
+kalibr-noros benchmark run \
+  --config task.yaml --archive-dir benchmark-runs --name candidate
+kalibr-noros benchmark compare \
+  --registry benchmarks/baselines-v1.yaml \
+  --baseline-id euroc_camera_project_4 \
+  --candidate benchmark-runs/candidate/<run-id>
+```
+
+See `docs/BENCHMARK_ZH.md` for the fixed inputs, parameter precedence and
+archive format.
+
+Calibration accepts a strict `schema_version: 1` task. The dataset type is
+explicitly `bag` or `directory`; ROS1/ROS2 bag storage is detected internally:
 
 ```bash
 kalibr-noros calibrate cameras \
@@ -84,7 +100,7 @@ Both calibration commands support `--parallelism`,
 `--timing-json` is operational only in a `project-profile` build. Default
 outputs are `calibration.yaml`, `results.txt` and `report.pdf`.
 
-Convert legacy arguments into a v2 task without running calibration:
+Convert legacy arguments into a task without running calibration:
 
 ```bash
 kalibr-noros convert job --type cameras \
@@ -109,12 +125,17 @@ alpha/skew OpenCV fisheye conversion.
 
 ## Supported data and models
 
-- ROS1 `.bag` and ROS2 directories containing `metadata.yaml`;
+- ROS1 `.bag`、ROS2 directories containing `metadata.yaml`, and manifest-based
+  directory datasets containing `dataset.yaml`;
 - standard `sensor_msgs/Image`, `CompressedImage` and `Imu`;
+- directory images supported by the installed OpenCV codecs, including PNG,
+  JPEG/JPG and BMP, plus strict nanosecond camera/IMU CSV tables;
 - native Kalibr camera models plus OpenCV-order radtan5;
 - zero-skew and full `[fu,fv,cu,cv,alpha]` OpenCV fisheye;
 - calibrated, scale-misalignment and scale-misalignment-size-effect IMU models.
 
-See [architecture](docs/ARCHITECTURE_ZH.md),
-[camera models](docs/CAMERA_MODELS_ZH.md) and
-[v2 重构验证报告](docs/V2_REFACTOR_VALIDATION_20260821_ZH.md).
+中文资料从[文档导航](docs/README_ZH.md)开始；日常配置见
+[使用与配置指南](docs/USER_GUIDE_ZH.md)，源码原理见
+[源码深入导读](docs/SOURCE_CODE_DEEP_DIVE_ZH.md)，历史验证结果集中保存在
+[`docs/reports`](docs/reports)。可直接复制的最简配置见
+[`config/README_ZH.md`](config/README_ZH.md)。

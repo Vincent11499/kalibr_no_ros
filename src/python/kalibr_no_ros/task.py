@@ -12,8 +12,18 @@ import tempfile
 
 import yaml
 
+from kalibr_bag_io import detect_dataset_format
 
-SCHEMA_VERSION = 2
+
+TASK_SCHEMA_VERSION = 1
+CALIBRATION_RESULT_VERSION = 2
+STANDARD_EXECUTION = {
+    "detector_processes": 4,
+    "optimizer_threads": 4,
+    "detector_inflight_per_worker": 2,
+    "detector_opencv_threads": 1,
+    "profiling_memory_sample_interval_s": 0.25,
+}
 MANAGED_OUTPUTS = {
     "calibration.yaml",
     "results.txt",
@@ -21,16 +31,17 @@ MANAGED_OUTPUTS = {
     "poses.csv",
     "timing.json",
 }
-_TOP_LEVEL_KEYS = {
+_COMMON_TASK_KEYS = {
     "schema_version",
     "job",
     "dataset",
     "target",
-    "cameras",
-    "camera_calibration",
-    "imus",
     "calibration",
     "execution",
+}
+_JOB_TASK_KEYS = {
+    "camera_calibration": {"cameras"},
+    "camera_imu_calibration": {"camera_calibration", "imus"},
 }
 
 
@@ -74,18 +85,42 @@ def dump_yaml(value, path):
 def load_task(path, expected_job=None):
     path = Path(path).resolve()
     task = load_yaml(path)
-    unknown = sorted(set(task) - _TOP_LEVEL_KEYS)
-    if unknown:
-        raise TaskError("unknown top-level task fields: {}".format(", ".join(unknown)))
-    if task.get("schema_version") != SCHEMA_VERSION:
-        raise TaskError("task schema_version must be {}".format(SCHEMA_VERSION))
+    if task.get("schema_version") != TASK_SCHEMA_VERSION:
+        raise TaskError(
+            "task schema_version must be {}".format(TASK_SCHEMA_VERSION))
     job = task.get("job")
     if job not in {"camera_calibration", "camera_imu_calibration"}:
         raise TaskError("job must be camera_calibration or camera_imu_calibration")
     if expected_job is not None and job != expected_job:
         raise TaskError("expected job {}, got {}".format(expected_job, job))
+    allowed = _COMMON_TASK_KEYS | _JOB_TASK_KEYS[job]
+    unknown = sorted(set(task) - allowed)
+    if unknown:
+        raise TaskError("unknown fields for {}: {}".format(
+            job, ", ".join(unknown)))
     if not isinstance(task.get("dataset"), dict) or not task["dataset"].get("path"):
         raise TaskError("dataset.path is required")
+    dataset_type = str(task["dataset"].get("type", "")).lower()
+    if dataset_type not in {"bag", "directory"}:
+        raise TaskError("dataset.type must be bag or directory")
+    task["dataset"]["type"] = dataset_type
+    if not isinstance(task.get("target"), dict):
+        raise TaskError("target mapping is required")
+    if job == "camera_calibration":
+        cameras = task.get("cameras")
+        if not isinstance(cameras, list) or not cameras:
+            raise TaskError("cameras must be a non-empty list")
+    else:
+        camera_calibration = task.get("camera_calibration")
+        if not (
+            isinstance(camera_calibration, str) and camera_calibration
+            or isinstance(camera_calibration, dict)
+            and camera_calibration.get("path")
+        ):
+            raise TaskError("camera_calibration.path is required")
+        imus = task.get("imus")
+        if not isinstance(imus, list) or not imus:
+            raise TaskError("imus must be a non-empty list")
     task["_config_dir"] = str(path.parent)
     return task
 
@@ -145,6 +180,20 @@ def _dataset_alias(task, temporary):
     source = resolve_task_path(task, task["dataset"]["path"])
     if not source.exists():
         raise TaskError("dataset does not exist: {}".format(source))
+    try:
+        detected = detect_dataset_format(source)
+    except (FileNotFoundError, RuntimeError, ValueError) as error:
+        raise TaskError(str(error)) from error
+    requested = task["dataset"]["type"]
+    compatible = (
+        detected in {"ros1", "ros2"}
+        if requested == "bag"
+        else detected == "directory"
+    )
+    if not compatible:
+        raise TaskError(
+            "dataset type mismatch: requested {}, detected {}".format(
+                requested, detected))
     suffix = source.suffix if source.is_file() else ""
     alias = temporary / ("dataset" + suffix)
     alias.symlink_to(source, target_is_directory=source.is_dir())
@@ -163,21 +212,71 @@ def _append_common_dataset(arguments, task):
 
 
 def _append_execution(arguments, task, overrides):
-    execution = dict(task.get("execution") or {})
-    execution.update({key: value for key, value in overrides.items() if value is not None})
+    execution = resolve_execution(task.get("execution"), overrides)
     for key, option in (
-        ("parallelism", "--parallelism"),
         ("detector_processes", "--detector-processes"),
         ("optimizer_threads", "--optimizer-threads"),
+        ("detector_inflight_per_worker", "--detector-inflight-per-worker"),
+        ("detector_opencv_threads", "--detector-opencv-threads"),
+        ("profiling_memory_sample_interval_s", "--memory-sample-interval"),
     ):
         value = execution.get(key)
         if value is not None:
-            if not isinstance(value, int) or value < 1:
-                raise TaskError("execution.{} must be a positive integer".format(key))
             arguments.extend([option, str(value)])
     timing_json = overrides.get("timing_json")
     if timing_json:
         arguments.extend(["--timing-json", str(timing_json)])
+
+
+def resolve_execution(configured=None, overrides=None, standard_defaults=False):
+    """Resolve CLI-over-YAML execution values without changing algorithms."""
+    configured = dict(configured or {})
+    overrides = dict(overrides or {})
+    allowed = {
+        "parallelism", "detector_processes", "optimizer_threads",
+        "detector_inflight_per_worker", "detector_opencv_threads",
+        "profiling_memory_sample_interval_s",
+    }
+    unknown = sorted(set(configured) - allowed)
+    if unknown:
+        raise TaskError(
+            "unknown execution fields: {}".format(", ".join(unknown)))
+
+    cli_common = overrides.get("parallelism")
+    yaml_common = configured.get("parallelism")
+    result = {}
+    for key in ("detector_processes", "optimizer_threads"):
+        value = overrides.get(key)
+        if value is None:
+            value = cli_common
+        if value is None:
+            value = configured.get(key)
+        if value is None:
+            value = yaml_common
+        if value is None and standard_defaults:
+            value = STANDARD_EXECUTION[key]
+        if value is not None:
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise TaskError("execution.{} must be a positive integer".format(key))
+            result[key] = value
+
+    for key in ("detector_inflight_per_worker", "detector_opencv_threads"):
+        value = overrides.get(key)
+        if value is None:
+            value = configured.get(key, STANDARD_EXECUTION[key])
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise TaskError("execution.{} must be a positive integer".format(key))
+        result[key] = value
+
+    key = "profiling_memory_sample_interval_s"
+    value = overrides.get(key)
+    if value is None:
+        value = configured.get(key, STANDARD_EXECUTION[key])
+    if (not isinstance(value, (int, float)) or isinstance(value, bool)
+            or value <= 0.0 or value == float("inf")):
+        raise TaskError("execution.{} must be a positive finite number".format(key))
+    result[key] = float(value)
+    return result
 
 
 def _flag(arguments, enabled, name):
@@ -231,7 +330,7 @@ def _legacy_camchain(task, temporary):
         raise TaskError("camera_calibration.path is required")
     source = resolve_task_path(task, value)
     data = load_yaml(source)
-    if data.get("schema_version") != SCHEMA_VERSION:
+    if data.get("schema_version") != CALIBRATION_RESULT_VERSION:
         return source
     cameras = data.get("cameras")
     if not isinstance(cameras, list) or not cameras:
@@ -319,7 +418,7 @@ def _legacy_cameras_to_v2(data, calibration_type, imus=None):
         camera.update(data[key])
         cameras.append(camera)
     result = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": CALIBRATION_RESULT_VERSION,
         "kind": "calibration_result",
         "calibration_type": calibration_type,
         "transform_convention": "p_target = T_target_source * p_source",

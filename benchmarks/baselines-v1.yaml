@@ -1,0 +1,95 @@
+schema_version: 1
+description: >-
+  Frozen historical baselines. Project runs are performance baselines;
+  matching reference_default runs are numeric references only and must never
+  be rerun or overwritten.
+
+defaults:
+  detector_processes: 4
+  optimizer_threads: 4
+  detector_inflight_per_worker: 2
+  detector_opencv_threads: 1
+  processing_order: deterministic
+
+baselines:
+  euroc_camera_project_4:
+    job: camera_calibration
+    dataset: euroc_ros1
+    camera_model: pinhole-radtan5
+    shuffle: false
+    contract:
+      job: camera_calibration
+      dataset_path: /mnt/q/File/kalibr/data/euroc_cam/cam_april.bag
+      camera_models: [pinhole-radtan5, pinhole-radtan5]
+      detector_processes: 4
+      optimizer_threads: 4
+    wall_seconds: 1002.64
+    legacy_time_max_rss_bytes: 1711296512
+    project_output: /mnt/q/File/kalibr/data/euroc_cam/performance_project_reference_v2/camera_project_4
+    project_timing: /mnt/q/File/kalibr/data/euroc_cam/performance_project_reference_v2/camera_project_4/timing.json
+    reference_output: /mnt/q/File/kalibr/data/euroc_cam/performance_project_reference_v2/camera_reference_default
+    task: /mnt/q/File/kalibr/data/euroc_cam/performance_project_reference_v2/euroc-camera.yaml
+    input_manifest: /mnt/q/File/kalibr/data/euroc_cam/performance_project_reference_v2/input_manifest.sha256
+    frozen_sha256:
+      task: 6f4b9a968aef237132d438c202a719d16246c1c3c2ee5fa04724bd57973ab881
+      project_calibration: 64f6fde32724642e4e1742d89f5165e32223eb1ea14922876299678182fc1a8e
+      project_results: bb5f1309a3f1fca3de7633c4c6b484263846379f896de6933f0ee30ecefc9cdb
+      project_timing: 78a18d505b523ebec0f046b6544642edc491676f4cff81dc5377d6be1bf844ad
+      reference_calibration: 64f6fde32724642e4e1742d89f5165e32223eb1ea14922876299678182fc1a8e
+
+  euroc_imu_project_4:
+    job: camera_imu_calibration
+    dataset: euroc_ros1
+    imu_model: scale-misalignment
+    processing_order: timestamp
+    contract:
+      job: camera_imu_calibration
+      dataset_path: /mnt/q/File/kalibr/data/euroc_cam/imu_april.bag
+      imu_models: [scale-misalignment]
+      detector_processes: 4
+      optimizer_threads: 4
+    wall_seconds: 136.36
+    legacy_time_max_rss_bytes: 1376165888
+    project_output: /mnt/q/File/kalibr/data/euroc_cam/performance_project_reference_v2/imu_project_4
+    project_timing: /mnt/q/File/kalibr/data/euroc_cam/performance_project_reference_v2/imu_project_4/timing.json
+    reference_output: /mnt/q/File/kalibr/data/euroc_cam/performance_project_reference_v2/imu_reference_default
+    task: /mnt/q/File/kalibr/data/euroc_cam/performance_project_reference_v2/euroc-imu.yaml
+    input_manifest: /mnt/q/File/kalibr/data/euroc_cam/performance_project_reference_v2/input_manifest.sha256
+    frozen_sha256:
+      task: 69b47be13119541ca7fd93717859409c5e38660b37f124dabb252538ad3bcfb6
+      project_calibration: 2e642c2d06976c3653e8d5bc28e6b9da94cd8cb642febf909fe8d3e7c7243104
+      project_results: 24df36e622eab806fc194efadd6f93fdc2da30f71545b53fd76045ebfe4f1007
+      project_timing: ec7e60f9056065cd8e37b63d1b148468996c982ba40868c07ed73c983fc03637
+      reference_calibration: 8e9de4d0c8ad050472d38b5da1e4d5c8213a6ce104cbf370d0fbb62a6cfe80db
+
+  evt_imu_project_4:
+    job: camera_imu_calibration
+    dataset: evt_ros2
+    imu_model: calibrated
+    processing_order: timestamp
+    contract:
+      job: camera_imu_calibration
+      dataset_path: /mnt/q/File/kalibr/data/evt_8_0730/imu_mipi_in_stereo_calib_08_0730
+      imu_models: [calibrated]
+      detector_processes: 4
+      optimizer_threads: 4
+    wall_seconds: 207.56
+    legacy_time_max_rss_bytes: 1435717632
+    project_output: /mnt/q/File/kalibr/data/evt_8_0730/imu_mipi_in_stereo_calib_08_0730/performance_project_reference_v2/imu_project_4
+    project_timing: /mnt/q/File/kalibr/data/evt_8_0730/imu_mipi_in_stereo_calib_08_0730/performance_project_reference_v2/imu_project_4/timing.json
+    reference_output: /mnt/q/File/kalibr/data/evt_8_0730/imu_mipi_in_stereo_calib_08_0730/performance_project_reference_v2/imu_reference_default
+    task: /mnt/q/File/kalibr/data/evt_8_0730/imu_mipi_in_stereo_calib_08_0730/performance_project_reference_v2/evt-imu.yaml
+    input_manifest: /mnt/q/File/kalibr/data/evt_8_0730/imu_mipi_in_stereo_calib_08_0730/performance_project_reference_v2/input_manifest.sha256
+    frozen_sha256:
+      task: 789811baaeb57a75ce47c827b8d8a7b9a64436e0d5ddd18b3a2641d506b4294c
+      project_calibration: dc5c820ff20137e58cfc38a6ac893d73704105680ba1b7dce0fc53b9a4492c7f
+      project_results: ac77a3c6e77be6fceba9cc95c0a98a8153ed305da3798e9bddb092d6b0c1ca7d
+      project_timing: 3d071050d0caf0ceae2f9873583083b402b9a16796d1a81e93bf687b5e9408bd
+      reference_calibration: 83183673bb95ef53c7fc7af48c1d25c3e2c9247dfd40e5757d23f6a200efc084
+
+reference_default_group:
+  purpose: numeric_correctness_only
+  runs:
+    - /mnt/q/File/kalibr/data/euroc_cam/performance_project_reference_v2/camera_reference_default
+    - /mnt/q/File/kalibr/data/euroc_cam/performance_project_reference_v2/imu_reference_default
+    - /mnt/q/File/kalibr/data/evt_8_0730/imu_mipi_in_stereo_calib_08_0730/performance_project_reference_v2/imu_reference_default

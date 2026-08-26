@@ -47,11 +47,12 @@ def _timingEnabled():
 
 
 def multicoreExtractionWrapper(detector, taskq, resultq, clearImages,
-                               noTransformation, collectTiming=False):
+                               noTransformation, collectTiming=False,
+                               opencvThreads=1):
     """Consume tasks and report one result, including timing, per image."""
     # OpenCV may otherwise create its own thread pool in every process.  One
     # native thread per worker avoids processes x OpenCV threads oversubscription.
-    cv2.setNumThreads(1)
+    cv2.setNumThreads(int(opencvThreads))
 
     while True:
         encodedTask = taskq.get()
@@ -75,11 +76,15 @@ def multicoreExtractionWrapper(detector, taskq, resultq, clearImages,
                 0.0,
                 0.0,
                 0.0,
+                0.0,
+                0.0,
             ), protocol=pickle.HIGHEST_PROTOCOL)
             resultq.put(encodedError)
             return
         detect_wall_start = None
         detect_cpu_start = None
+        bagReadWall = 0.0
+        bagReadCpu = 0.0
         deserializeWall = 0.0
         deserializeCpu = 0.0
         decodeWall = 0.0
@@ -88,6 +93,10 @@ def multicoreExtractionWrapper(detector, taskq, resultq, clearImages,
             deferredDecoder = getattr(image, "decode_for_kalibr", None)
             if deferredDecoder is not None:
                 decodedImage, decodeTiming = deferredDecoder(collectTiming)
+                bagReadWall = decodeTiming.get(
+                    "bag_read_wall_seconds", 0.0)
+                bagReadCpu = decodeTiming.get(
+                    "bag_read_cpu_seconds", 0.0)
                 deserializeWall = decodeTiming.get(
                     "deserialize_wall_seconds", 0.0)
                 deserializeCpu = decodeTiming.get(
@@ -133,6 +142,8 @@ def multicoreExtractionWrapper(detector, taskq, resultq, clearImages,
                 obs if success else None,
                 detectWall,
                 detectCpu,
+                bagReadWall,
+                bagReadCpu,
                 deserializeWall,
                 deserializeCpu,
                 decodeWall,
@@ -159,6 +170,8 @@ def multicoreExtractionWrapper(detector, taskq, resultq, clearImages,
                 },
                 detectWall,
                 detectCpu,
+                locals().get("bagReadWall", 0.0),
+                locals().get("bagReadCpu", 0.0),
                 locals().get("deserializeWall", 0.0),
                 locals().get("deserializeCpu", 0.0),
                 locals().get("decodeWall", 0.0),
@@ -430,7 +443,10 @@ def _recordExtractionTiming(dataset, multithreading, numProcesses, numImages,
         images_reported=numImages,
         images_submitted=submitted,
         observations_succeeded=succeeded,
-        pipeline_capacity=(2 * numProcesses if multithreading else 1),
+        pipeline_capacity=(
+            (_native_runtime.detector_inflight_per_worker()
+             if _native_runtime is not None else 2) * numProcesses
+            if multithreading else 1),
         image_phase_detail_available=detailedImageTiming,
         image_decode_location=(
             "detector_workers" if deferredImageLoading else "parent_process"),
@@ -466,7 +482,11 @@ def extractCornersFromDataset(dataset, detector, multithreading=False,
     totalWallStart = time.perf_counter() if timingActive else None
     totalCpuStart = time.process_time() if timingActive else None
     memoryTracker = (
-        _ProcessTreeMemoryTracker(multithreading)
+        _ProcessTreeMemoryTracker(
+            multithreading,
+            sampleInterval=(
+                _native_runtime.profiling_memory_sample_interval_s()
+                if _native_runtime is not None else 0.25))
         if timingActive else None
     )
     if memoryTracker is not None:
@@ -504,7 +524,13 @@ def extractCornersFromDataset(dataset, detector, multithreading=False,
         # Both queues and the number of in-flight tasks are bounded.  The
         # producer alternates submission with result draining, so a fast reader
         # cannot decode the complete dataset into memory ahead of detection.
-        maxPending = max(1, 2 * numProcesses)
+        inflightPerWorker = (
+            _native_runtime.detector_inflight_per_worker()
+            if _native_runtime is not None else 2)
+        opencvThreads = (
+            _native_runtime.detector_opencv_threads()
+            if _native_runtime is not None else 1)
+        maxPending = max(1, int(inflightPerWorker) * numProcesses)
         taskq = multiprocessing.Queue(maxsize=maxPending)
         resultq = multiprocessing.Queue(maxsize=maxPending)
         processes = []
@@ -515,7 +541,7 @@ def extractCornersFromDataset(dataset, detector, multithreading=False,
                 process = multiprocessing.Process(
                     target=multicoreExtractionWrapper,
                     args=(detectorCopy, taskq, resultq, clearImages,
-                          noTransformation, timingActive))
+                          noTransformation, timingActive, opencvThreads))
                 process.start()
                 processes.append(process)
 
@@ -598,15 +624,18 @@ def extractCornersFromDataset(dataset, detector, multithreading=False,
                         "Corner extraction worker returned an invalid "
                         "serialized result: {!r}".format(error)
                     )
-                if not isinstance(result, tuple) or len(result) != 9:
+                if not isinstance(result, tuple) or len(result) != 11:
                     raise RuntimeError(
                         "Corner extraction worker returned a malformed result")
                 (resultStatus, idx, payload, itemDetectWall, itemDetectCpu,
+                 itemBagReadWall, itemBagReadCpu,
                  itemDeserializeWall, itemDeserializeCpu, itemDecodeWall,
                  itemDecodeCpu) = result
                 inFlight -= 1
                 detectWall += itemDetectWall
                 detectCpu += itemDetectCpu
+                bagReadWall += itemBagReadWall
+                bagReadCpu += itemBagReadCpu
                 deserializeWall += itemDeserializeWall
                 deserializeCpu += itemDeserializeCpu
                 decodeWall += itemDecodeWall

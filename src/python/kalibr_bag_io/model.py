@@ -33,6 +33,19 @@ class ImageIndex:
 
 
 @dataclass(frozen=True)
+class FileImageIndex:
+    """Random-access descriptor for an image stored as a regular file."""
+
+    header_timestamp_ns: int
+    record_timestamp_ns: int
+    path: str
+    encoding: str = "file"
+    frame_id: str = ""
+    sequence: int = 0
+    compressed_format: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class ImageRecord:
     header_timestamp_ns: int
     record_timestamp_ns: int
@@ -55,6 +68,7 @@ class ImuRecord:
     orientation_covariance: Optional[np.ndarray] = None
     angular_velocity_covariance: Optional[np.ndarray] = None
     linear_acceleration_covariance: Optional[np.ndarray] = None
+    temperature_c: Optional[float] = None
 
     def vectors(self) -> Tuple[np.ndarray, np.ndarray]:
         return self.angular_velocity, self.linear_acceleration

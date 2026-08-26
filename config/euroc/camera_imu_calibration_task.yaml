@@ -1,0 +1,19 @@
+schema_version: 1
+job: camera_imu_calibration
+
+dataset:
+  type: bag
+  path: /mnt/q/File/kalibr/data/euroc_cam/imu_april.bag
+
+target:
+  path: aprilgrid.yaml
+
+camera_calibration:
+  path: camchain.yaml
+
+imus:
+  - {path: imu.yaml, model: scale-misalignment}
+
+execution:
+  detector_processes: 4
+  optimizer_threads: 4

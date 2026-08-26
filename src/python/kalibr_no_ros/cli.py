@@ -5,7 +5,13 @@ import argparse
 import sys
 
 from .reference import verify_snapshot
-from .task import SCHEMA_VERSION, TaskError, dump_yaml, run_task
+from .task import (
+    TASK_SCHEMA_VERSION,
+    STANDARD_EXECUTION,
+    TaskError,
+    dump_yaml,
+    run_task,
+)
 
 
 def _positive_integer(value):
@@ -15,12 +21,20 @@ def _positive_integer(value):
     return parsed
 
 
-def _add_runtime_arguments(parser):
-    parser.add_argument("--config", required=True, help="version-2 task YAML")
-    parser.add_argument("--output-dir", required=True)
+def _add_execution_arguments(parser):
     parser.add_argument("--parallelism", type=_positive_integer)
     parser.add_argument("--detector-processes", type=_positive_integer)
     parser.add_argument("--optimizer-threads", type=_positive_integer)
+    parser.add_argument("--detector-inflight-per-worker", type=_positive_integer)
+    parser.add_argument("--detector-opencv-threads", type=_positive_integer)
+    parser.add_argument("--memory-sample-interval", type=float,
+                        dest="profiling_memory_sample_interval_s")
+
+
+def _add_runtime_arguments(parser):
+    parser.add_argument("--config", required=True, help="version-2 task YAML")
+    parser.add_argument("--output-dir", required=True)
+    _add_execution_arguments(parser)
     parser.add_argument("--timing-json", help="profile-build timing output")
     parser.add_argument("--force", action="store_true")
 
@@ -39,6 +53,25 @@ def build_parser():
     )
     _add_runtime_arguments(imu_camera)
 
+    benchmark = commands.add_parser(
+        "benchmark", help="run and compare immutable performance archives")
+    benchmark_commands = benchmark.add_subparsers(
+        dest="benchmark_command", required=True)
+    benchmark_run = benchmark_commands.add_parser(
+        "run", help="run only a new candidate and archive all measurements")
+    benchmark_run.add_argument("--config", required=True)
+    benchmark_run.add_argument("--archive-dir", required=True)
+    benchmark_run.add_argument("--name", required=True)
+    benchmark_run.add_argument("--repeat", type=_positive_integer, default=1)
+    _add_execution_arguments(benchmark_run)
+    benchmark_compare = benchmark_commands.add_parser(
+        "compare", help="compare a candidate archive without rerunning baseline")
+    benchmark_compare.add_argument("--registry", required=True)
+    benchmark_compare.add_argument("--baseline-id", required=True)
+    benchmark_compare.add_argument("--candidate", required=True)
+    benchmark_compare.add_argument("--atol", type=float, default=1e-8)
+    benchmark_compare.add_argument("--rtol", type=float, default=1e-8)
+
     convert = commands.add_parser("convert", help="convert configuration formats")
     conversion_commands = convert.add_subparsers(dest="conversion", required=True)
     camera = conversion_commands.add_parser(
@@ -50,7 +83,7 @@ def build_parser():
     camera.add_argument("--full-fisheye", action="store_true")
     camera.add_argument("arguments", nargs=argparse.REMAINDER)
 
-    job = conversion_commands.add_parser("job", help="create a v2 task YAML")
+    job = conversion_commands.add_parser("job", help="create a task YAML")
     job.add_argument("--type", choices=("cameras", "imu-camera"), required=True)
     job.add_argument("--bag", required=True)
     job.add_argument("--target", required=True)
@@ -82,15 +115,21 @@ def build_parser():
 
 
 def _runtime_overrides(arguments, output_dir):
-    timing = arguments.timing_json
+    timing = getattr(arguments, "timing_json", None)
     if timing is not None:
         timing = Path(timing)
         if not timing.is_absolute():
             timing = Path(output_dir).resolve() / timing
     return {
-        "parallelism": arguments.parallelism,
-        "detector_processes": arguments.detector_processes,
-        "optimizer_threads": arguments.optimizer_threads,
+        "parallelism": getattr(arguments, "parallelism", None),
+        "detector_processes": getattr(arguments, "detector_processes", None),
+        "optimizer_threads": getattr(arguments, "optimizer_threads", None),
+        "detector_inflight_per_worker": getattr(
+            arguments, "detector_inflight_per_worker", None),
+        "detector_opencv_threads": getattr(
+            arguments, "detector_opencv_threads", None),
+        "profiling_memory_sample_interval_s":
+            getattr(arguments, "profiling_memory_sample_interval_s", None),
         "timing_json": timing,
     }
 
@@ -108,13 +147,16 @@ def _convert_job(arguments):
     output = Path(arguments.output).expanduser().resolve()
     if output.exists() and not arguments.force:
         raise TaskError("output exists; pass --force to replace it: {}".format(output))
-    dataset = {"path": str(Path(arguments.bag).expanduser().resolve())}
+    dataset = {
+        "type": "bag",
+        "path": str(Path(arguments.bag).expanduser().resolve()),
+    }
     if arguments.bag_from_to:
         dataset["time_range_s"] = list(arguments.bag_from_to)
     if arguments.bag_freq is not None:
         dataset["frequency_hz"] = arguments.bag_freq
     task = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": TASK_SCHEMA_VERSION,
         "job": (
             "camera_calibration"
             if arguments.type == "cameras"
@@ -161,6 +203,7 @@ def _convert_job(arguments):
         if arguments.recompute_camera_chain_extrinsics:
             calibration["recompute_camera_chain_extrinsics"] = True
     task["calibration"] = calibration
+    task["execution"] = dict(STANDARD_EXECUTION)
     output.parent.mkdir(parents=True, exist_ok=True)
     dump_yaml(task, output)
     print(output)
@@ -171,6 +214,29 @@ def main(argv=None, prefix=None):
     arguments = build_parser().parse_args(argv)
     prefix = Path(prefix or Path(__file__).resolve().parents[3])
     try:
+        if arguments.group == "benchmark":
+            from .benchmark import compare_benchmark, run_benchmark
+            if arguments.benchmark_command == "run":
+                output = run_benchmark(
+                    prefix,
+                    arguments.config,
+                    arguments.archive_dir,
+                    arguments.name,
+                    repeat=arguments.repeat,
+                    **_runtime_overrides(arguments, arguments.archive_dir)
+                )
+                print(output)
+                return 0
+            json_path, markdown_path = compare_benchmark(
+                arguments.registry,
+                arguments.baseline_id,
+                arguments.candidate,
+                arguments.atol,
+                arguments.rtol,
+            )
+            print(json_path)
+            print(markdown_path)
+            return 0
         if arguments.group == "calibrate":
             job = (
                 "camera_calibration"

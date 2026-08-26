@@ -114,6 +114,8 @@ class DeferredImage:
         timing = {}
         if collect_timing:
             timing = {
+                "bag_read_wall_seconds": 0.01,
+                "bag_read_cpu_seconds": 0.008,
                 "deserialize_wall_seconds": 0.02,
                 "deserialize_cpu_seconds": 0.015,
                 "decode_wall_seconds": 0.03,
@@ -130,8 +132,8 @@ class DeferredFakeDataset(FakeDataset):
     def readDatasetDeferredWithTiming(self):
         for index in range(self.count):
             yield index, DeferredImage(index), {
-                "bag_read_wall_seconds": 0.01,
-                "bag_read_cpu_seconds": 0.008,
+                "bag_read_wall_seconds": 0.0,
+                "bag_read_cpu_seconds": 0.0,
             }
 
 
@@ -276,6 +278,16 @@ class TargetExtractorOverlayTest(unittest.TestCase):
                 FakeDetector(), taskq, resultq, True, False)
         setter.assert_called_once_with(1)
 
+    def test_worker_applies_explicit_opencv_thread_budget(self):
+        taskq = queue.Queue()
+        resultq = queue.Queue()
+        taskq.put(None)
+        with mock.patch.object(self.module.cv2, "setNumThreads") as setter:
+            self.module.multicoreExtractionWrapper(
+                FakeDetector(), taskq, resultq, True, False,
+                opencvThreads=3)
+        setter.assert_called_once_with(3)
+
     def test_disabled_timing_avoids_clocks_and_memory_probes(self):
         with mock.patch.object(
                 self.module.time, "perf_counter",
@@ -391,6 +403,7 @@ class TargetExtractorOverlayTest(unittest.TestCase):
                 extraction["pss_bytes"]["peak_semantics"],
                 "maximum_of_periodic_process_tree_samples",
             )
+            self.assertEqual(extraction["metadata"]["pipeline_capacity"], 2)
             self.assertEqual(set(extraction["phases"]), {
                 "bag_read", "deserialize", "decode", "detect", "total",
             })
