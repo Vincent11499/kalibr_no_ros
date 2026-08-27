@@ -36,6 +36,11 @@ namespace aslam {
       // usefull for debugging / error checking
       Eigen::MatrixXd Q() { return _Q.toDense(); };
       Eigen::VectorXd rhs();
+
+      /// Build sparse per-segment residual factors R with
+      /// sum(R.transpose() * R) equal to the exact quadratic matrix Q.
+      virtual bool getJacobianEquivalentErrorTerms(
+          std::vector<ErrorTerm::Ptr>& outErrorTerms) const;
         
         
     protected:
@@ -56,6 +61,7 @@ namespace aslam {
         Eigen::MatrixXd _W;
         sbm_t _Q;
         unsigned int _coefficientVectorLength;
+        unsigned int _errorTermOrder;
 
         void initialize(spline_t * splineDV, Eigen::MatrixXd W, unsigned int errorTermOrder);
 

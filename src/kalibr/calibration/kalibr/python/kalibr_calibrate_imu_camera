@@ -11,6 +11,7 @@ import kalibr_native_optimizer as native_runtime
 import signal
 import sys
 import os
+import multiprocessing
 
 # make numpy print prettier
 import kalibr_radtan5 as kr5
@@ -105,6 +106,7 @@ def parseArgs():
     groupOpt.add_argument('--recover-covariance', action='store_true', dest='recover_cov', help='Recover the covariance of the design variables.', required=False)
     groupOpt.add_argument('--profile-optimizer', action='store_true', dest='profile_optimizer', help='Print per-phase optimizer timing statistics.', required=False)
     groupOpt.add_argument('--timeoffset-padding', type=float, default=30.e-3, dest='timeoffset_padding', help='Maximum range in which the timeoffset may change during estimation [s] (default: %(default)s)', required=False)
+    groupOpt.add_argument('--initialization-config', dest='initialization_config', metavar='PATH', action=Once, help=argparse.SUPPRESS)
 
     #Result options  
     outputSettings = parser.add_argument_group('Output options')
@@ -142,6 +144,35 @@ def parseArgs():
 def main():
     # Parse the arguments
     parsed = parseArgs();
+
+    initializationConfig = None
+    if parsed.initialization_config is not None:
+        initializationImuModels = parsed.imu_models
+        if len(parsed.imu_yamls) == 1 and not initializationImuModels:
+            initializationImuModels = ['calibrated']
+        try:
+            initializationConfig = sens.loadCameraImuCalibrationInitialization(
+                parsed.initialization_config,
+                imu_models=initializationImuModels)
+        except (RuntimeError, ValueError) as error:
+            sm.logError(str(error))
+            sys.exit(2)
+        if initializationConfig['strategy'] == 'refine':
+            cameraTimeshifts = initializationConfig.get(
+                'camera_imu', {}).get('timeshift_cam_imu_s', {})
+            if cameraTimeshifts and parsed.no_time:
+                sm.logError(
+                    "Refine initialization of camera-IMU time shifts "
+                    "requires time calibration to be enabled.")
+                sys.exit(2)
+            imuTimeshifts = any(
+                'time_offset_to_reference_s' in block
+                for block in initializationConfig.get('imus', {}).values())
+            if imuTimeshifts and not parsed.estimate_imu_delay:
+                sm.logError(
+                    "Refine initialization of inter-IMU time offsets "
+                    "requires --imu-delay-by-correlation.")
+                sys.exit(2)
     
     #logging modess
     if parsed.verbose:
@@ -175,6 +206,26 @@ def main():
         else:
             sm.logError("Model {0} is currently unsupported.".format(imu_model))
             sys.exit(2)
+
+    if initializationConfig is not None:
+        imuInitializations = initializationConfig.get('imus', {})
+        for imuName in imuInitializations:
+            imuNr = int(imuName[3:])
+            if imuNr >= len(imus):
+                sm.logError(
+                    "Initialization config references unavailable {}".format(
+                        imuName))
+                sys.exit(2)
+        try:
+            for imuNr, imu in enumerate(imus):
+                imuName = 'imu{}'.format(imuNr)
+                if imuName in imuInitializations:
+                    imu.applyInitialization(
+                        imuInitializations[imuName],
+                        initializationConfig['strategy'])
+        except ValueError as error:
+            sm.logError(str(error))
+            sys.exit(2)
     
     #load calibration target configuration 
     targetConfig = kc.CalibrationTargetParameters(parsed.target_yaml)
@@ -186,6 +237,15 @@ def main():
     chain = kc.CameraChainParameters(parsed.chain_yaml)      
     chain.printDetails()   
     camChain = sens.IccCameraChain(chain, targetConfig, parsed)
+    if (initializationConfig is not None and
+            'camera_imu' in initializationConfig):
+        try:
+            camChain.applyInitialization(
+                initializationConfig.get('camera_imu'),
+                initializationConfig['strategy'])
+        except ValueError as error:
+            sm.logError(str(error))
+            sys.exit(2)
 
     #create a calibrator instance
     iCal = IccCalibrator()
@@ -227,6 +287,21 @@ def main():
     print("")
     print("Optimizing...")
     iCal.optimize(maxIterations=parsed.max_iter, recoverCov=parsed.recover_cov, profileOptimizer=parsed.profile_optimizer)
+
+    if initializationConfig is not None:
+        from kalibr_no_ros import observability as calibration_observability
+        observability_threads = native_runtime.optimizer_threads_or(
+            max(1, multiprocessing.cpu_count() - 1))
+        native_runtime.timed_call(
+            "observability_analysis", "reporting",
+            {"job": "camera_imu_calibration",
+             "optimizer_threads": observability_threads},
+            calibration_observability.analyze_write_require,
+            iCal.problem,
+            calibration_observability.camera_imu_parameter_blocks(iCal),
+            job="camera_imu_calibration",
+            path="observability.yaml",
+            num_threads=observability_threads)
 
     print("")
     print("After Optimization (Results)")

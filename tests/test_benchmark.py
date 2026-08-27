@@ -30,7 +30,8 @@ class BenchmarkTest(unittest.TestCase):
                 "job: camera_calibration\n"
                 "dataset: {type: bag, path: input.bag}\n"
                 "target: {path: target.yaml}\n"
-                "cameras: [{topic: /cam0, model: pinhole-radtan5}]\n",
+                "cameras: [{topic: /cam0, model: pinhole-radtan5}]\n"
+                "initialization: {path: seed.yaml, strategy: refine}\n",
                 encoding="utf-8",
             )
             effective = benchmark._absolute_effective_task(config, {})
@@ -38,6 +39,10 @@ class BenchmarkTest(unittest.TestCase):
             self.assertEqual(effective["execution"]["detector_processes"], 4)
             self.assertEqual(effective["execution"]["optimizer_threads"], 4)
             self.assertTrue(Path(effective["dataset"]["path"]).is_absolute())
+            self.assertEqual(
+                Path(effective["initialization"]["path"]),
+                (root / "seed.yaml").resolve(),
+            )
 
     def test_compare_validates_frozen_files_without_rerunning_baseline(self):
         with tempfile.TemporaryDirectory() as directory:

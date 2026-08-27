@@ -79,6 +79,10 @@ def _absolute_effective_task(config, overrides):
     elif isinstance(camera_calibration, dict) and camera_calibration.get("path"):
         camera_calibration["path"] = str(
             resolve_task_path(task, camera_calibration["path"]))
+    initialization = value.get("initialization")
+    if isinstance(initialization, dict) and initialization.get("path"):
+        initialization["path"] = str(
+            resolve_task_path(task, initialization["path"]))
     for imu in value.get("imus") or ():
         imu["path"] = str(resolve_task_path(task, imu["path"]))
 

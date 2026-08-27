@@ -7,13 +7,15 @@
 有效范围和内部算法影响见
 [`TASK_PARAMETERS_ZH.md`](TASK_PARAMETERS_ZH.md)。
 
-## 1. 三类 YAML 不要混淆
+## 1. 各类 YAML 不要混淆
 
 | 文件 | 谁创建 | 是否需要经常修改 | 作用 |
 |---|---|---:|---|
-| `task.yaml` | 用户 | 是 | 选择任务、数据、target、模型和可选参数 |
+| `task.yaml` | 用户 | 是 | 选择任务、数据、target、模型和可选参数；接口版本为 `1` |
 | `dataset.yaml` | 用户，仅目录数据集需要 | 很少 | 把图像/IMU 文件映射为逻辑数据流 |
-| `calibration.yaml` | 程序 | 否 | 保存标定结果，不应作为下一次任务配置直接编辑 |
+| `*_initialization.yaml` | 用户，仅显式初值需要 | 按硬件维护 | 保存相机或 Camera–IMU 的物理 seed；接口版本为 `1` |
+| `calibration.yaml` | 程序 | 否 | 保存标定结果；结果接口版本为 `2`，不是 task v2 |
+| `initialization_report.yaml` / `observability.yaml` | 程序，仅显式初值运行生成 | 否 | 记录初值应用情况和最终标定块可观性 |
 
 `config/` 提供三份可直接复制的简洁模板；字段合法性由 CLI 在运行前检查。详见
 [`../config/README_ZH.md`](../config/README_ZH.md)。
@@ -53,10 +55,11 @@ task 文件名只表达任务类型，例如 `camera_calibration_task_demo.yaml`
 `camera_imu_calibration_task.yaml`；bag 和目录输入都使用同一命名方式，由
 `dataset.type` 区分。
 
-task 中的 `dataset.path`、`target.path`、`camera_calibration.path` 和
-`imus[].path` 都支持绝对路径；相对路径统一以 task YAML 所在目录为基准。
+task 中的 `dataset.path`、`target.path`、`camera_calibration.path`、
+`imus[].path` 和 `initialization.path` 都支持绝对路径；相对路径统一以 task YAML
+所在目录为基准。
 `dataset.yaml` 内部的图像/CSV 路径以数据集根目录为基准。CLI 的相对
-`--output-dir` 则以命令执行时的当前目录为基准。
+`--output-dir` 和相对 `--initialization` 则以命令执行时的当前目录为基准。
 
 运行时再给容易变化的执行参数：
 
@@ -75,6 +78,43 @@ execution:
 
 完整 benchmark 执行配置会额外记录检测队列、OpenCV 线程数和内存采样周期；这些
 字段有稳定默认值，不要求普通任务逐项重复。
+
+### 2.1 可选的显式物理初值
+
+相机和 Camera–IMU task 都可增加：
+
+```yaml
+initialization:
+  path: camera_calibration_initialization.yaml
+  strategy: refine
+```
+
+`strategy` 省略时为 `refine`。也可以不改 task，用 CLI 字段级覆盖：
+
+```bash
+kalibr-noros calibrate cameras --config task.yaml --output-dir output \
+  --initialization camera_calibration_initialization.yaml \
+  --initialization-strategy direct
+```
+
+- `refine`：seed 作为原生前置初始化优化的起点，允许只给部分参数；
+- `direct`：可信 seed 直接进入后续阶段；相机标定要求所有相机内参、畸变和相邻
+  baseline 完整；
+- 两种策略都只是初始化，最终联合问题的原有 active 参数不会因此被固定，也不会
+  增加“靠近 seed”的先验残差；
+- 显式初值任务会先输出 `initialization_report.yaml`；到达最终可观性分析后再输出
+  `observability.yaml`。基于机器 epsilon 的 hard rank gate 不通过时任务失败，只保留这两份
+  诊断，不会用 seed 填出一个假成功结果；更早失败时可能只有初值报告。
+  `epsSVD=1e-6` 只用于 operational 弱可观性警告，不会阻止 `calibration.yaml`
+  输出。
+
+两类初始化 YAML 的全部字段、坐标变换方向、单位、相机模型向量长度、IMU 模型门控
+和分阶段行为见
+[`INITIALIZATION_ZH.md`](INITIALIZATION_ZH.md)。EuRoC 已按运行意图拆成
+[`euroc/`](../config/euroc/README_ZH.md)（无初值）、
+[`euroc_init/`](../config/euroc_init/README_ZH.md)（带正常初值）和
+[`euroc_bad_init/`](../config/euroc_bad_init/README_ZH.md)（坏初值测试）。后两者的
+task 已内嵌初值和 `refine`，正常运行不必再传初始化 CLI 参数。
 
 ## 3. 相机模型
 

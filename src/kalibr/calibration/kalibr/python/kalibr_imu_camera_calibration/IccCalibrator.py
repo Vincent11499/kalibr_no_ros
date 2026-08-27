@@ -102,6 +102,15 @@ class IccCalibrator(object):
         ############################################
         #estimate the timeshift for all cameras to the main imu
         self.noTimeCalibration = noTimeCalibration
+        if (noTimeCalibration and
+                getattr(self.CameraChain, 'hasInitialization', False)):
+            for cam in self.CameraChain.camList:
+                if (getattr(cam, 'hasTimeshiftInitialization', False) and
+                        getattr(cam, 'initializationStrategy', None) ==
+                        'refine'):
+                    raise ValueError(
+                        "refine initialization of camera-IMU time shifts "
+                        "requires time calibration to be enabled")
         if not noTimeCalibration:
             for cam in self.CameraChain.camList:
                 native_runtime.timed_call(
@@ -270,7 +279,9 @@ class IccCalibrator(object):
             T_ci = self.CameraChain.getResultTrafoImuToCam(camNr)
             chain.setExtrinsicsImuToCam(camNr, T_ci)
 
-            if not self.noTimeCalibration:
+            cam = self.CameraChain.camList[camNr]
+            if (not self.noTimeCalibration or
+                    getattr(cam, 'hasTimeshiftInitialization', False)):
                 #imu to cam timeshift
                 timeshift = float(self.CameraChain.getResultTimeShift(camNr))
                 chain.setTimeshiftCamImu(camNr, timeshift)

@@ -112,10 +112,16 @@ class MulticamCalibrationGraph(object):
     #returns: 
     #        baselines:    list of baselines starting from cam0 to camN
     #                      direction: baseline_O => cam0 to cam1 (T_c1_c0)
-    def getInitialGuesses(self, cameras):
+    def getInitialGuesses(self, cameras, baseline_overrides=None):
         
         if not self.G:
             raise RuntimeError("Graph is uninitialized!")
+
+        if (baseline_overrides is not None and
+                len(baseline_overrides) != self.numCams - 1):
+            raise RuntimeError(
+                "Expected {0} seeded camera baselines, got {1}".format(
+                    self.numCams - 1, len(baseline_overrides)))
         
         #################################################################
         ## STEP 0: check if all cameras in the chain are connected
@@ -128,6 +134,23 @@ class MulticamCalibrationGraph(object):
             
             self.plotGraph()
             sys.exit(0)
+
+        # A complete chain seed does not need pairwise stereo calibration, but
+        # refine mode still runs the original full-batch initialization (and
+        # therefore its target-pose PnP guesses).
+        if (baseline_overrides is not None and
+                all(baseline is not None
+                    for baseline in baseline_overrides)):
+            self.optimal_baseline_edges = set()
+            baselines = [
+                sm.Transformation(np.array(baseline.T(), copy=True))
+                for baseline in baseline_overrides
+            ]
+            success, baselines = kcc.solveFullBatch(
+                cameras, baselines, self)
+            if not success:
+                sm.logWarn("Full batch refinement failed!")
+            return baselines
         
         #################################################################
         ## STEP 1: get baseline initial guesses by calibrating good 
@@ -222,6 +245,15 @@ class MulticamCalibrationGraph(object):
             
             #store in graph
             baselines.append(baseline_HL)
+
+        # Partial refine-mode seeds use the native stereo path for the missing
+        # chain values, then replace only explicitly supplied transforms before
+        # the full-batch refinement.
+        if baseline_overrides is not None:
+            for baseline_id, baseline in enumerate(baseline_overrides):
+                if baseline is not None:
+                    baselines[baseline_id] = sm.Transformation(
+                        np.array(baseline.T(), copy=True))
  
         #################################################################
         ## STEP 4: refine guess in full batch

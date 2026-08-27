@@ -1,4 +1,5 @@
 #include <aslam/backend/BSplineMotionError.hpp>
+#include <aslam/backend/MarginalizationPriorErrorTerm.hpp>
 #include <stdio.h>
 namespace aslam {
     namespace backend {
@@ -34,6 +35,7 @@ namespace aslam {
         		errorTermOrder = splineOrder-1;
         		std::cout << "! Invalid ErrorTermOrder reduced to " << errorTermOrder << std::endl;
         	}
+		_errorTermOrder = errorTermOrder;
         	sbm_t Qsp = _splineDV->spline().curveQuadraticIntegralSparse(_W, errorTermOrder);
 
         	// set spline design variables
@@ -54,6 +56,36 @@ namespace aslam {
         	}
         	setDesignVariables(dvV);
 
+        }
+
+
+        template<class SPLINE_T>
+        bool BSplineMotionError<SPLINE_T>::getJacobianEquivalentErrorTerms(
+            std::vector<ErrorTerm::Ptr>& outErrorTerms) const
+        {
+          // The legacy optimizer consumes this term through its exact sparse
+          // Hessian implementation.  The observability solver is Jacobian
+          // based, so factor the same quadratic integral one spline segment at
+          // a time.  This avoids forming or factorizing the global dense Q.
+          const auto spline = _splineDV->spline();
+          for (int segment = 0; segment < spline.numValidTimeSegments();
+               ++segment) {
+            const Eigen::MatrixXd R = spline.segmentIntegral(
+                segment, _W, _errorTermOrder);
+            const Eigen::VectorXd c =
+                spline.segmentCoefficientVector(segment);
+            const Eigen::VectorXi indices =
+                spline.segmentVvCoefficientVectorIndices(segment);
+            std::vector<DesignVariable*> designVariables;
+            designVariables.reserve(indices.size());
+            for (Eigen::Index i = 0; i < indices.size(); ++i)
+              designVariables.push_back(
+                  _splineDV->designVariable(indices[i]));
+            outErrorTerms.push_back(ErrorTerm::Ptr(
+                new MarginalizationPriorErrorTerm(
+                    designVariables, R * c, R)));
+          }
+          return true;
         }
 
 

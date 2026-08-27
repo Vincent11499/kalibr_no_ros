@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from pathlib import Path
+import hashlib
 import os
 import runpy
 import shutil
@@ -13,6 +14,14 @@ import tempfile
 import yaml
 
 from kalibr_bag_io import detect_dataset_format
+
+from .initialization import (
+    InitializationError,
+    build_initialization_report,
+    canonical_initialization,
+    load_initialization,
+    validate_task_initialization,
+)
 
 
 TASK_SCHEMA_VERSION = 1
@@ -26,6 +35,8 @@ STANDARD_EXECUTION = {
 }
 MANAGED_OUTPUTS = {
     "calibration.yaml",
+    "initialization_report.yaml",
+    "observability.yaml",
     "results.txt",
     "report.pdf",
     "poses.csv",
@@ -38,6 +49,7 @@ _COMMON_TASK_KEYS = {
     "target",
     "calibration",
     "execution",
+    "initialization",
 }
 _JOB_TASK_KEYS = {
     "camera_calibration": {"cameras"},
@@ -85,7 +97,8 @@ def dump_yaml(value, path):
 def load_task(path, expected_job=None):
     path = Path(path).resolve()
     task = load_yaml(path)
-    if task.get("schema_version") != TASK_SCHEMA_VERSION:
+    if (type(task.get("schema_version")) is not int
+            or task.get("schema_version") != TASK_SCHEMA_VERSION):
         raise TaskError(
             "task schema_version must be {}".format(TASK_SCHEMA_VERSION))
     job = task.get("job")
@@ -106,6 +119,11 @@ def load_task(path, expected_job=None):
     task["dataset"]["type"] = dataset_type
     if not isinstance(task.get("target"), dict):
         raise TaskError("target mapping is required")
+    if "initialization" in task:
+        try:
+            validate_task_initialization(task["initialization"])
+        except InitializationError as error:
+            raise TaskError(str(error)) from error
     if job == "camera_calibration":
         cameras = task.get("cameras")
         if not isinstance(cameras, list) or not cameras:
@@ -130,6 +148,127 @@ def resolve_task_path(task, value):
     if not path.is_absolute():
         path = Path(task["_config_dir"]) / path
     return path.resolve()
+
+
+def _camera_calibration_ids(task):
+    value = task.get("camera_calibration")
+    if isinstance(value, dict):
+        value = value.get("path")
+    if not value:
+        raise TaskError("camera_calibration.path is required")
+    data = load_yaml(resolve_task_path(task, value))
+    if data.get("schema_version") == CALIBRATION_RESULT_VERSION:
+        cameras = data.get("cameras")
+        if not isinstance(cameras, list) or not cameras:
+            raise TaskError("v2 camera calibration contains no cameras")
+        return ["cam{}".format(index) for index in range(len(cameras))]
+    indices = sorted(
+        int(key[3:]) for key in data
+        if isinstance(key, str) and key.startswith("cam") and key[3:].isdigit()
+    )
+    if not indices or indices != list(range(len(indices))):
+        raise TaskError("camera calibration must contain contiguous cam0..camN entries")
+    return ["cam{}".format(index) for index in indices]
+
+
+def resolve_initialization(task, expected_job=None, initialization=None,
+                           initialization_strategy=None):
+    """Resolve CLI-over-task initialization settings and validate the file.
+
+    Task paths are relative to the task YAML.  A CLI path is resolved against
+    the caller's current working directory before the legacy command changes it.
+    """
+    expected_job = expected_job or task.get("job")
+    configured = task.get("initialization") or {}
+    configured_path = configured.get("path")
+    configured_strategy = configured.get("strategy")
+
+    if initialization is not None:
+        if not isinstance(initialization, (str, os.PathLike)) or not str(initialization):
+            raise TaskError("--initialization requires a non-empty path")
+        path = Path(initialization).expanduser().resolve()
+        path_origin = "cli"
+    elif configured_path is not None:
+        path = resolve_task_path(task, configured_path)
+        path_origin = "task"
+    else:
+        path = None
+        path_origin = None
+
+    strategy = initialization_strategy
+    strategy_origin = "cli" if strategy is not None else None
+    if strategy is None:
+        strategy = configured_strategy
+        if strategy is not None:
+            strategy_origin = "task"
+    if path is None:
+        if strategy is not None:
+            raise TaskError("initialization strategy requires an initialization path")
+        return None
+    if strategy is None:
+        strategy = "refine"
+        strategy_origin = "default"
+
+    camera_ids = None
+    if expected_job == "camera_imu_calibration":
+        camera_ids = _camera_calibration_ids(task)
+    try:
+        document = load_initialization(
+            path, expected_job, task, strategy=strategy, camera_ids=camera_ids)
+        source_sha256 = _sha256(path)
+    except OSError as error:
+        raise TaskError(
+            "could not hash initialization file {}: {}".format(
+                path, error)) from error
+    except InitializationError as error:
+        raise TaskError(str(error)) from error
+    return {
+        "path": path,
+        "strategy": strategy,
+        "document": document,
+        "path_origin": path_origin,
+        "strategy_origin": strategy_origin,
+        "camera_ids": camera_ids,
+        "source_sha256": source_sha256,
+    }
+
+
+def _write_initialization_config(initialization, temporary):
+    if initialization is None:
+        return None
+    path = temporary / "initialization.yaml"
+    dump_yaml(
+        canonical_initialization(
+            initialization["document"], initialization["strategy"]),
+        path,
+    )
+    return path
+
+
+def _sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_initialization_report(initialization, task, temporary):
+    if initialization is None:
+        return None
+    report = build_initialization_report(
+        initialization["document"],
+        initialization["strategy"],
+        task,
+        source_path=initialization["path"],
+        source_sha256=initialization["source_sha256"],
+        path_origin=initialization["path_origin"],
+        strategy_origin=initialization["strategy_origin"],
+        camera_ids=initialization["camera_ids"],
+    )
+    path = temporary / "initialization_report.yaml"
+    dump_yaml(report, path)
+    return path
 
 
 def prepare_output_directory(path, force=False):
@@ -284,7 +423,7 @@ def _flag(arguments, enabled, name):
         arguments.append(name)
 
 
-def _camera_arguments(task, bag, target, overrides):
+def _camera_arguments(task, bag, target, overrides, initialization_config=None):
     cameras = task.get("cameras")
     if not isinstance(cameras, list) or not cameras:
         raise TaskError("cameras must be a non-empty list")
@@ -318,6 +457,8 @@ def _camera_arguments(task, bag, target, overrides):
     _flag(arguments, bool(calibration.get("export_poses")), "--export-poses")
     if not calibration.get("interactive_report", False):
         arguments.append("--dont-show-report")
+    if initialization_config is not None:
+        arguments.extend(["--initialization-config", str(initialization_config)])
     _append_execution(arguments, task, overrides)
     return arguments
 
@@ -345,7 +486,8 @@ def _legacy_camchain(task, temporary):
     return path
 
 
-def _imu_arguments(task, bag, target, temporary, overrides):
+def _imu_arguments(task, bag, target, temporary, overrides,
+                   initialization_config=None):
     imus = task.get("imus")
     if not isinstance(imus, list) or not imus:
         raise TaskError("imus must be a non-empty list")
@@ -381,6 +523,8 @@ def _imu_arguments(task, bag, target, temporary, overrides):
     _flag(arguments, bool(calibration.get("export_poses")), "--export-poses")
     if not calibration.get("interactive_report", False):
         arguments.append("--dont-show-report")
+    if initialization_config is not None:
+        arguments.extend(["--initialization-config", str(initialization_config)])
     _append_execution(arguments, task, overrides)
     return arguments
 
@@ -445,28 +589,151 @@ def _collect_outputs(work, output, job, export_poses):
             load_yaml(camchain), "camera_imu", load_yaml(imu_yaml)
         )
         pose_pattern = "*-poses-imucam-imu0.csv"
+    poses = next(work.glob(pose_pattern)) if export_poses else None
     dump_yaml(result, output / "calibration.yaml")
     shutil.move(str(result_text), str(output / "results.txt"))
     shutil.move(str(report), str(output / "report.pdf"))
     if export_poses:
-        poses = next(work.glob(pose_pattern))
         shutil.move(str(poses), str(output / "poses.csv"))
+    for name in ("initialization_report.yaml", "observability.yaml"):
+        sidecar = work / name
+        if sidecar.is_file():
+            shutil.move(str(sidecar), str(output / name))
+
+
+def _read_observability(path):
+    path = Path(path)
+    if not path.is_file():
+        return None
+    report = load_yaml(path)
+    calibration = report.get("calibration") or {}
+    return {
+        "status": report.get("status"),
+        "quality": report.get("quality"),
+        "rank": calibration.get("rank"),
+        "columns": calibration.get("columns"),
+        "deficiency": calibration.get("deficiency"),
+        "operational_rank": calibration.get("operational_rank"),
+        "operational_deficiency": calibration.get(
+            "operational_deficiency"),
+    }
+
+
+def _finish_initialization_report(path, status, *, error=None,
+                                  observability_path=None,
+                                  calibration_path=None):
+    path = Path(path)
+    if not path.is_file():
+        return
+    report = load_yaml(path)
+    report["status"] = status
+    if observability_path is not None:
+        summary = _read_observability(observability_path)
+        if summary is not None:
+            report["observability"] = summary
+    if calibration_path is not None and Path(calibration_path).is_file():
+        report["result"] = {
+            "path": "calibration.yaml",
+            "sha256": _sha256(calibration_path),
+        }
+    if error is not None:
+        report["failure"] = {
+            "type": type(error).__name__,
+            "message": str(error),
+        }
+    dump_yaml(report, path)
+
+
+def _preserve_diagnostic_sidecars(work, output):
+    for name in ("initialization_report.yaml", "observability.yaml"):
+        source = Path(work) / name
+        destination = Path(output) / name
+        if source.is_file() and not destination.exists():
+            shutil.move(str(source), str(destination))
+
+
+def _remove_failed_seeded_outputs(output):
+    """Keep diagnostics only when a seeded run does not complete."""
+    diagnostic_names = {"initialization_report.yaml", "observability.yaml"}
+    for name in MANAGED_OUTPUTS - diagnostic_names:
+        path = Path(output) / name
+        if path.is_file():
+            path.unlink()
 
 
 def run_task(prefix, config, output_dir, expected_job, force=False, **overrides):
     task = load_task(config, expected_job=expected_job)
+    initialization = resolve_initialization(
+        task,
+        expected_job,
+        initialization=overrides.get("initialization"),
+        initialization_strategy=overrides.get("initialization_strategy"),
+    )
     output = prepare_output_directory(output_dir, force=force)
     with tempfile.TemporaryDirectory(prefix="kalibr-noros-") as temporary_name:
         temporary = Path(temporary_name)
-        bag = _dataset_alias(task, temporary)
-        target = _target_path(task, temporary)
-        if expected_job == "camera_calibration":
-            command = "kalibr_calibrate_cameras"
-            arguments = _camera_arguments(task, bag, target, overrides)
-        else:
-            command = "kalibr_calibrate_imu_camera"
-            arguments = _imu_arguments(task, bag, target, temporary, overrides)
-        _run_legacy(prefix, command, arguments, temporary)
-        export_poses = bool((task.get("calibration") or {}).get("export_poses"))
-        _collect_outputs(temporary, output, expected_job, export_poses)
+        initialization_config = _write_initialization_config(
+            initialization, temporary)
+        initialization_report = _write_initialization_report(
+            initialization, task, temporary)
+        try:
+            bag = _dataset_alias(task, temporary)
+            target = _target_path(task, temporary)
+            if expected_job == "camera_calibration":
+                command = "kalibr_calibrate_cameras"
+                arguments = _camera_arguments(
+                    task, bag, target, overrides, initialization_config)
+            else:
+                command = "kalibr_calibrate_imu_camera"
+                arguments = _imu_arguments(
+                    task, bag, target, temporary, overrides,
+                    initialization_config)
+            _run_legacy(prefix, command, arguments, temporary)
+            if initialization is not None:
+                observability_path = temporary / "observability.yaml"
+                observability = _read_observability(observability_path)
+                if observability is None:
+                    raise TaskError(
+                        "seeded calibration did not produce observability.yaml")
+                if observability.get("status") != "full_rank":
+                    raise TaskError(
+                        "seeded calibration is rank deficient: rank {}/{} "
+                        "(deficiency {})".format(
+                            observability.get("rank"),
+                            observability.get("columns"),
+                            observability.get("deficiency"),
+                        ))
+            export_poses = bool(
+                (task.get("calibration") or {}).get("export_poses"))
+            _collect_outputs(temporary, output, expected_job, export_poses)
+            if initialization_report is not None:
+                _finish_initialization_report(
+                    output / "initialization_report.yaml",
+                    "completed",
+                    observability_path=output / "observability.yaml",
+                    calibration_path=output / "calibration.yaml",
+                )
+        except Exception as error:
+            if initialization_report is not None:
+                observability_path = temporary / "observability.yaml"
+                observability = _read_observability(observability_path)
+                status = (
+                    "failed_rank_deficient"
+                    if observability is not None
+                    and observability.get("status") in {
+                        "rank_deficient", "no_information"
+                    }
+                    else "failed"
+                )
+                report_path = (
+                    initialization_report
+                    if initialization_report.is_file()
+                    else output / "initialization_report.yaml"
+                )
+                _finish_initialization_report(
+                    report_path, status, error=error,
+                    observability_path=observability_path)
+                _preserve_diagnostic_sidecars(temporary, output)
+                _remove_failed_seeded_outputs(output)
+            raise
     return output

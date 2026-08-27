@@ -32,8 +32,17 @@ def _add_execution_arguments(parser):
 
 
 def _add_runtime_arguments(parser):
-    parser.add_argument("--config", required=True, help="version-2 task YAML")
+    parser.add_argument("--config", required=True, help="task schema-version 1 YAML")
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument(
+        "--initialization",
+        help="camera or camera-IMU initialization YAML (relative to the current directory)",
+    )
+    parser.add_argument(
+        "--initialization-strategy",
+        choices=("refine", "direct"),
+        help="use seeds as refinement starting points or direct initial values",
+    )
     _add_execution_arguments(parser)
     parser.add_argument("--timing-json", help="profile-build timing output")
     parser.add_argument("--force", action="store_true")
@@ -120,7 +129,13 @@ def _runtime_overrides(arguments, output_dir):
         timing = Path(timing)
         if not timing.is_absolute():
             timing = Path(output_dir).resolve() / timing
+    initialization = getattr(arguments, "initialization", None)
+    if initialization is not None:
+        initialization = Path(initialization).expanduser().resolve()
     return {
+        "initialization": initialization,
+        "initialization_strategy": getattr(
+            arguments, "initialization_strategy", None),
         "parallelism": getattr(arguments, "parallelism", None),
         "detector_processes": getattr(arguments, "detector_processes", None),
         "optimizer_threads": getattr(arguments, "optimizer_threads", None),

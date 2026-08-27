@@ -11,6 +11,7 @@
 #include "MEstimatorPolicies.hpp"
 #include <sm/eigen/matrix_sqrt.hpp>
 #include <sm/timing/NsecTimeUtilities.hpp>
+#include <vector>
 
 namespace aslam {
   namespace backend {
@@ -44,6 +45,18 @@ namespace aslam {
 
       /// \brief evaluate the Jacobians.
       void evaluateJacobians(JacobianContainer & outJacobians) const;
+
+      /// \brief Build ordinary residual terms with the same local information.
+      ///
+      /// Most error terms already expose Jacobians and therefore return false.
+      /// Exact quadratic terms may override this hook and append short-lived
+      /// residual terms whose stacked Jacobian has the same Gauss-Newton
+      /// Hessian.  Read-only diagnostics use the hook without changing the
+      /// optimization problem or its numerical path.
+      virtual bool getJacobianEquivalentErrorTerms(
+          std::vector<Ptr>& /* outErrorTerms */) const {
+        return false;
+      }
 
       /// \brief evaluate the Jacobians using finite differences.
       void evaluateJacobiansFiniteDifference(JacobianContainer & outJacobians);

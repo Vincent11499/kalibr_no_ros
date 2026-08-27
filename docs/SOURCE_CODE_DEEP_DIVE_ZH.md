@@ -20,8 +20,9 @@ Python、C++、线性代数和最小二乘，但不要求预先掌握 Kalibr。
 
 1. [`src/python/kalibr_no_ros/cli.py`](../src/python/kalibr_no_ros/cli.py)：公共命令入口；
 2. [`src/python/kalibr_no_ros/task.py`](../src/python/kalibr_no_ros/task.py)：task v1 到原生参数的适配；
-3. [`kalibr_calibrate_cameras`](../src/kalibr/calibration/kalibr/python/kalibr_calibrate_cameras)：相机标定阶段机；
-4. [`kalibr_calibrate_imu_camera`](../src/kalibr/calibration/kalibr/python/kalibr_calibrate_imu_camera)：Camera–IMU 阶段机。
+3. [`src/python/kalibr_no_ros/initialization.py`](../src/python/kalibr_no_ros/initialization.py)：可选物理初值的严格校验和规范化；
+4. [`kalibr_calibrate_cameras`](../src/kalibr/calibration/kalibr/python/kalibr_calibrate_cameras)：相机标定阶段机；
+5. [`kalibr_calibrate_imu_camera`](../src/kalibr/calibration/kalibr/python/kalibr_calibrate_imu_camera)：Camera–IMU 阶段机。
 
 第二遍再读：
 
@@ -29,6 +30,7 @@ Python、C++、线性代数和最小二乘，但不要求预先掌握 Kalibr。
 - [`IncrementalEstimator.cpp`](../src/kalibr/calibration/incremental_calibration/src/core/IncrementalEstimator.cpp)：最终逐 view 增量估计；
 - [`IccCalibrator.py`](../src/kalibr/calibration/kalibr/python/kalibr_imu_camera_calibration/IccCalibrator.py)：Camera–IMU 问题建图和最终求解；
 - [`IccSensors.py`](../src/kalibr/calibration/kalibr/python/kalibr_imu_camera_calibration/IccSensors.py)：相机与 IMU 的状态量、初值和误差项。
+- [`src/python/kalibr_no_ros/observability.py`](../src/python/kalibr_no_ros/observability.py)：最终物理标定块的只读重线性化、秩和零空间报告。
 
 第三遍再进入：
 
@@ -198,14 +200,14 @@ tools                      依赖、审计、比较和 benchmark 工具
 ### 2.2 总体数据流
 
 ```text
-task v1 YAML
+task v1 YAML + 可选 initialization schema v1 YAML
   |
   v
 kalibr-noros CLI
   |
-  +-- 校验任务、解析相对路径、检查输出目录
+  +-- 校验任务/初值、解析相对路径、检查输出目录
   +-- 创建临时工作目录和数据集符号链接
-  +-- 把 v2 配置转换为原生 Kalibr 参数
+  +-- 把 task 转换为原生 Kalibr 参数；初值规范化为内部临时 YAML
   |
   v
 原生 Python 阶段机
@@ -220,6 +222,7 @@ kalibr-noros CLI
   |
   v
 统一 calibration.yaml、results.txt、report.pdf、可选 poses.csv
++ 显式初值运行的 initialization_report.yaml、observability.yaml
 ```
 
 ### 2.3 公共 CLI 没有重写算法
@@ -227,12 +230,18 @@ kalibr-noros CLI
 [`task.py`](../src/python/kalibr_no_ros/task.py) 的职责是适配，不是重新实现标定：
 
 1. 严格读取 `schema_version: 1`，并校验 `dataset.type`；
-2. 把 task 字段转换成原生 CLI 参数；
-3. 用临时 `sys.argv` 和工作目录执行内部阶段机；
-4. 收集原生输出并规范化文件名。
+2. 若配置初值，由 `initialization.py` 按 job、相机模型和 IMU 模型严格校验，再生成
+   只供内部阶段机读取的规范化临时 YAML；
+3. 把 task 字段转换成原生 CLI 参数；
+4. 用临时 `sys.argv` 和工作目录执行内部阶段机；
+5. 收集原生输出并规范化文件名。
 
 因此要理解数值行为，应继续跟进 `kalibr_calibrate_cameras` 或
 `kalibr_calibrate_imu_camera`，而不是停在公共 CLI。
+
+初始化文件的公共接口、坐标方向和 `refine`/`direct` 分阶段差异见
+[`INITIALIZATION_ZH.md`](INITIALIZATION_ZH.md)。内部阶段机只接收已经规范化的 seed，
+不会自行猜测缺失维数、变换方向或模型兼容性。
 
 ## 3. 输入、图像检测和并行边界
 

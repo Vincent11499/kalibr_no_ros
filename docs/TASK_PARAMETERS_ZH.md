@@ -6,12 +6,13 @@ CLI 映射、作用阶段、内部算法和有效范围。审计基准为提交
 `39b5b8280f347a68cecf5c1cfe437ae4c75f0877` 加当前工作区改动，日期为
 2026-08-26。
 
-需要先区分四类配置：
+需要先区分五类配置：
 
 | 类别 | 典型字段 | 是否可能改变数值结果 |
 |---|---|---:|
 | 数据选择 | `time_range_s`、`frequency_hz` | 是 |
 | 算法超参数 | `information_gain_tolerance`、`reprojection_sigma_px` | 是 |
+| 显式物理初值 | `initialization.path`、`initialization.strategy` | 是；改变前置阶段和初始点 |
 | 执行资源 | `detector_processes`、`optimizer_threads` | 理论算法不变，但并行浮点归约可能造成末位差异 |
 | 显示与输出 | `verbose`、`export_poses`、`interactive_report` | 不应改变目标函数，但会明显影响耗时，部分选项会关闭多进程检测 |
 
@@ -111,6 +112,9 @@ execution:
   profiling_memory_sample_interval_s: 0.25
 ```
 
+以上两份“全部字段”示例有意不默认启用 `initialization`：未配置时保持原生自动初始化
+基线。要启用时在 task 顶层增加第 2.2 节的块，或使用同节所述 CLI 覆盖。
+
 ## 2. 公共 task 字段
 
 ### 2.1 顶层字段
@@ -121,13 +125,34 @@ execution:
 | `job` | `camera_calibration` 或 `camera_imu_calibration` | 选择任务及允许出现的顶层字段 |
 | `dataset` | mapping，必填 | 数据来源和数据裁剪参数 |
 | `target` | mapping，必填 | 标定板配置 |
+| `initialization` | mapping，可省略 | 独立物理初值文件与 `refine`/`direct` 策略 |
 | `calibration` | mapping，可省略 | 算法、诊断和结果显示参数 |
 | `execution` | mapping，可省略 | 进程、线程、队列和 profiling 配置 |
 
 相机任务额外要求 `cameras`；Camera–IMU 任务额外要求 `camera_calibration` 和
 `imus`。顶层未知字段会被拒绝。
 
-### 2.2 `dataset`
+### 2.2 `initialization`
+
+```yaml
+initialization:
+  path: camera_calibration_initialization.yaml
+  strategy: refine
+```
+
+| 字段 | 默认值 | 范围与路径语义 | 作用 |
+|---|---:|---|---|
+| `path` | 无，配置该块时必填 | 非空路径；task 内相对路径以 task YAML 所在目录为基准 | 选择与当前 job 匹配的 schema v1 物理 seed |
+| `strategy` | `refine` | `refine` 或 `direct` | 控制 seed 是进入原生前置 refinement，还是直接跳过已完整提供的初值阶段 |
+
+CLI 的 `--initialization` 和 `--initialization-strategy` 分别覆盖对应字段；CLI seed
+相对路径以当前工作目录为基准。只给策略而 task/CLI 都没有路径会被拒绝。
+
+两类初值文件字段很多，且涉及严格坐标方向、相机模型维数和 IMU 模型门控，完整格式
+见 [`INITIALIZATION_ZH.md`](INITIALIZATION_ZH.md)。需要特别注意：seed 不是 fixed
+parameter，也不增加先验残差；无 seed 时不进入新路径。
+
+### 2.3 `dataset`
 
 | 字段 | 默认值 | 强制/有效范围 | 内部作用 |
 |---|---:|---|---|
@@ -141,7 +166,7 @@ execution:
 之后仅保留与上一保留帧间隔至少为 $1/f$ 的帧。它会减少检测和视觉误差项数量，
 因此不仅影响耗时，也会改变最终数值。
 
-### 2.3 `target`
+### 2.4 `target`
 
 可以引用现有文件：
 
@@ -198,8 +223,11 @@ cameras:
 | `ds-none` | Double Sphere |
 
 `id` 当前可以出现在条目中，但 task 适配器不会使用它；相机编号严格由列表顺序决定。
-相机标定不接受已有相机参数作为数值初值：内参、畸变、每帧 target pose 和相邻相机
-baseline 都由数据自动初始化，再进入联合增量优化。
+未配置 `initialization` 时，内参、畸变、每帧 target pose 和相邻相机 baseline 仍全部
+由原生路径自动初始化。配置后，`refine` 可给部分内参/畸变/baseline 并保留相应前置
+优化；相机 `direct` 要求每台相机内参和畸变、以及所有相邻 baseline 完整，然后跳过
+这些前置初值优化。两种策略的最终增量标定参数仍按原生活动集合优化，详见
+[`INITIALIZATION_ZH.md`](INITIALIZATION_ZH.md)。
 
 ### 3.2 算法超参数总表
 
@@ -343,6 +371,11 @@ baseline 也固定；只有 `recompute_camera_chain_extrinsics: true` 才将 cam
 baseline 设为 active。无论该开关为何值，$\mathbf T_{\mathrm{cam0}\leftarrow\mathrm{imu}}$
 始终是联合优化的标定状态。
 
+可选 `camera_imu_calibration_initialization` 文件不会替代这个 camchain：它只给
+${}^{C_0}_{I_0}\mathbf T$、每相机时间偏移、重力、bias、IMU intrinsic，以及多 IMU
+相对状态的 seed。相机内参与相邻 baseline 仍来自 `camera_calibration.path`，baseline
+是否 active 仍只由上述开关决定。
+
 ### 4.2 `imus[]`
 
 ```yaml
@@ -355,9 +388,9 @@ imus:
 
 | `model` | 额外参与联合优化的 IMU 参数 | 初始化 |
 |---|---|---|
-| `calibrated` | 不估计尺度/非正交；仍估计 gyro/accel bias spline | bias 由旋转初值和零值初始化 |
-| `scale-misalignment` | accel、gyro 下三角标度/非正交矩阵；gyro 到 IMU 旋转；gyro 对加速度敏感矩阵 | 标度矩阵单位阵，其余为零/单位旋转 |
-| `scale-misalignment-size-effect` | 上述参数加 accelerometer size-effect lever arms | lever arm 从零开始；部分自由度按原生可观性约束固定 |
+| `calibrated` | 不估计尺度/非正交；仍估计 gyro/accel bias spline | 无 seed 时 bias 由旋转初值和零值初始化；可给两类 bias seed |
+| `scale-misalignment` | accel、gyro 下三角标度/非正交矩阵；gyro 到 IMU 旋转；gyro 对加速度敏感矩阵 | 无 seed 时单位阵/零值；可显式给 `M_accel`、`M_gyro`、`C_gyro_i`、`A_gyro_accel` |
+| `scale-misalignment-size-effect` | 上述参数加 accelerometer size-effect lever arms | 可再给 `ry_i_m`、`rz_i_m`；`rx_i` 保持原生零规范约束 |
 
 这些矩阵参数当前没有上下界。高维模型需要充分的三轴旋转、角加速度和线加速度激励；
 数据激励不足时，即使求解器报告收敛，也可能存在强相关或不物理的内参。
@@ -448,6 +481,11 @@ t_{\mathrm{cam}}
 \delta t_c.
 $$
 
+显式初始化会改变“互相关初值”这一步：`refine` 把给定时间作为 base，再计算剩余相关
+修正；`direct` 对已经给出 `timeshift_cam_imu_s.camN` 的相机跳过互相关。两种策略下，
+只要 `calibrate_time_offset: true`，最终 $\delta t_c$ 仍是 active；`direct` 不等于固定
+时间偏移。`refine` 时间 seed 要求此开关为 `true`。
+
 `time_offset_padding_s` 不是残差正则项，也不是显式 box constraint。它有两个作用：
 
 1. 在 pose spline 两端增加可用时间；
@@ -463,7 +501,8 @@ $$
 
 - 不执行 Camera–IMU 时间偏移互相关；
 - 时间偏移 design variable inactive；
-- 结果 camchain 不写新的 `timeshift_cam_imu`；
+- 无显式初值时，结果 camchain 不写新的 `timeshift_cam_imu`；若 `direct` 给出了某相机
+  的时间 seed，则把该固定预计算偏移写入结果，避免初值信息丢失；
 - `time_offset_padding_s` 对时间参数不再有调节意义。
 
 #### `synchronize_clocks`
@@ -635,6 +674,8 @@ CLI 只覆盖易变的执行资源参数，并额外控制：
 |---|---|
 | `--output-dir` | 输出目录，必填；相对路径以当前工作目录为基准 |
 | `--force` | 允许替换输出目录内由程序管理的既有结果文件 |
+| `--initialization` | 字段级覆盖 task 的 seed 路径；相对路径以当前工作目录为基准 |
+| `--initialization-strategy` | 字段级覆盖 task 策略，只能为 `refine` 或 `direct` |
 | `--parallelism` 及组件并行参数 | 按第 5.2 节优先级覆盖 task `execution` |
 | `--timing-json` | 仅 `project-profile` 构建可用；输出结构化阶段计时 |
 
@@ -686,6 +727,11 @@ task 当前没有暴露底层 `--profile-optimizer`，也没有暴露 spline 阶
 1. `calibration` 中拼错的未知字段可能被静默忽略；
 2. 部分数值虽然能通过 YAML 和 argparse，仍可能在更深的矩阵运算中失败。
 
+`initialization` 是例外：task 初值块和独立 seed YAML 都执行嵌套严格白名单、有限数、
+向量维数、齐次变换与模型门控校验。相机或 IMU 物理值是否足够接近真实设备，仍需要
+由最终 residual、`calibration.yaml` 与 seed 的人工差值，以及 `observability.yaml`
+判断；`initialization_report.yaml` 本身不直接计算物理参数变化量。
+
 因此现阶段应只使用本文列出的字段，并坚持：
 
 - 布尔字段写 YAML 原生 `true`/`false`，不要写字符串 `"false"`；
@@ -719,6 +765,8 @@ synchronize_clocks
 estimate_multi_imu_delay
 calibrate_time_offset
 recompute_camera_chain_extrinsics
+initialization.path 中的任一物理 seed
+initialization.strategy
 ```
 
 `recover_covariance` 不应改变最终最优点，但会增加后处理求解、耗时和内存；只比较
@@ -731,6 +779,11 @@ solver 主结果时可以分开统计。`detector_processes` 和 `optimizer_thre
 
 - task 校验、字段到 CLI 的映射和执行优先级：
   `src/python/kalibr_no_ros/task.py`；
+- 两类公共初值 YAML 的严格校验、相机模型维数和 IMU 模型门控：
+  `src/python/kalibr_no_ros/initialization.py`；
+- 最终标定块可观性报告、机器 epsilon hard rank 失败门和
+  `epsSVD=1e-6` operational 弱可观警告：
+  `src/python/kalibr_no_ros/observability.py`；
 - 公共 CLI 和 task 生成器：`src/python/kalibr_no_ros/cli.py`；
 - 相机标定参数、增量流程和 outlier 逻辑：
   `src/kalibr/calibration/kalibr/python/kalibr_calibrate_cameras`；

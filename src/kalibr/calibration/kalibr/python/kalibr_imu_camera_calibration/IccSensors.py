@@ -15,9 +15,261 @@ from .IccCalibrator import *
 import cv2
 import sys
 import math
+import numbers
+import re
 import numpy as np
 import pylab as pl
 import scipy.optimize
+import yaml
+
+
+CAMERA_IMU_CALIBRATION_INITIALIZATION_SCHEMA_VERSION = 1
+CAMERA_IMU_CALIBRATION_INITIALIZATION_KIND = (
+    'camera_imu_calibration_initialization')
+_CAMERA_IMU_INITIALIZATION_STRATEGIES = ('refine', 'direct')
+_CAMERA_IMU_INITIALIZATION_TOP_LEVEL_KEYS = {
+    'schema_version', 'kind', 'strategy', 'camera_imu', 'imus'
+}
+_CAMERA_IMU_INITIALIZATION_FIELDS = {
+    'T_cam0_imu', 'timeshift_cam_imu_s', 'gravity_direction_target'
+}
+_IMU_INITIALIZATION_FIELDS = {
+    'gyroscope_bias_rad_s', 'accelerometer_bias_m_s2',
+    'M_accel', 'M_gyro', 'C_gyro_i', 'A_gyro_accel',
+    'ry_i_m', 'rz_i_m', 'T_imu_from_reference',
+    'time_offset_to_reference_s'
+}
+_INDEXED_CAMERA = re.compile(r'^cam(?:0|[1-9][0-9]*)$')
+_INDEXED_IMU = re.compile(r'^imu(?:0|[1-9][0-9]*)$')
+
+
+def _cameraImuInitializationError(filename, message):
+    raise RuntimeError(
+        'Invalid camera-IMU calibration initialization file "{0}": {1}'.format(
+            filename, message))
+
+
+def _cameraImuInitializationMapping(filename, value, name):
+    if not isinstance(value, dict):
+        _cameraImuInitializationError(
+            filename, '{} must be a mapping'.format(name))
+    return value
+
+
+def _cameraImuInitializationCheckKeys(filename, value, allowed, name):
+    unknown = sorted(set(value) - set(allowed))
+    if unknown:
+        _cameraImuInitializationError(
+            filename, '{} contains unsupported field(s): {}'.format(
+                name, ', '.join(str(item) for item in unknown)))
+
+
+def _cameraImuInitializationNumber(filename, value, name):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        _cameraImuInitializationError(
+            filename, '{} must be a finite number'.format(name))
+    value = float(value)
+    if not np.isfinite(value):
+        _cameraImuInitializationError(
+            filename, '{} must be a finite number'.format(name))
+    return value
+
+
+def _cameraImuInitializationArray(filename, value, shape, name):
+    try:
+        rawArray = np.asarray(value, dtype=object)
+    except (TypeError, ValueError):
+        _cameraImuInitializationError(
+            filename, '{} must have shape {}'.format(name, shape))
+    if rawArray.shape != shape:
+        _cameraImuInitializationError(
+            filename,
+            '{} must contain finite values with shape {}'.format(name, shape))
+    if any(isinstance(item, bool) or not isinstance(item, numbers.Real)
+           for item in rawArray.flat):
+        _cameraImuInitializationError(
+            filename, '{} must contain only numbers'.format(name))
+    array = np.asarray(rawArray, dtype=float)
+    if not np.isfinite(array).all():
+        _cameraImuInitializationError(
+            filename,
+            '{} must contain finite values with shape {}'.format(name, shape))
+    return array
+
+
+def _cameraImuInitializationRotation(filename, value, name):
+    rotation = _cameraImuInitializationArray(
+        filename, value, (3, 3), name)
+    if (not np.allclose(np.dot(rotation.T, rotation), np.eye(3), atol=1e-6,
+                        rtol=0.0) or
+            not np.isclose(np.linalg.det(rotation), 1.0, atol=1e-6,
+                           rtol=0.0)):
+        _cameraImuInitializationError(
+            filename, '{} must be a proper rotation matrix'.format(name))
+    return rotation
+
+
+def _cameraImuInitializationTransform(filename, value, name):
+    transform = _cameraImuInitializationArray(
+        filename, value, (4, 4), name)
+    _cameraImuInitializationRotation(
+        filename, transform[:3, :3], name + ' rotation')
+    if not np.allclose(transform[3, :], np.array([0., 0., 0., 1.]),
+                       atol=1e-9, rtol=0.0):
+        _cameraImuInitializationError(
+            filename,
+            '{} must have homogeneous bottom row [0, 0, 0, 1]'.format(name))
+    return transform
+
+
+def loadCameraImuCalibrationInitialization(filename, num_cameras=None,
+                                           imu_models=None):
+    """Load and defensively validate a legacy-facing initialization YAML."""
+    try:
+        with open(filename, 'r') as stream:
+            document = yaml.safe_load(stream)
+    except (IOError, OSError) as error:
+        raise RuntimeError(
+            'Could not read camera-IMU calibration initialization file "{0}": '
+            '{1}'.format(filename, error))
+    except yaml.YAMLError as error:
+        raise RuntimeError(
+            'Could not parse camera-IMU calibration initialization file "{0}": '
+            '{1}'.format(filename, error))
+
+    document = _cameraImuInitializationMapping(
+        filename, document, 'initialization document root')
+    _cameraImuInitializationCheckKeys(
+        filename, document, _CAMERA_IMU_INITIALIZATION_TOP_LEVEL_KEYS,
+        'initialization document')
+    if (type(document.get('schema_version')) is not int or
+            document.get('schema_version') !=
+            CAMERA_IMU_CALIBRATION_INITIALIZATION_SCHEMA_VERSION):
+        _cameraImuInitializationError(
+            filename, 'schema_version must be integer {}'.format(
+                CAMERA_IMU_CALIBRATION_INITIALIZATION_SCHEMA_VERSION))
+    if document.get('kind') != CAMERA_IMU_CALIBRATION_INITIALIZATION_KIND:
+        _cameraImuInitializationError(
+            filename, 'kind must be "{}"'.format(
+                CAMERA_IMU_CALIBRATION_INITIALIZATION_KIND))
+    if document.get('strategy') not in _CAMERA_IMU_INITIALIZATION_STRATEGIES:
+        _cameraImuInitializationError(
+            filename, 'strategy must be either "refine" or "direct"')
+
+    if 'camera_imu' in document:
+        cameraImu = _cameraImuInitializationMapping(
+            filename, document['camera_imu'], 'camera_imu')
+        _cameraImuInitializationCheckKeys(
+            filename, cameraImu, _CAMERA_IMU_INITIALIZATION_FIELDS,
+            'camera_imu')
+        if 'T_cam0_imu' in cameraImu:
+            _cameraImuInitializationTransform(
+                filename, cameraImu['T_cam0_imu'],
+                'camera_imu.T_cam0_imu')
+        if 'timeshift_cam_imu_s' in cameraImu:
+            timeshifts = _cameraImuInitializationMapping(
+                filename, cameraImu['timeshift_cam_imu_s'],
+                'camera_imu.timeshift_cam_imu_s')
+            for cameraName, timeshift in timeshifts.items():
+                if (not isinstance(cameraName, str) or
+                        not _INDEXED_CAMERA.match(cameraName)):
+                    _cameraImuInitializationError(
+                        filename,
+                        'camera_imu.timeshift_cam_imu_s keys must be camN')
+                cameraNr = int(cameraName[3:])
+                if num_cameras is not None and cameraNr >= num_cameras:
+                    _cameraImuInitializationError(
+                        filename, 'camera time shift references unavailable '
+                        '{}'.format(cameraName))
+                _cameraImuInitializationNumber(
+                    filename, timeshift,
+                    'camera_imu.timeshift_cam_imu_s.{}'.format(cameraName))
+        if 'gravity_direction_target' in cameraImu:
+            gravity = _cameraImuInitializationArray(
+                filename, cameraImu['gravity_direction_target'], (3,),
+                'camera_imu.gravity_direction_target')
+            if np.linalg.norm(gravity) <= 1e-12:
+                _cameraImuInitializationError(
+                    filename,
+                    'camera_imu.gravity_direction_target must be nonzero')
+
+    if 'imus' in document:
+        imus = _cameraImuInitializationMapping(
+            filename, document['imus'], 'imus')
+        for imuName, imu in imus.items():
+            if not isinstance(imuName, str) or not _INDEXED_IMU.match(imuName):
+                _cameraImuInitializationError(
+                    filename, 'imus keys must be imuN')
+            imuNr = int(imuName[3:])
+            if imu_models is not None and imuNr >= len(imu_models):
+                _cameraImuInitializationError(
+                    filename, 'IMU initialization references unavailable '
+                    '{}'.format(imuName))
+            imu = _cameraImuInitializationMapping(
+                filename, imu, 'imus.{}'.format(imuName))
+            _cameraImuInitializationCheckKeys(
+                filename, imu, _IMU_INITIALIZATION_FIELDS,
+                'imus.{}'.format(imuName))
+            if imuNr == 0:
+                for field in ('T_imu_from_reference',
+                              'time_offset_to_reference_s'):
+                    if field in imu:
+                        _cameraImuInitializationError(
+                            filename, 'imus.imu0 cannot contain {}'.format(
+                                field))
+            if imu_models is not None and imuNr < len(imu_models):
+                model = imu_models[imuNr]
+                intrinsicFields = {
+                    'M_accel', 'M_gyro', 'C_gyro_i', 'A_gyro_accel'
+                }
+                sizeEffectFields = {'ry_i_m', 'rz_i_m'}
+                if (intrinsicFields.intersection(imu) and model not in
+                        ('scale-misalignment',
+                         'scale-misalignment-size-effect')):
+                    _cameraImuInitializationError(
+                        filename, 'intrinsic fields are not valid for {} model '
+                        '{}'.format(imuName, model))
+                if (sizeEffectFields.intersection(imu) and
+                        model != 'scale-misalignment-size-effect'):
+                    _cameraImuInitializationError(
+                        filename, 'lever-arm fields are not valid for {} model '
+                        '{}'.format(imuName, model))
+            for field in ('gyroscope_bias_rad_s',
+                          'accelerometer_bias_m_s2', 'ry_i_m', 'rz_i_m'):
+                if field in imu:
+                    _cameraImuInitializationArray(
+                        filename, imu[field], (3,),
+                        'imus.{}.{}'.format(imuName, field))
+            for field in ('M_accel', 'M_gyro', 'A_gyro_accel'):
+                if field in imu:
+                    matrix = _cameraImuInitializationArray(
+                        filename, imu[field], (3, 3),
+                        'imus.{}.{}'.format(imuName, field))
+                    if field in ('M_accel', 'M_gyro'):
+                        if np.any(np.abs(np.triu(matrix, 1)) > 1e-12):
+                            _cameraImuInitializationError(
+                                filename,
+                                'imus.{}.{} must be lower triangular'.format(
+                                    imuName, field))
+                        if np.any(np.diag(matrix) <= 0.0):
+                            _cameraImuInitializationError(
+                                filename,
+                                'imus.{}.{} diagonal entries must be '
+                                'positive'.format(imuName, field))
+            if 'C_gyro_i' in imu:
+                _cameraImuInitializationRotation(
+                    filename, imu['C_gyro_i'],
+                    'imus.{}.C_gyro_i'.format(imuName))
+            if 'T_imu_from_reference' in imu:
+                _cameraImuInitializationTransform(
+                    filename, imu['T_imu_from_reference'],
+                    'imus.{}.T_imu_from_reference'.format(imuName))
+            if 'time_offset_to_reference_s' in imu:
+                _cameraImuInitializationNumber(
+                    filename, imu['time_offset_to_reference_s'],
+                    'imus.{}.time_offset_to_reference_s'.format(imuName))
+
+    return document
 
 
 def initCameraBagDataset(bagfile, topic, from_to, freq, perform_synchronization):
@@ -60,6 +312,10 @@ class IccCamera():
 
         #set the extrinsic prior to default
         self.T_extrinsic = sm.Transformation()
+        self.initializationStrategy = None
+        self.hasTransformInitialization = False
+        self.hasTimeshiftInitialization = False
+        self.hasGravityInitialization = False
          
         #initialize timeshift prior to zero
         self.timeshiftCamToImuPrior = 0.0
@@ -74,6 +330,22 @@ class IccCamera():
         
         #an estimate of the gravity in the world coordinate frame  
         self.gravity_w = np.array([9.80655, 0., 0.])
+
+    def setTransformInitialization(self, transform, strategy):
+        self.T_extrinsic = sm.Transformation(np.asarray(transform, dtype=float))
+        self.initializationStrategy = strategy
+        self.hasTransformInitialization = True
+
+    def setTimeshiftInitialization(self, timeshift, strategy):
+        self.timeshiftCamToImuPrior = float(timeshift)
+        self.initializationStrategy = strategy
+        self.hasTimeshiftInitialization = True
+
+    def setGravityInitialization(self, direction, strategy):
+        direction = np.asarray(direction, dtype=float)
+        self.gravity_w = direction / np.linalg.norm(direction) * 9.80655
+        self.initializationStrategy = strategy
+        self.hasGravityInitialization = True
         
     def setupCalibrationTarget(self, targetConfig, showExtraction=False, showReproj=False, imageStepping=False):
         
@@ -130,18 +402,41 @@ class IccCamera():
         # build the problem
         problem = aopt.OptimizationProblem()
 
-        # Add the rotation as design variable
-        q_i_c_Dv = aopt.RotationQuaternionDv(  self.T_extrinsic.q() )
-        q_i_c_Dv.setActive( True )
+        # Add the rotation as design variable. This variable maps camera angular
+        # rates into IMU coordinates, hence a supplied T_cam0_imu contributes
+        # the transpose of its rotation block.
+        if self.hasTransformInitialization:
+            q_i_c_prior = sm.r2quat(
+                self.T_extrinsic.T()[0:3, 0:3].transpose())
+        else:
+            q_i_c_prior = self.T_extrinsic.q()
+        q_i_c_Dv = aopt.RotationQuaternionDv(q_i_c_prior)
+        rotationActive = not (
+            self.initializationStrategy == 'direct' and
+            self.hasTransformInitialization)
+        q_i_c_Dv.setActive(rotationActive)
         problem.addDesignVariable(q_i_c_Dv)
 
         # Add the gyro bias as design variable
-        gyroBiasDv = aopt.EuclideanPointDv( np.zeros(3) )
-        gyroBiasDv.setActive( True )
+        gyroBiasDv = aopt.EuclideanPointDv(imu.GyroBiasPrior)
+        biasActive = not (
+            getattr(imu, 'initializationStrategy', None) == 'direct' and
+            getattr(imu, 'hasGyroBiasInitialization', False))
+        gyroBiasDv.setActive(biasActive)
         problem.addDesignVariable(gyroBiasDv)
         
-        #initialize a pose spline using the camera poses
-        poseSpline = self.initPoseSplineFromCamera( timeOffsetPadding=0.0 )
+        # The preliminary problem estimates an absolute camera-to-IMU
+        # rotation.  A supplied T_cam0_imu is already the starting value of
+        # q_i_c_Dv above, so the visual angular-velocity spline must remain in
+        # the camera frame here.  Applying the seed to both the spline and the
+        # rotation DV would rotate the prediction twice.
+        if self.hasTransformInitialization:
+            poseSpline = self.initPoseSplineFromCamera(
+                timeOffsetPadding=0.0,
+                T_c_b_override=np.eye(4))
+        else:
+            poseSpline = self.initPoseSplineFromCamera(
+                timeOffsetPadding=0.0)
         
         for im in imu.imuData:
             tk = im.stamp.toSec()
@@ -164,43 +459,45 @@ class IccCamera():
             sys.exit(-1)
 
         
-        #define the optimization 
-        options = aopt.Optimizer2Options()
-        options.verbose = False
-        options.linearSolver = aopt.BlockCholeskyLinearSystemSolver() #does not have multi-threading support
-        options.nThreads = 2
-        options.convergenceDeltaX = 1e-4
-        options.convergenceDeltaJ = 1
-        options.maxIterations = 50
+        # If direct initialization supplies both coupled quantities there is
+        # nothing for this preliminary LM to solve. Otherwise supplied values
+        # are either fixed (direct) or active starting points (refine).
+        if rotationActive or biasActive:
+            options = aopt.Optimizer2Options()
+            options.verbose = False
+            options.linearSolver = aopt.BlockCholeskyLinearSystemSolver() #does not have multi-threading support
+            options.nThreads = 2
+            options.convergenceDeltaX = 1e-4
+            options.convergenceDeltaJ = 1
+            options.maxIterations = 50
 
-        #run the optimization
-        native_runtime.apply_optimizer_threads(options)
-        optimizer = aopt.Optimizer2(options)
-        optimizer.setProblem(problem)
-        
-        #get the prior
-        try:
-            native_runtime.run_optimizer(optimizer)
-        except:
-            sm.logFatal("Failed to obtain orientation prior!")
-            sys.exit(-1)
+            native_runtime.apply_optimizer_threads(options)
+            optimizer = aopt.Optimizer2(options)
+            optimizer.setProblem(problem)
+
+            try:
+                native_runtime.run_optimizer(optimizer)
+            except:
+                sm.logFatal("Failed to obtain orientation prior!")
+                sys.exit(-1)
 
         #overwrite the external rotation prior (keep the external translation prior)
         R_i_c = q_i_c_Dv.toRotationMatrix().transpose()
         self.T_extrinsic = sm.Transformation( sm.rt2Transform( R_i_c, self.T_extrinsic.t() ) )
 
-        #estimate gravity in the world coordinate frame as the mean specific force
-        a_w = []
-        for im in imu.imuData:
-            tk = im.stamp.toSec()
-            if tk > poseSpline.t_min() and tk < poseSpline.t_max():
-                a_w.append(np.dot(poseSpline.orientation(tk), np.dot(R_i_c, - im.alpha)))
-        mean_a_w = np.mean(np.asarray(a_w).T, axis=1)
-        self.gravity_w = mean_a_w / np.linalg.norm(mean_a_w) * 9.80655
+        #estimate gravity only when no explicit target-frame direction exists
+        if not self.hasGravityInitialization:
+            a_w = []
+            for im in imu.imuData:
+                tk = im.stamp.toSec()
+                if tk > poseSpline.t_min() and tk < poseSpline.t_max():
+                    a_w.append(np.dot(poseSpline.orientation(tk), np.dot(R_i_c, - im.alpha)))
+            mean_a_w = np.mean(np.asarray(a_w).T, axis=1)
+            self.gravity_w = mean_a_w / np.linalg.norm(mean_a_w) * 9.80655
         print("Gravity was intialized to", self.gravity_w, "[m/s^2]") 
 
         #set the gyro bias prior (if we have more than 1 cameras use recursive average)
-        b_gyro = bias.toEuclidean() 
+        b_gyro = gyroBiasDv.toEuclidean()
         imu.GyroBiasPriorCount += 1
         imu.GyroBiasPrior = (imu.GyroBiasPriorCount-1.0)/imu.GyroBiasPriorCount * imu.GyroBiasPrior + 1.0/imu.GyroBiasPriorCount*b_gyro
 
@@ -225,6 +522,14 @@ class IccCamera():
     #          in a next step we can use the time shift to estimate the rotation between camera and imu
     def findTimeshiftCameraImuPrior(self, imu, verbose=False):
         print("Estimating time shift camera to imu:")
+
+        if (self.hasTimeshiftInitialization and
+                self.initializationStrategy == 'direct'):
+            print("  Using direct camera-to-IMU time shift initialization:")
+            print(self.timeshiftCamToImuPrior)
+            return
+
+        initialTimeshift = self.timeshiftCamToImuPrior
         
         #fit a spline to the camera observations
         poseSpline = self.initPoseSplineFromCamera( timeOffsetPadding=0.0 )
@@ -277,14 +582,21 @@ class IccCamera():
             sm.logDebug("dT: {0}".format(dT))
         
         #store the timeshift (t_imu = t_cam + timeshiftCamToImuPrior)
-        self.timeshiftCamToImuPrior = shift
+        if (self.hasTimeshiftInitialization and
+                self.initializationStrategy == 'refine'):
+            self.timeshiftCamToImuPrior = initialTimeshift + shift
+        else:
+            self.timeshiftCamToImuPrior = shift
         
         print("  Time shift camera to imu (t_imu = t_cam + shift):")
         print(self.timeshiftCamToImuPrior)
         
     #initialize a pose spline using camera poses (pose spline = T_wb)
-    def initPoseSplineFromCamera(self, splineOrder=6, poseKnotsPerSecond=100, timeOffsetPadding=0.02):
-        T_c_b = self.T_extrinsic.T()        
+    def initPoseSplineFromCamera(self, splineOrder=6, poseKnotsPerSecond=100,
+                                 timeOffsetPadding=0.02,
+                                 T_c_b_override=None):
+        T_c_b = (self.T_extrinsic.T() if T_c_b_override is None else
+                 np.asarray(T_c_b_override, dtype=float))
         pose = bsplines.BSplinePose(splineOrder, sm.RotationVector() )
                 
         # Get the checkerboard times.
@@ -426,6 +738,7 @@ class IccCameraChain():
 
         #create all camera in the chain
         self.camList = []
+        self.hasInitialization = False
         for camNr in range(0, chainConfig.numCameras()):
             camConfig = chainConfig.getCameraParameters(camNr)
             dataset = initCameraBagDataset(parsed.bagfile[0], camConfig.getRosTopic(), \
@@ -448,7 +761,30 @@ class IccCameraChain():
         
         #use stereo calibration guess if no baselines are provided
         self.initializeBaselines()
-        
+
+    def applyInitialization(self, initialization, strategy):
+        if initialization is None:
+            return
+
+        self.hasInitialization = True
+
+        if 'T_cam0_imu' in initialization:
+            self.camList[0].setTransformInitialization(
+                initialization['T_cam0_imu'], strategy)
+
+        if 'gravity_direction_target' in initialization:
+            self.camList[0].setGravityInitialization(
+                initialization['gravity_direction_target'], strategy)
+
+        for cameraName, timeshift in initialization.get(
+                'timeshift_cam_imu_s', {}).items():
+            cameraNr = int(cameraName[3:])
+            if cameraNr >= len(self.camList):
+                raise ValueError(
+                    "Initialization config references unavailable {}".format(
+                        cameraName))
+            self.camList[cameraNr].setTimeshiftInitialization(
+                timeshift, strategy)
 
     def initializeBaselines(self):
         #estimate baseline prior if no external guess is provided           
@@ -616,9 +952,95 @@ class IccImu(object):
             {"topic": self.dataset.topic}, self.loadImuData)
 
         #initial estimates for multi IMU calibration
-        self.q_i_b_prior = np.array([0., 0., 0., 1.]) 
+        self.q_i_b_prior = np.array([0., 0., 0., 1.])
+        self.r_b_prior = np.array([0., 0., 0.])
         self.timeOffset = 0.0
-        
+        self.AccelBiasPrior = np.array([0., 0., 0.])
+        self.M_accel_prior = np.eye(3)
+        self.M_gyro_prior = np.eye(3)
+        self.C_gyro_i_prior = np.eye(3)
+        self.A_gyro_accel_prior = np.zeros((3, 3))
+        self.ry_i_prior = np.array([0., 0., 0.])
+        self.rz_i_prior = np.array([0., 0., 0.])
+        self.initializationStrategy = None
+        self.initializationFields = set()
+        self.hasGyroBiasInitialization = False
+        self.hasTransformInitialization = False
+        self.hasTimeInitialization = False
+
+    def applyInitialization(self, initialization, strategy):
+        if initialization is None:
+            return
+
+        imuName = 'imu{}'.format(self.imuConfig.imuNr)
+        if self.isReferenceImu:
+            for field in ('T_imu_from_reference',
+                          'time_offset_to_reference_s'):
+                if field in initialization:
+                    raise ValueError(
+                        "imus.{}.{} is only valid for non-reference IMUs".format(
+                            imuName, field))
+
+        intrinsicFields = {
+            'M_accel', 'M_gyro', 'C_gyro_i', 'A_gyro_accel'
+        }
+        leverArmFields = {'ry_i_m', 'rz_i_m'}
+        model = self.imuConfig.data['model']
+        if intrinsicFields.intersection(initialization) and model not in (
+                'scale-misalignment', 'scale-misalignment-size-effect'):
+            raise ValueError(
+                "Intrinsic initialization for {} requires a scale-misalignment "
+                "IMU model".format(imuName))
+        if leverArmFields.intersection(initialization) and model != (
+                'scale-misalignment-size-effect'):
+            raise ValueError(
+                "Lever-arm initialization for {} requires the "
+                "scale-misalignment-size-effect IMU model".format(imuName))
+
+        self.initializationStrategy = strategy
+        self.initializationFields = set(initialization)
+
+        if 'gyroscope_bias_rad_s' in initialization:
+            self.GyroBiasPrior = np.asarray(
+                initialization['gyroscope_bias_rad_s'], dtype=float)
+            self.hasGyroBiasInitialization = True
+        if 'accelerometer_bias_m_s2' in initialization:
+            self.AccelBiasPrior = np.asarray(
+                initialization['accelerometer_bias_m_s2'], dtype=float)
+        if 'T_imu_from_reference' in initialization:
+            transform = np.asarray(
+                initialization['T_imu_from_reference'], dtype=float)
+            rotation = transform[0:3, 0:3]
+            translation = transform[0:3, 3]
+            self.q_i_b_prior = sm.r2quat(rotation)
+            # r_b is the reference-frame lever arm used by the residuals;
+            # T_i_b translation is -C_i_b * r_b.
+            self.r_b_prior = -np.dot(rotation.transpose(), translation)
+            self.hasTransformInitialization = True
+        if 'time_offset_to_reference_s' in initialization:
+            if strategy == 'refine' and not self.estimateTimedelay:
+                raise ValueError(
+                    "refine initialization of {} time offset requires "
+                    "--imu-delay-by-correlation".format(imuName))
+            self.timeOffset = float(
+                initialization['time_offset_to_reference_s'])
+            self.hasTimeInitialization = True
+        if 'M_accel' in initialization:
+            self.M_accel_prior = np.asarray(
+                initialization['M_accel'], dtype=float)
+        if 'M_gyro' in initialization:
+            self.M_gyro_prior = np.asarray(
+                initialization['M_gyro'], dtype=float)
+        if 'C_gyro_i' in initialization:
+            self.C_gyro_i_prior = np.asarray(
+                initialization['C_gyro_i'], dtype=float)
+        if 'A_gyro_accel' in initialization:
+            self.A_gyro_accel_prior = np.asarray(
+                initialization['A_gyro_accel'], dtype=float)
+        if 'ry_i_m' in initialization:
+            self.ry_i_prior = np.asarray(initialization['ry_i_m'], dtype=float)
+        if 'rz_i_m' in initialization:
+            self.rz_i_prior = np.asarray(initialization['rz_i_m'], dtype=float)
     class ImuMeasurement(object):
         def __init__(self, stamp, omega, alpha, Rgyro, Raccel):
             self.omega = omega
@@ -669,7 +1091,7 @@ class IccImu(object):
         self.q_i_b_Dv = aopt.RotationQuaternionDv(self.q_i_b_prior)
         problem.addDesignVariable(self.q_i_b_Dv, HELPER_GROUP_ID)
         self.q_i_b_Dv.setActive(False)
-        self.r_b_Dv = aopt.EuclideanPointDv(np.array([0., 0., 0.]))
+        self.r_b_Dv = aopt.EuclideanPointDv(self.r_b_prior)
         problem.addDesignVariable(self.r_b_Dv, HELPER_GROUP_ID)
         self.r_b_Dv.setActive(False)
 
@@ -773,7 +1195,7 @@ class IccImu(object):
         self.gyroBias.initConstantSpline(start,end,knots, self.GyroBiasPrior )
         
         self.accelBias = bsplines.BSpline(splineOrder)
-        self.accelBias.initConstantSpline(start,end,knots, np.zeros(3))
+        self.accelBias.initConstantSpline(start,end,knots, self.AccelBiasPrior)
         
     def addBiasMotionTerms(self, problem):
         Wgyro = np.eye(3) / (self.gyroRandomWalk * self.gyroRandomWalk)
@@ -790,6 +1212,14 @@ class IccImu(object):
                                  - np.dot(self.q_i_b_Dv.toRotationMatrix(), \
                                           self.r_b_Dv.toEuclidean()))
 
+    def _referenceAngularVelocitySplineBounds(self, referenceImu):
+        # The spline models the reference IMU.  Preserve the legacy domain
+        # when no time seed exists, but use the actual reference clock domain
+        # for seeded alignment so a valid large offset can create overlap.
+        sourceImu = referenceImu if self.hasTimeInitialization else self
+        return (sourceImu.imuData[0].stamp.toSec(),
+                sourceImu.imuData[-1].stamp.toSec())
+
     def findOrientationPrior(self, referenceImu):
         print("")
         print("Estimating imu-imu rotation initial guess.")
@@ -797,14 +1227,17 @@ class IccImu(object):
         # build the problem
         problem = aopt.OptimizationProblem()
 
-        # Add the rotation as design variable
-        q_i_b_Dv = aopt.RotationQuaternionDv( np.array([0.0, 0.0, 0.0, 1.0]) )
-        q_i_b_Dv.setActive(True)
+        # Add the relative rotation as design variable.
+        q_i_b_Dv = aopt.RotationQuaternionDv(self.q_i_b_prior)
+        rotationActive = not (
+            self.initializationStrategy == 'direct' and
+            self.hasTransformInitialization)
+        q_i_b_Dv.setActive(rotationActive)
         problem.addDesignVariable(q_i_b_Dv)
 
         # Add spline representing rotational velocity of in body frame
-        startTime = self.imuData[0].stamp.toSec()
-        endTime = self.imuData[-1].stamp.toSec()
+        startTime, endTime = self._referenceAngularVelocitySplineBounds(
+            referenceImu)
         knotsPerSecond = 50
         knots = int( round( (endTime - startTime) * knotsPerSecond) )
 
@@ -818,8 +1251,17 @@ class IccImu(object):
             problem.addDesignVariable(dv)
 
         # Add constant reference gyro bias as design variable
-        referenceGyroBiasDv = aopt.EuclideanPointDv( np.zeros(3) )
-        referenceGyroBiasDv.setActive(True)
+        referenceGyroBiasPrior = (
+            referenceImu.GyroBiasPrior
+            if getattr(referenceImu, 'hasGyroBiasInitialization', False)
+            else np.zeros(3))
+        referenceGyroBiasDv = aopt.EuclideanPointDv(
+            referenceGyroBiasPrior)
+        referenceBiasActive = not (
+            getattr(referenceImu, 'initializationStrategy', None) == 'direct'
+            and getattr(
+                referenceImu, 'hasGyroBiasInitialization', False))
+        referenceGyroBiasDv.setActive(referenceBiasActive)
         problem.addDesignVariable(referenceGyroBiasDv)
 
         for im in referenceImu.imuData:
@@ -855,15 +1297,19 @@ class IccImu(object):
             sm.logFatal("Failed to obtain initial guess for the relative orientation!")
             sys.exit(-1)
 
+        if getattr(referenceImu, 'hasGyroBiasInitialization', False):
+            referenceImu.GyroBiasPrior = referenceGyroBiasDv.toEuclidean()
+
+        initialTimeOffset = self.timeOffset
         referenceAbsoluteOmega = lambda dt = np.array([0.]): \
-                np.asarray([np.linalg.norm(angularVelocityDv.toEuclidean(im.stamp.toSec() + dt[0], 0)) \
+                np.asarray([np.linalg.norm(angularVelocityDv.toEuclidean(im.stamp.toSec() + initialTimeOffset + dt[0], 0)) \
                             for im in self.imuData \
-                            if (im.stamp.toSec() + dt[0] > angularVelocity.t_min() \
-                                and im.stamp.toSec() + dt[0] < angularVelocity.t_max())])
+                            if (im.stamp.toSec() + initialTimeOffset + dt[0] > angularVelocity.t_min() \
+                                and im.stamp.toSec() + initialTimeOffset + dt[0] < angularVelocity.t_max())])
         absoluteOmega = lambda dt = np.array([0.]): \
                 np.asarray([np.linalg.norm(im.omega) for im in self.imuData \
-                            if (im.stamp.toSec() + dt[0] > angularVelocity.t_min() \
-                                and im.stamp.toSec() + dt[0] < angularVelocity.t_max())])
+                            if (im.stamp.toSec() + initialTimeOffset + dt[0] > angularVelocity.t_min() \
+                                and im.stamp.toSec() + initialTimeOffset + dt[0] < angularVelocity.t_max())])
 
         if len(referenceAbsoluteOmega()) == 0 or len(absoluteOmega()) == 0:
             sm.logFatal("The time ranges of the IMUs published as topics {0} and {1} do not overlap. "\
@@ -871,27 +1317,40 @@ class IccImu(object):
                         .format(referenceImu.imuConfig.getRosTopic(), self.imuConfig.getRosTopic()))
             sys.exit(-1)
          
-        #get the time shift
-        corr = np.correlate(referenceAbsoluteOmega(), absoluteOmega(), "full")
-        discrete_shift = corr.argmax() - (np.size(absoluteOmega()) - 1)
-        #get cont. time shift
-        times = [im.stamp.toSec() for im in self.imuData]
-        dT = np.mean(np.diff( times ))
-        shift = discrete_shift*dT
-        
-        if self.estimateTimedelay and not self.isReferenceImu:
-            #refine temporal offset only when used.
-            objectiveFunction = lambda dt: np.linalg.norm(referenceAbsoluteOmega(dt) - absoluteOmega(dt))**2
-            refined_shift = scipy.optimize.fmin(objectiveFunction, np.array([shift]), maxiter=100)[0]
-            self.timeOffset = float(refined_shift)
+        directTime = (
+            self.hasTimeInitialization and
+            self.initializationStrategy == 'direct')
+        if not directTime:
+            #get the (residual, for refine initialization) time shift
+            corr = np.correlate(
+                referenceAbsoluteOmega(), absoluteOmega(), "full")
+            discrete_shift = corr.argmax() - (np.size(absoluteOmega()) - 1)
+            times = [im.stamp.toSec() for im in self.imuData]
+            dT = np.mean(np.diff( times ))
+            shift = discrete_shift*dT
+
+            if self.estimateTimedelay and not self.isReferenceImu:
+                objectiveFunction = lambda dt: np.linalg.norm(
+                    referenceAbsoluteOmega(dt) - absoluteOmega(dt))**2
+                refined_shift = scipy.optimize.fmin(
+                    objectiveFunction, np.array([shift]), maxiter=100)[0]
+                if (self.hasTimeInitialization and
+                        self.initializationStrategy == 'refine'):
+                    self.timeOffset = initialTimeOffset + float(refined_shift)
+                else:
+                    self.timeOffset = float(refined_shift)
 
         print("Temporal correction with respect to reference IMU ")
-        print(self.timeOffset, "[s]", ("" if self.estimateTimedelay else \
+        print(self.timeOffset, "[s]", ("" if (
+            self.estimateTimedelay or self.hasTimeInitialization) else \
                                        " (this offset is not accounted for in the calibration)"))
 
         # Add constant gyro bias as design variable
-        gyroBiasDv = aopt.EuclideanPointDv( np.zeros(3) )
-        gyroBiasDv.setActive(True)
+        gyroBiasDv = aopt.EuclideanPointDv(self.GyroBiasPrior)
+        biasActive = not (
+            self.initializationStrategy == 'direct' and
+            self.hasGyroBiasInitialization)
+        gyroBiasDv.setActive(biasActive)
         problem.addDesignVariable(gyroBiasDv)
 
         for im in self.imuData:
@@ -908,17 +1367,20 @@ class IccImu(object):
                 gerr = ket.GyroscopeError(im.omega, im.omegaInvR, omega_predicted, bias)
                 problem.addErrorTerm(gerr)
 
-        #get the prior
-        try:
-            native_runtime.run_optimizer(optimizer)
-        except:
-            sm.logFatal("Failed to obtain initial guess for the relative orientation!")
-            sys.exit(-1)
+        #get the prior unless direct initialization supplied both coupled values
+        if rotationActive or biasActive:
+            try:
+                native_runtime.run_optimizer(optimizer)
+            except:
+                sm.logFatal("Failed to obtain initial guess for the relative orientation!")
+                sys.exit(-1)
 
         print("Estimated imu to reference imu Rotation: ")
         print(q_i_b_Dv.toRotationMatrix())
 
         self.q_i_b_prior = sm.r2quat(q_i_b_Dv.toRotationMatrix())
+        if self.hasTransformInitialization or self.hasGyroBiasInitialization:
+            self.GyroBiasPrior = gyroBiasDv.toEuclidean()
         
         
 class IccScaledMisalignedImu(IccImu):
@@ -960,21 +1422,23 @@ class IccScaledMisalignedImu(IccImu):
     def addDesignVariables(self, problem):
         IccImu.addDesignVariables(self, problem)
 
-        self.q_gyro_i_Dv = aopt.RotationQuaternionDv(np.array([0., 0., 0., 1.]))
+        self.q_gyro_i_Dv = aopt.RotationQuaternionDv(
+            sm.r2quat(self.C_gyro_i_prior))
         problem.addDesignVariable(self.q_gyro_i_Dv, HELPER_GROUP_ID)
         self.q_gyro_i_Dv.setActive(True)
 
-        self.M_accel_Dv = aopt.MatrixBasicDv(np.eye(3), np.array([[1, 0, 0],[1, 1, 0],[1, 1, 1]], \
+        self.M_accel_Dv = aopt.MatrixBasicDv(self.M_accel_prior, np.array([[1, 0, 0],[1, 1, 0],[1, 1, 1]], \
                                                                  dtype=int))
         problem.addDesignVariable(self.M_accel_Dv, HELPER_GROUP_ID)
         self.M_accel_Dv.setActive(True)
         
-        self.M_gyro_Dv = aopt.MatrixBasicDv(np.eye(3), np.array([[1, 0, 0],[1, 1, 0],[1, 1, 1]], \
+        self.M_gyro_Dv = aopt.MatrixBasicDv(self.M_gyro_prior, np.array([[1, 0, 0],[1, 1, 0],[1, 1, 1]], \
                                                                 dtype=int))
         problem.addDesignVariable(self.M_gyro_Dv, HELPER_GROUP_ID)
         self.M_gyro_Dv.setActive(True)
         
-        self.M_accel_gyro_Dv = aopt.MatrixBasicDv(np.zeros((3,3)),np.ones((3,3),dtype=int))
+        self.M_accel_gyro_Dv = aopt.MatrixBasicDv(
+            self.A_gyro_accel_prior, np.ones((3,3),dtype=int))
         problem.addDesignVariable(self.M_accel_gyro_Dv, HELPER_GROUP_ID)
         self.M_accel_gyro_Dv.setActive(True)
 
@@ -1111,11 +1575,11 @@ class IccScaledMisalignedSizeEffectImu(IccScaledMisalignedImu):
         problem.addDesignVariable(self.rx_i_Dv, HELPER_GROUP_ID)
         self.rx_i_Dv.setActive(False)
         
-        self.ry_i_Dv = aopt.EuclideanPointDv(np.array([0., 0., 0.]))
+        self.ry_i_Dv = aopt.EuclideanPointDv(self.ry_i_prior)
         problem.addDesignVariable(self.ry_i_Dv, HELPER_GROUP_ID)
         self.ry_i_Dv.setActive(True)
 
-        self.rz_i_Dv = aopt.EuclideanPointDv(np.array([0., 0., 0.]))
+        self.rz_i_Dv = aopt.EuclideanPointDv(self.rz_i_prior)
         problem.addDesignVariable(self.rz_i_Dv, HELPER_GROUP_ID)
         self.rz_i_Dv.setActive(True)
 
