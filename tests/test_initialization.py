@@ -578,6 +578,32 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
         index = arguments.index("--initialization-config")
         self.assertEqual(arguments[index + 1], "canonical.yaml")
 
+    def test_corner_refinement_is_forwarded_and_validated(self):
+        task = {
+            "dataset": {},
+            "cameras": [{"topic": "/cam0", "model": "pinhole-radtan"}],
+            "calibration": {
+                "window_half_size_px": 3,
+                "max_displacement_px": 1.75,
+            },
+        }
+        arguments = _camera_arguments(task, "bag", "target", {})
+        self.assertEqual(
+            arguments[arguments.index("--window-half-size-px") + 1], "3")
+        self.assertEqual(
+            arguments[arguments.index("--max-displacement-px") + 1], "1.75")
+
+        for key, value in (
+                ("window_half_size_px", 0),
+                ("window_half_size_px", 1.5),
+                ("max_displacement_px", 0.0),
+                ("max_displacement_px", float("inf"))):
+            invalid = dict(task)
+            invalid["calibration"] = {key: value}
+            with self.subTest(key=key, value=value):
+                with self.assertRaises(TaskError):
+                    _camera_arguments(invalid, "bag", "target", {})
+
     def test_public_cli_flags_and_cwd_resolution(self):
         arguments = build_parser().parse_args([
             "calibrate", "cameras", "--config", "task.yaml",

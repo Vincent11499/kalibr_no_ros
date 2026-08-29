@@ -12,6 +12,8 @@ from kalibr_no_ros.reference import verify_snapshot
 from kalibr_no_ros.task import (
     STANDARD_EXECUTION,
     TaskError,
+    dump_yaml,
+    load_yaml,
     load_task,
     prepare_output_directory,
     resolve_execution,
@@ -19,6 +21,45 @@ from kalibr_no_ros.task import (
 
 
 class TaskCliTest(unittest.TestCase):
+    def test_result_yaml_renders_matrix_rows_inline(self):
+        document = {
+            "T_cam_imu": [
+                [-1.25, -0.5, 0.25, 2.5],
+                [0.5, 0.25, -2.5, 1.25],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            "cam_overlaps": [1],
+            "distortion_coeffs": [
+                -0.41650678563187626,
+                0.21732347443595471,
+                0.0007757569830541829,
+                0.00026089763511342616,
+                -0.06624241154672733,
+            ],
+            "intrinsics": [1.25, 2.5, 3.75, 5.0],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "calibration.yaml"
+            dump_yaml(document, output)
+            text = output.read_text(encoding="utf-8")
+
+            self.assertIn(
+                "T_cam_imu:\n"
+                "  - [-1.25, -0.5, 0.25, 2.5]\n"
+                "  - [0.5, 0.25, -2.5, 1.25]\n"
+                "  - [0.0, 0.0, 0.0, 1.0]\n",
+                text,
+            )
+            self.assertIn("cam_overlaps: [1]\n", text)
+            self.assertIn(
+                "intrinsics: [1.25, 2.5, 3.75, 5.0]\n", text)
+            distortion_line = next(
+                line for line in text.splitlines()
+                if line.startswith("distortion_coeffs:"))
+            self.assertTrue(distortion_line.endswith("]"))
+            self.assertEqual(distortion_line.count(","), 4)
+            self.assertEqual(load_yaml(output), document)
+
     def test_convert_camera_help_is_forwarded(self):
         arguments = build_parser().parse_args(["convert", "camera", "--help"])
         self.assertTrue(arguments.converter_help)

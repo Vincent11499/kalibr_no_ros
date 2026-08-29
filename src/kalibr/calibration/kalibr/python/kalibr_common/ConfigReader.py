@@ -607,6 +607,7 @@ class CalibrationTargetParameters(ParametersBase):
                 tagCols = self.data["tagCols"]
                 tagSize = self.data["tagSize"]
                 tagSpacing = self.data["tagSpacing"]
+                tagStartId = self.data.get("tagStartId", 0)
             except KeyError as e:
                 self.raiseError("Calibration target configuration in {0} is missing the field: {1}".format(self.yamlFile, str(e)) )
             
@@ -618,11 +619,20 @@ class CalibrationTargetParameters(ParametersBase):
                 errList.append("invalid tagSize (float)")
             if not isinstance(tagSpacing,float) or tagSpacing <= 0.0:
                 errList.append("invalid tagSpacing (float)")
+            if (isinstance(tagStartId, bool) or
+                    not isinstance(tagStartId, int) or tagStartId < 0):
+                self.raiseError("invalid tagStartId (int>=0)")
+            if (isinstance(tagRows, int) and isinstance(tagCols, int) and
+                    tagStartId + tagRows * tagCols > 587):
+                self.raiseError(
+                    "Aprilgrid ID range [{0}, {1}) exceeds tag36h11's 587 IDs".format(
+                        tagStartId, tagStartId + tagRows * tagCols))
                 
             targetParams = {'tagRows': tagRows,
                             'tagCols': tagCols,
                             'tagSize': tagSize,
                             'tagSpacing': tagSpacing,
+                            'tagStartId': tagStartId,
                             'targetType': targetType}
             
         return targetParams
@@ -650,6 +660,10 @@ class CalibrationTargetParameters(ParametersBase):
             print("    Cols: {0}".format(targetParams['tagCols']), file=dest)
             print("    Size: {0} [m]".format(targetParams['tagSize']), file=dest)
             print("    Spacing {0} [m]".format( targetParams['tagSize']*targetParams['tagSpacing'] ), file=dest)
+            print("    IDs: [{0}, {1})".format(
+                targetParams['tagStartId'],
+                targetParams['tagStartId'] +
+                targetParams['tagRows'] * targetParams['tagCols']), file=dest)
 
 
         

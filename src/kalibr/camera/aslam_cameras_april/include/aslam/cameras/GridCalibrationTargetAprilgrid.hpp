@@ -32,6 +32,7 @@ class GridCalibrationTargetAprilgrid : public GridCalibrationTargetBase {
     AprilgridOptions() :
       doSubpixRefinement(true),
       maxSubpixDisplacement2(1.5),
+      subpixWindowHalfSize(2),
       showExtractionVideo(false),
       minTagsForValidObs(4),
       minBorderDistance(4.0),
@@ -43,6 +44,9 @@ class GridCalibrationTargetAprilgrid : public GridCalibrationTargetBase {
 
     /// \brief max. displacement squarred in subpixel refinement  [px^2]
     double maxSubpixDisplacement2;
+
+    /// \brief half-size of the cornerSubPix search window [px]
+    unsigned int subpixWindowHalfSize;
 
     /// \brief show video during extraction
     bool showExtractionVideo;
@@ -57,23 +61,29 @@ class GridCalibrationTargetAprilgrid : public GridCalibrationTargetBase {
     unsigned int blackTagBorder;
 
     /// \brief Serialization support
-    enum {CLASS_SERIALIZATION_VERSION = 1};
+    enum {CLASS_SERIALIZATION_VERSION = 2};
     BOOST_SERIALIZATION_SPLIT_MEMBER();
     template<class Archive>
     void save(Archive & ar, const unsigned int /*version*/) const
     {
        ar << BOOST_SERIALIZATION_NVP(doSubpixRefinement);
        ar << BOOST_SERIALIZATION_NVP(maxSubpixDisplacement2);
+       ar << BOOST_SERIALIZATION_NVP(subpixWindowHalfSize);
        ar << BOOST_SERIALIZATION_NVP(showExtractionVideo);
        ar << BOOST_SERIALIZATION_NVP(minTagsForValidObs);
        ar << BOOST_SERIALIZATION_NVP(minBorderDistance);
        ar << BOOST_SERIALIZATION_NVP(blackTagBorder);
     }
     template<class Archive>
-    void load(Archive & ar, const unsigned int /*version*/)
+    void load(Archive & ar, const unsigned int version)
     {
        ar >> BOOST_SERIALIZATION_NVP(doSubpixRefinement);
        ar >> BOOST_SERIALIZATION_NVP(maxSubpixDisplacement2);
+       if (version >= 2) {
+         ar >> BOOST_SERIALIZATION_NVP(subpixWindowHalfSize);
+       } else {
+         subpixWindowHalfSize = 2;
+       }
        ar >> BOOST_SERIALIZATION_NVP(showExtractionVideo);
        ar >> BOOST_SERIALIZATION_NVP(minTagsForValidObs);
        ar >> BOOST_SERIALIZATION_NVP(minBorderDistance);
@@ -85,12 +95,23 @@ class GridCalibrationTargetAprilgrid : public GridCalibrationTargetBase {
   GridCalibrationTargetAprilgrid(size_t tagRows, size_t tagCols, double tagSize,
                                  double tagSpacing, const AprilgridOptions &options = AprilgridOptions());
 
+  /// \brief initialize a grid whose consecutive tag IDs start at tagStartId
+  GridCalibrationTargetAprilgrid(size_t tagRows, size_t tagCols, double tagSize,
+                                 double tagSpacing, size_t tagStartId,
+                                 const AprilgridOptions &options);
+
   virtual ~GridCalibrationTargetAprilgrid() {};
 
   /// \brief extract the calibration target points from an image and write to an observation
   bool computeObservation(const cv::Mat & image,
                           Eigen::MatrixXd & outImagePoints,
                           std::vector<bool> &outCornerObserved) const;
+
+  /// \brief first detector tag ID belonging to this grid
+  size_t tagStartId() const { return _tagStartId; }
+
+  /// \brief convert a detector tag ID into the zero-based row-major grid ID
+  size_t localTagId(size_t detectedTagId) const;
 
  private:
   /// \brief initialize the object
@@ -108,6 +129,9 @@ class GridCalibrationTargetAprilgrid : public GridCalibrationTargetBase {
   /// \brief target extraction options
   AprilgridOptions _options;
 
+  /// \brief detector ID assigned to the first row-major grid tag
+  size_t _tagStartId;
+
   // create a detector instance
   AprilTags::TagCodes _tagCodes;
   boost::shared_ptr<AprilTags::TagDetector> _tagDetector;
@@ -116,7 +140,7 @@ class GridCalibrationTargetAprilgrid : public GridCalibrationTargetBase {
   // Serialization support
   ///////////////////////////////////////////////////
  public:
-  enum {CLASS_SERIALIZATION_VERSION = 1};
+  enum {CLASS_SERIALIZATION_VERSION = 2};
   BOOST_SERIALIZATION_SPLIT_MEMBER()
 
   //serialization ctor
@@ -133,16 +157,22 @@ class GridCalibrationTargetAprilgrid : public GridCalibrationTargetBase {
     ar << BOOST_SERIALIZATION_BASE_OBJECT_NVP(GridCalibrationTargetBase);
     ar << BOOST_SERIALIZATION_NVP(_tagSize);
     ar << BOOST_SERIALIZATION_NVP(_tagSpacing);
+    ar << BOOST_SERIALIZATION_NVP(_tagStartId);
     ar << BOOST_SERIALIZATION_NVP(_options);
   }
   template<class Archive>
-  void load(Archive & ar, const unsigned int /* version */) {
+  void load(Archive & ar, const unsigned int version) {
     boost::serialization::void_cast_register<GridCalibrationTargetAprilgrid, GridCalibrationTargetBase>(
           static_cast<GridCalibrationTargetAprilgrid *>(NULL),
           static_cast<GridCalibrationTargetBase *>(NULL));
     ar >> BOOST_SERIALIZATION_BASE_OBJECT_NVP(GridCalibrationTargetBase);
     ar >> BOOST_SERIALIZATION_NVP(_tagSize);
     ar >> BOOST_SERIALIZATION_NVP(_tagSpacing);
+    if (version >= 2) {
+      ar >> BOOST_SERIALIZATION_NVP(_tagStartId);
+    } else {
+      _tagStartId = 0;
+    }
     ar >> BOOST_SERIALIZATION_NVP(_options);
     initialize();
   }
@@ -157,4 +187,3 @@ SM_BOOST_CLASS_VERSION(aslam::cameras::GridCalibrationTargetAprilgrid::Aprilgrid
 BOOST_CLASS_EXPORT_KEY(aslam::cameras::GridCalibrationTargetAprilgrid)
 
 #endif /* ASLAM_GRID_CALIBRATION_TARGET_APRILGRID_HPP */
-

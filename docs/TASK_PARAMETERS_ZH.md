@@ -47,6 +47,8 @@ cameras:
   - {topic: /cam1/image_raw, model: pinhole-radtan5}
 
 calibration:
+  window_half_size_px: 2
+  max_displacement_px: 1.224744871391589
   synchronization_tolerance_s: 0.02
   qr_tolerance: 0.02
   information_gain_tolerance: 0.2
@@ -90,6 +92,8 @@ imus:
   - {path: imu.yaml, model: scale-misalignment}
 
 calibration:
+  window_half_size_px: 2
+  max_displacement_px: 1.224744871391589
   max_iterations: 30
   time_offset_padding_s: 0.03
   reprojection_sigma_px: 1.0
@@ -184,18 +188,27 @@ target:
     tagCols: 6
     tagSize: 0.088
     tagSpacing: 0.3
+    tagStartId: 100
 ```
+
+`tagStartId` 是左上角标签的检测 ID，按先行后列的顺序连续递增。上例使用
+$6\times6$ 标定板，因此有效 ID 区间为 $[100,136)$；检测到的 ID 100 映射到
+标定板局部编号 0，ID 135 映射到局部编号 35。省略该字段时默认为 0，与原生
+Kalibr 行为一致。
 
 支持的标定板及原生检查范围为：
 
 | `type` | 必填参数 | 范围 |
 |---|---|---|
-| `aprilgrid` | `tagRows`、`tagCols`、`tagSize`、`tagSpacing` | 行列为整数且 `>= 3`；`tagSize` 为正数（米）；`tagSpacing` 为正的间距/边长比 |
+| `aprilgrid` | `tagRows`、`tagCols`、`tagSize`、`tagSpacing`；可选 `tagStartId` | 行列为整数且 `>= 3`；`tagSize` 为正数（米）；`tagSpacing` 为正的间距/边长比；`tagStartId` 为非负整数且 `tagStartId + tagRows * tagCols <= 587` |
 | `checkerboard` | `targetRows`、`targetCols`、`rowSpacingMeters`、`colSpacingMeters` | 行列为整数且 `>= 3`；间距为正浮点数 |
 | `circlegrid` | `targetRows`、`targetCols`、`spacingMeters`、`asymmetricGrid` | 行列为整数且 `>= 3`；间距为正浮点数；最后一项为布尔值 |
 
 标定板尺寸直接决定 Camera–IMU 平移和相机 baseline 的米制尺度，不能作为“只影响
 检测”的参数随意调整。
+
+当前 AprilGrid 检测家族仍固定为 `tag36h11`，仅支持从 `tagStartId` 开始的连续
+ID，不支持任意离散 ID 映射。其他 AprilTag family 留待后续版本扩展。
 
 ## 3. `camera_calibration` 专用配置
 
@@ -233,6 +246,8 @@ cameras:
 
 | 字段 | 默认值 | 程序接受/算法有效范围 | 作用阶段与影响 |
 |---|---:|---|---|
+| `window_half_size_px` | `2` px | 强制整数 `>= 1` | AprilGrid `cornerSubPix` 半窗口；实际搜索区域为 $(2w+1)\times(2w+1)$ |
+| `max_displacement_px` | $\sqrt{1.5}\approx1.224745$ px | 强制有限数 `> 0` | AprilGrid 亚像素角点相对原始检测的最大允许位移 |
 | `synchronization_tolerance_s` | `0.02` s | 当前未前置校验；算法上应 `>= 0` | 多相机观测近似同步、相机连接图和 baseline 初始化 |
 | `qr_tolerance` | `0.02` | 接受任意 float；**当前不生效** | 只生成 `--qr-tol`，解析后未写入线性求解器 |
 | `information_gain_tolerance` | `0.2` | 特殊值 `-1`；常规值建议 `>= 0` | 决定增量估计器是否保留新 target view |
@@ -402,6 +417,8 @@ imus:
 
 | 字段 | 默认值 | 程序接受/算法有效范围 | 作用阶段与影响 |
 |---|---:|---|---|
+| `window_half_size_px` | `2` px | 强制整数 `>= 1` | Camera–IMU 重新检测 AprilGrid 时的 `cornerSubPix` 半窗口 |
+| `max_displacement_px` | $\sqrt{1.5}\approx1.224745$ px | 强制有限数 `> 0` | Camera–IMU 检测中亚像素角点允许偏离原始检测的最大距离 |
 | `max_iterations` | `30` | 当前只解析整数；算法上应 `>= 1` | 最终 Camera–IMU 联合 LM 的最大迭代数 |
 | `time_offset_padding_s` | `0.03` s | 当前未前置校验；启用时间标定时应 `> 0` | 扩展 pose spline，并预注册时间变化可能触及的 spline 系数 |
 | `reprojection_sigma_px` | `1.0` px | 当前未前置校验；物理和数值上必须 `> 0` | 所有相机重投影残差的协方差/权重 |
@@ -751,6 +768,8 @@ dataset.time_range_s
 dataset.frequency_hz
 cameras[].model
 target 物理尺寸
+window_half_size_px
+max_displacement_px
 synchronization_tolerance_s
 information_gain_tolerance
 shuffle

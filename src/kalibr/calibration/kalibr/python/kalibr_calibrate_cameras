@@ -112,6 +112,12 @@ def parseArgs():
     groupCalibrator.add_argument(
         '--initialization-config', dest='initializationConfig',
         help=argparse.SUPPRESS)
+    groupCalibrator.add_argument(
+        '--window-half-size-px', type=int, dest='windowHalfSizePx',
+        help=argparse.SUPPRESS)
+    groupCalibrator.add_argument(
+        '--max-displacement-px', type=float, dest='maxDisplacementPx',
+        help=argparse.SUPPRESS)
     
     outlierSettings = parser.add_argument_group('Outlier filtering options')
     outlierSettings.add_argument('--no-outliers-removal', action='store_false', default=True, dest='removeOutliers', help='Disable corner outlier filtering')
@@ -148,6 +154,14 @@ def parseArgs():
         
     if parsed.minViewOutlier<1:
         sm.logError("Please specify a positive integer (--min-views-outlier).")
+        sys.exit(2)
+    if parsed.windowHalfSizePx is not None and parsed.windowHalfSizePx < 1:
+        sm.logError("Please specify a positive integer (--window-half-size-px).")
+        sys.exit(2)
+    if (parsed.maxDisplacementPx is not None and
+            (parsed.maxDisplacementPx <= 0.0 or
+             not np.isfinite(parsed.maxDisplacementPx))):
+        sm.logError("Please specify a positive value (--max-displacement-px).")
         sys.exit(2)
     
     #there is a with the gtk plot widget, so we cant plot if we have opencv windows open...
@@ -205,7 +219,11 @@ def main():
         
             #create camera
             cameraModel = cameraModels[modelName]
-            cam = kcc.CameraGeometry(cameraModel, targetConfig, dataset, verbose=(parsed.verbose or parsed.showextraction))
+            cam = kcc.CameraGeometry(
+                cameraModel, targetConfig, dataset,
+                verbose=(parsed.verbose or parsed.showextraction),
+                windowHalfSizePx=parsed.windowHalfSizePx,
+                maxDisplacementPx=parsed.maxDisplacementPx)
                 
             #extract the targets
             multithreading = not (parsed.verbose or parsed.showextraction)
@@ -226,7 +244,9 @@ def main():
                 cam = kcc.CameraGeometry(
                     cameraModel, targetConfig, dataset,
                     geometry=seeded_geometry,
-                    verbose=(parsed.verbose or parsed.showextraction))
+                    verbose=(parsed.verbose or parsed.showextraction),
+                    windowHalfSizePx=parsed.windowHalfSizePx,
+                    maxDisplacementPx=parsed.maxDisplacementPx)
             
             #populate the database
             for obs in observations:

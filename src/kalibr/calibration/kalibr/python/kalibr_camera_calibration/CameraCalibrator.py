@@ -337,7 +337,9 @@ def cameraGeometryFromInitialization(camera_model, camera_name, seed,
                 camera_name, error))
 
 class CameraGeometry(object):
-    def __init__(self, cameraModel, targetConfig, dataset, geometry=None, verbose=False):
+    def __init__(self, cameraModel, targetConfig, dataset, geometry=None,
+                 verbose=False, windowHalfSizePx=None,
+                 maxDisplacementPx=None):
         self.dataset = dataset
         
         self.model = cameraModel
@@ -355,7 +357,10 @@ class CameraGeometry(object):
         self.isGeometryInitialized = False
 
         #create target detector
-        self.ctarget = TargetDetector(targetConfig, self.geometry, showCorners=verbose)
+        self.ctarget = TargetDetector(
+            targetConfig, self.geometry, showCorners=verbose,
+            windowHalfSizePx=windowHalfSizePx,
+            maxDisplacementPx=maxDisplacementPx)
 
     def setDvActiveStatus(self, projectionActive, distortionActive, shutterActice):
         self.dv.projectionDesignVariable().setActive(projectionActive)
@@ -514,7 +519,9 @@ class CameraGeometry(object):
         return True
 
 class TargetDetector(object):
-    def __init__(self, targetConfig, cameraGeometry, showCorners=False, showReproj=False, showOneStep=False):
+    def __init__(self, targetConfig, cameraGeometry, showCorners=False,
+                 showReproj=False, showOneStep=False,
+                 windowHalfSizePx=None, maxDisplacementPx=None):
         self.targetConfig = targetConfig
         
         #initialize the calibration target
@@ -547,6 +554,10 @@ class TargetDetector(object):
          
         elif targetType == 'aprilgrid':
             options = acv_april.AprilgridOptions()
+            if windowHalfSizePx is not None:
+                options.subpixWindowHalfSize = windowHalfSizePx
+            if maxDisplacementPx is not None:
+                options.maxSubpixDisplacement2 = maxDisplacementPx * maxDisplacementPx
             #enforce more than one row --> pnp solution can be bad if all points are almost on a line...
             options.minTagsForValidObs = int( np.max( [targetParams['tagRows'], targetParams['tagCols']] ) + 1 )
             options.showExtractionVideo = showCorners
@@ -555,6 +566,7 @@ class TargetDetector(object):
                                                                  targetParams['tagCols'], 
                                                                  targetParams['tagSize'], 
                                                                  targetParams['tagSpacing'], 
+                                                                 targetParams['tagStartId'],
                                                                  options)
         else:
             RuntimeError('Unknown calibration target type!')

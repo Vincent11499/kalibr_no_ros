@@ -98,6 +98,8 @@ def parseArgs():
     
     groupTarget = parser.add_argument_group('Calibration target')
     groupTarget.add_argument('--target', dest='target_yaml', help='Calibration target configuration as yaml file', required=True, action=Once)
+    groupTarget.add_argument('--window-half-size-px', type=int, dest='window_half_size_px', help=argparse.SUPPRESS)
+    groupTarget.add_argument('--max-displacement-px', type=float, dest='max_displacement_px', help=argparse.SUPPRESS)
     
     #optimization options
     groupOpt = parser.add_argument_group('Optimization options')
@@ -128,6 +130,14 @@ def parseArgs():
     try:
         parsed = parser.parse_args()
     except Exception:
+        sys.exit(2)
+    if parsed.window_half_size_px is not None and parsed.window_half_size_px < 1:
+        sm.logError("Please specify a positive integer (--window-half-size-px).")
+        sys.exit(2)
+    if (parsed.max_displacement_px is not None and
+            (parsed.max_displacement_px <= 0.0 or
+             not np.isfinite(parsed.max_displacement_px))):
+        sm.logError("Please specify a positive value (--max-displacement-px).")
         sys.exit(2)
                  
     if parsed.verbose:

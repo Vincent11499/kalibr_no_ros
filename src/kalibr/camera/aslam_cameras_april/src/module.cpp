@@ -15,6 +15,7 @@ BOOST_PYTHON_MODULE(libaslam_cameras_april_python)
     .def_readwrite("minTagsForValidObs", &GridCalibrationTargetAprilgrid::AprilgridOptions::minTagsForValidObs)
     .def_readwrite("minBorderDistance", &GridCalibrationTargetAprilgrid::AprilgridOptions::minBorderDistance)
     .def_readwrite("maxSubpixDisplacement2", &GridCalibrationTargetAprilgrid::AprilgridOptions::maxSubpixDisplacement2)
+    .def_readwrite("subpixWindowHalfSize", &GridCalibrationTargetAprilgrid::AprilgridOptions::subpixWindowHalfSize)
     .def_readwrite("blackTagBorder", &GridCalibrationTargetAprilgrid::AprilgridOptions::blackTagBorder)
     .def_pickle(sm::python::pickle_suite<GridCalibrationTargetAprilgrid::AprilgridOptions>());
 
@@ -23,8 +24,13 @@ BOOST_PYTHON_MODULE(libaslam_cameras_april_python)
       "GridCalibrationTargetAprilgrid",
       init<size_t, size_t, double, double, GridCalibrationTargetAprilgrid::AprilgridOptions>(
           "GridCalibrationTargetAprilgrid(size_t tagRows, size_t tagCols, double tagSize, double tagSpacing, AprilgridOptions options)"))
+      .def(init<size_t, size_t, double, double, size_t,
+                GridCalibrationTargetAprilgrid::AprilgridOptions>(
+          "GridCalibrationTargetAprilgrid(size_t tagRows, size_t tagCols, double tagSize, double tagSpacing, size_t tagStartId, AprilgridOptions options)"))
       .def(init<size_t, size_t, double, double>(
           "GridCalibrationTargetAprilgrid(size_t tagRows, size_t tagCols, double tagSize, double tagSpacing)"))
       .def(init<>("Do not use the default constructor. It is only necessary for the pickle interface"))
+      .def("tagStartId", &GridCalibrationTargetAprilgrid::tagStartId)
+      .def("localTagId", &GridCalibrationTargetAprilgrid::localTagId)
       .def_pickle(sm::python::pickle_suite<GridCalibrationTargetAprilgrid>());
 }

@@ -300,7 +300,8 @@ def initImuBagDataset(bagfile, topic, from_to=None, perform_synchronization=Fals
 #mono camera
 class IccCamera():
     def __init__(self, camConfig, targetConfig, dataset, reprojectionSigma=1.0, showCorners=True, \
-                 showReproj=True, showOneStep=False):
+                 showReproj=True, showOneStep=False, windowHalfSizePx=None,
+                 maxDisplacementPx=None):
         
         #store the configuration
         self.dataset = dataset
@@ -324,7 +325,11 @@ class IccCamera():
         self.camera = kc.AslamCamera.fromParameters( camConfig )
         
         #extract corners
-        self.setupCalibrationTarget( targetConfig, showExtraction=showCorners, showReproj=showReproj, imageStepping=showOneStep )
+        self.setupCalibrationTarget(
+            targetConfig, showExtraction=showCorners, showReproj=showReproj,
+            imageStepping=showOneStep,
+            windowHalfSizePx=windowHalfSizePx,
+            maxDisplacementPx=maxDisplacementPx)
         multithreading = not (showCorners or showReproj or showOneStep)
         self.targetObservations = kc.extractCornersFromDataset(self.dataset, self.detector, multithreading=multithreading)
         
@@ -347,7 +352,10 @@ class IccCamera():
         self.initializationStrategy = strategy
         self.hasGravityInitialization = True
         
-    def setupCalibrationTarget(self, targetConfig, showExtraction=False, showReproj=False, imageStepping=False):
+    def setupCalibrationTarget(self, targetConfig, showExtraction=False,
+                               showReproj=False, imageStepping=False,
+                               windowHalfSizePx=None,
+                               maxDisplacementPx=None):
         
         #load the calibration target configuration
         targetParams = targetConfig.getTargetParams()
@@ -376,6 +384,10 @@ class IccCamera():
                                                           options)
         elif targetType == 'aprilgrid':
             options = acv_april.AprilgridOptions() 
+            if windowHalfSizePx is not None:
+                options.subpixWindowHalfSize = windowHalfSizePx
+            if maxDisplacementPx is not None:
+                options.maxSubpixDisplacement2 = maxDisplacementPx * maxDisplacementPx
             options.showExtractionVideo = showExtraction
             options.minTagsForValidObs = int( np.max( [targetParams['tagRows'], targetParams['tagCols']] ) + 1 )
             
@@ -383,6 +395,7 @@ class IccCamera():
                                                             targetParams['tagCols'], 
                                                             targetParams['tagSize'], 
                                                             targetParams['tagSpacing'], 
+                                                            targetParams['tagStartId'],
                                                             options)
         else:
             raise RuntimeError( "Unknown calibration target." )
@@ -752,7 +765,9 @@ class IccCameraChain():
                                             reprojectionSigma=parsed.reprojection_sigma, 
                                             showCorners=parsed.showextraction,
                                             showReproj=parsed.showextraction, 
-                                            showOneStep=parsed.extractionstepping) )  
+                                            showOneStep=parsed.extractionstepping,
+                                            windowHalfSizePx=parsed.window_half_size_px,
+                                            maxDisplacementPx=parsed.max_displacement_px) )
                 
         self.chainConfig = chainConfig
         

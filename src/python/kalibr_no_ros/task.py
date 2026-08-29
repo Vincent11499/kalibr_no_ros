@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from pathlib import Path
 import hashlib
+import math
 import os
 import runpy
 import shutil
@@ -62,14 +63,62 @@ class TaskError(ValueError):
 
 
 class _StableDumper(yaml.SafeDumper):
-    pass
+    def increase_indent(self, flow=False, indentless=False):
+        # Indent block sequences beneath their mapping key.  PyYAML's default
+        # indentless style is valid YAML, but is harder to scan by eye.
+        return super().increase_indent(flow, False)
+
+
+class _FlowSequence(list):
+    """Sequence that is rendered in YAML flow style."""
 
 
 def _represent_float(dumper, value):
-    return dumper.represent_scalar("tag:yaml.org,2002:float", format(value, ".17g"))
+    text = format(value, ".17g")
+    # Keep integral-valued floats visibly typed as floats without PyYAML's
+    # explicit ``!!float`` annotation (for example, write 0.0 instead of 0).
+    if math.isfinite(value) and not any(marker in text for marker in ".eE"):
+        text += ".0"
+    return dumper.represent_scalar("tag:yaml.org,2002:float", text)
+
+
+def _represent_flow_sequence(dumper, value):
+    return dumper.represent_sequence(
+        "tag:yaml.org,2002:seq", value, flow_style=True)
 
 
 _StableDumper.add_representer(float, _represent_float)
+_StableDumper.add_representer(_FlowSequence, _represent_flow_sequence)
+
+
+def _is_numeric_matrix(value):
+    if not isinstance(value, list) or not value:
+        return False
+    if not all(isinstance(row, list) and row for row in value):
+        return False
+    column_count = len(value[0])
+    return all(
+        len(row) == column_count
+        and all(type(element) in (int, float) for element in row)
+        for row in value
+    )
+
+
+def _format_yaml_collections(value):
+    """Keep mappings block-oriented while rendering compact numeric data inline."""
+    if _is_numeric_matrix(value):
+        return [_FlowSequence(row) for row in value]
+    if isinstance(value, dict):
+        return {
+            key: _format_yaml_collections(element)
+            for key, element in value.items()
+        }
+    if isinstance(value, list):
+        if value and all(
+                not isinstance(element, (dict, list)) for element in value):
+            return _FlowSequence(value)
+        return [_format_yaml_collections(element) for element in value]
+    return value
 
 
 def load_yaml(path):
@@ -85,12 +134,13 @@ def dump_yaml(value, path):
     path = Path(path)
     with path.open("w", encoding="utf-8") as stream:
         yaml.dump(
-            value,
+            _format_yaml_collections(value),
             stream,
             Dumper=_StableDumper,
             allow_unicode=True,
             default_flow_style=False,
             sort_keys=False,
+            width=2147483647,
         )
 
 
@@ -423,6 +473,25 @@ def _flag(arguments, enabled, name):
         arguments.append(name)
 
 
+def _append_corner_refinement(arguments, calibration):
+    window = calibration.get("window_half_size_px")
+    if window is not None:
+        if type(window) is not int or window < 1:
+            raise TaskError(
+                "calibration.window_half_size_px must be a positive integer")
+        arguments.extend(["--window-half-size-px", str(window)])
+
+    displacement = calibration.get("max_displacement_px")
+    if displacement is not None:
+        if (not isinstance(displacement, (int, float))
+                or isinstance(displacement, bool)
+                or displacement <= 0.0
+                or not math.isfinite(displacement)):
+            raise TaskError(
+                "calibration.max_displacement_px must be a positive finite number")
+        arguments.extend(["--max-displacement-px", str(displacement)])
+
+
 def _camera_arguments(task, bag, target, overrides, initialization_config=None):
     cameras = task.get("cameras")
     if not isinstance(cameras, list) or not cameras:
@@ -440,6 +509,7 @@ def _camera_arguments(task, bag, target, overrides, initialization_config=None):
     ]
     _append_common_dataset(arguments, task)
     calibration = task.get("calibration") or {}
+    _append_corner_refinement(arguments, calibration)
     for key, option in (
         ("synchronization_tolerance_s", "--approx-sync"),
         ("qr_tolerance", "--qr-tol"),
@@ -505,6 +575,7 @@ def _imu_arguments(task, bag, target, temporary, overrides,
     ]
     _append_common_dataset(arguments, task)
     calibration = task.get("calibration") or {}
+    _append_corner_refinement(arguments, calibration)
     for key, option in (
         ("max_iterations", "--max-iter"),
         ("time_offset_padding_s", "--timeoffset-padding"),

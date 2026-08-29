@@ -29,13 +29,24 @@ namespace cameras {
 GridCalibrationTargetAprilgrid::GridCalibrationTargetAprilgrid(
     size_t tagRows, size_t tagCols, double tagSize, double tagSpacing,
     const AprilgridOptions &options)
+    : GridCalibrationTargetAprilgrid(tagRows, tagCols, tagSize, tagSpacing,
+                                     0, options) {}
+
+GridCalibrationTargetAprilgrid::GridCalibrationTargetAprilgrid(
+    size_t tagRows, size_t tagCols, double tagSize, double tagSpacing,
+    size_t tagStartId, const AprilgridOptions &options)
     : GridCalibrationTargetBase(2 * tagRows, 2 * tagCols),  //4 points per tag
       _tagSize(tagSize),
       _tagSpacing(tagSpacing),
       _options(options),
+      _tagStartId(tagStartId),
       _tagCodes(AprilTags::tagCodes36h11) {
   SM_ASSERT_GT(Exception, tagSize, 0.0, "tagSize has to be positive");
   SM_ASSERT_GT(Exception, tagSpacing, 0.0, "tagSpacing has to be positive");
+  SM_ASSERT_LE(Exception, tagStartId, _tagCodes.codes.size(),
+               "tagStartId exceeds the tag36h11 code range");
+  SM_ASSERT_LE(Exception, size() / 4, _tagCodes.codes.size() - tagStartId,
+               "Aprilgrid ID range exceeds the tag36h11 code range");
 
   // allocate memory for the grid points
   _points.resize(size(), 3);
@@ -49,12 +60,27 @@ GridCalibrationTargetAprilgrid::GridCalibrationTargetAprilgrid(
 
 //protected ctor for serialization
 GridCalibrationTargetAprilgrid::GridCalibrationTargetAprilgrid() :
+      _tagStartId(0),
       _tagCodes(AprilTags::tagCodes36h11)
 {}
+
+size_t GridCalibrationTargetAprilgrid::localTagId(size_t detectedTagId) const {
+  const size_t numberOfTags = size() / 4;
+  SM_ASSERT_GE(Exception, detectedTagId, _tagStartId,
+               "detected tag ID is below the configured Aprilgrid range");
+  SM_ASSERT_LT(Exception, detectedTagId - _tagStartId, numberOfTags,
+               "detected tag ID is above the configured Aprilgrid range");
+  return detectedTagId - _tagStartId;
+}
 
 /// \brief initialize the object
 void GridCalibrationTargetAprilgrid::initialize()
 {
+  SM_ASSERT_LE(Exception, _tagStartId, _tagCodes.codes.size(),
+               "tagStartId exceeds the tag36h11 code range");
+  SM_ASSERT_LE(Exception, size() / 4, _tagCodes.codes.size() - _tagStartId,
+               "Aprilgrid ID range exceeds the tag36h11 code range");
+
   if (_options.showExtractionVideo) {
     cv::namedWindow("Aprilgrid: Tag detection", cv::WINDOW_NORMAL);
     cv::resizeWindow("Aprilgrid: Tag detection", 640, 480);
@@ -116,6 +142,7 @@ bool GridCalibrationTargetAprilgrid::computeObservation(
   for (iter = detections.begin(); iter != detections.end();) {
     // check all four corners for violation
     bool remove = false;
+    bool outsideTargetIdRange = false;
 
     for (int j = 0; j < 4; j++) {
       remove |= iter->p[j].first < _options.minBorderDistance;
@@ -128,13 +155,25 @@ bool GridCalibrationTargetAprilgrid::computeObservation(
     if (iter->good != 1)
       remove |= true;
 
-    //also remove if the tag ID is out-of-range for this grid (faulty detection)
-    if (iter->id >= (int) size() / 4)
-      remove |= true;
+    // Also remove IDs not assigned to this grid. The physical grid is always
+    // indexed locally from zero, independently of the detector family ID.
+    if (iter->id < 0 || static_cast<size_t>(iter->id) < _tagStartId ||
+        static_cast<size_t>(iter->id) - _tagStartId >= size() / 4) {
+      outsideTargetIdRange = true;
+      remove = true;
+    }
 
     // delete flagged tags
     if (remove) {
-      SM_DEBUG_STREAM("Tag with ID " << iter->id << " is only partially in image (corners outside) and will be removed from the TargetObservation.\n");
+      if (outsideTargetIdRange) {
+        SM_DEBUG_STREAM("Tag with ID " << iter->id
+                        << " is outside the configured Aprilgrid ID range ["
+                        << _tagStartId << ", " << (_tagStartId + size() / 4)
+                        << ") and will be removed from the TargetObservation.\n");
+      } else {
+        SM_DEBUG_STREAM("Tag with ID " << iter->id
+                        << " is only partially in image (corners outside) and will be removed from the TargetObservation.\n");
+      }
 
       // delete the tag and advance in list
       iter = detections.erase(iter);
@@ -218,7 +257,10 @@ bool GridCalibrationTargetAprilgrid::computeObservation(
   //optional subpixel refinement on all tag corners (four corners each tag)
   if (_options.doSubpixRefinement && success)
     cv::cornerSubPix(
-        image, tagCorners, cv::Size(2, 2), cv::Size(-1, -1),
+        image, tagCorners,
+        cv::Size(static_cast<int>(_options.subpixWindowHalfSize),
+                 static_cast<int>(_options.subpixWindowHalfSize)),
+        cv::Size(-1, -1),
         cv::TermCriteria(cv::TermCriteria::Type::EPS + cv::TermCriteria::Type::MAX_ITER, 30, 0.1));
 
   if (_options.showExtractionVideo) {
@@ -282,7 +324,8 @@ bool GridCalibrationTargetAprilgrid::computeObservation(
 
   for (unsigned int i = 0; i < detections.size(); i++) {
     // get the tag id
-    unsigned int tagId = detections[i].id;
+    const size_t tagId = localTagId(
+        static_cast<size_t>(detections[i].id));
 
     // calculate the grid idx for all four tag corners given the tagId and cols
     unsigned int baseId = (int) (tagId / (_cols / 2)) * _cols * 2

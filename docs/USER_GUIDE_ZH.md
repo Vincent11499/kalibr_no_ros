@@ -320,6 +320,21 @@ Camera–IMU task 同样只需把 `dataset.path` 指向目录，并确保其相�
 camchain、IMU topic 与 IMU YAML 的 `rostopic` 对应；其余命令参数和输出文件均
 与 bag 输入一致。
 
+AprilGrid 的标签若不是从 0 开始，可在 `target.path` 指向的 target YAML 中增加：
+
+```yaml
+target_type: aprilgrid
+tagRows: 6
+tagCols: 6
+tagSize: 0.088
+tagSpacing: 0.3
+tagStartId: 100
+```
+
+标签按先行后列连续编号，因此上例有效 ID 区间为 $[100,136)$。省略
+`tagStartId` 时默认为 0，与旧配置兼容。当前仍固定使用 `tag36h11`，不支持离散
+ID 表或其他 AprilTag family。
+
 ## 10. 目录数据集计时字段
 
 为保持既有 profiling 报告字段兼容，目录后端沿用下列名称：

@@ -47,10 +47,13 @@ class CalibrationTargetDetector(object):
                                                           options)
         
         elif( targetType == 'aprilgrid' ):
+            options = acv_april.AprilgridOptions()
             grid = acv_april.GridCalibrationTargetAprilgrid(targetParams['tagRows'], 
                                                             targetParams['tagCols'], 
                                                             targetParams['tagSize'], 
-                                                            targetParams['tagSpacing'])
+                                                            targetParams['tagSpacing'],
+                                                            targetParams['tagStartId'],
+                                                            options)
         else:
             raise RuntimeError( "Unknown calibration target." )
         
