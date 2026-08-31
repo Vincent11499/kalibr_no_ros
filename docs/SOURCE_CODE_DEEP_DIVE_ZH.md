@@ -189,7 +189,7 @@ src/kalibr                 可维护的项目源码
   calibration/             相机及 Camera–IMU 标定阶段机
   third_party/             AprilTag
 src/python                 无 ROS I/O、公共 CLI、task 和性能插桩
-src/camera_models          radtan5 与 OpenCV fisheye 扩展
+src/camera_models          radtan5、radtan8 与 OpenCV fisheye 扩展
 config                     可直接复制的任务与目录数据集模板
 tools                      依赖、审计、比较和 benchmark 工具
 ```
@@ -467,7 +467,7 @@ $$
 对应实现位于
 [`PinholeProjection.hpp`](../src/kalibr/camera/aslam_cameras/include/aslam/cameras/implementation/PinholeProjection.hpp)。
 
-### 5.2 Radtan4与Radtan5
+### 5.2 Radtan4、Radtan5 与 Radtan8
 
 令 $r^2=x^2+y^2$。Radtan5 的径向项为：
 
@@ -497,6 +497,55 @@ Radtan4 就是令 $k_3=0$。参数顺序分别为：
 radtan4: [k1, k2, p1, p2]
 radtan5: [k1, k2, p1, p2, k3]
 ```
+
+Radtan8 是 OpenCV rational model。令 $s=r^2$，其径向倍率为：
+
+$$
+q(s)
+=
+\frac{1+k_1s+k_2s^2+k_3s^3}
+{1+k_4s+k_5s^2+k_6s^3}.
+$$
+
+对应的归一化畸变坐标为：
+
+$$
+x_d
+=
+xq(s)+2p_1xy+p_2(s+2x^2),
+$$
+
+$$
+y_d
+=
+yq(s)+p_1(s+2y^2)+2p_2xy.
+$$
+
+参数顺序严格采用 OpenCV：
+
+```text
+radtan8: [k1, k2, p1, p2, k3, k4, k5, k6]
+```
+
+设：
+
+$$
+N(s)=1+k_1s+k_2s^2+k_3s^3,
+\qquad
+D(s)=1+k_4s+k_5s^2+k_6s^3,
+$$
+
+则输入 Jacobian 中使用的径向导数为：
+
+$$
+\frac{\mathrm d q}{\mathrm d s}
+=
+\frac{N'(s)D(s)-N(s)D'(s)}{D(s)^2}.
+$$
+
+优化器对 8 个畸变参数使用解析 Jacobian；反投影通过 Newton 迭代求逆。分母在有效
+视场内必须远离零。由于分子与分母参数可能高度相关，Radtan8 需要比 Radtan5 更充分的
+边缘覆盖、距离变化和姿态激励。
 
 最终像素为：
 

@@ -65,6 +65,26 @@ class InitializationValidationTest(unittest.TestCase):
             validate_initialization(
                 document, "camera_calibration", task, strategy="refine")
 
+    def test_radtan8_initialization_requires_eight_coefficients(self):
+        task = self.camera_task("pinhole-radtan8")
+        document = {
+            "schema_version": 1,
+            "kind": "camera_calibration_initialization",
+            "cameras": {
+                "cam0": {
+                    "distortion_coeffs": [0.0] * 8,
+                },
+            },
+        }
+        validated = validate_initialization(
+            document, "camera_calibration", task, strategy="refine")
+        self.assertEqual(
+            validated["cameras"]["cam0"]["distortion_coeffs"], [0.0] * 8)
+        document["cameras"]["cam0"]["distortion_coeffs"] = [0.0] * 5
+        with self.assertRaisesRegex(InitializationError, "8-element"):
+            validate_initialization(
+                document, "camera_calibration", task, strategy="refine")
+
     def test_initialization_schema_version_requires_integer_one(self):
         task = self.camera_task("pinhole-radtan")
         for invalid_version in (True, 1.0):

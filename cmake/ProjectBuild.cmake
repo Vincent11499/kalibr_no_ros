@@ -214,6 +214,7 @@ copy_python_package("${KALIBR_APP_ROOT}/python" kalibr_imu_camera_calibration)
 copy_python_package("${CMAKE_CURRENT_SOURCE_DIR}/src/python" kalibr_bag_io)
 copy_python_package("${CMAKE_CURRENT_SOURCE_DIR}/src/python" kalibr_no_ros)
 copy_python_package("${CMAKE_CURRENT_SOURCE_DIR}/src/camera_models/radtan5/python" kalibr_radtan5)
+copy_python_package("${CMAKE_CURRENT_SOURCE_DIR}/src/camera_models/radtan8/python" kalibr_radtan8)
 copy_python_package(
   "${CMAKE_CURRENT_SOURCE_DIR}/src/camera_models/opencv_fisheye/python"
   kalibr_opencv_fisheye)
@@ -376,6 +377,28 @@ if(KALIBR_BUILD_NATIVE)
     aslam_backend aslam_backend_expressions aslam_cv_python aslam_cameras
     aslam_splines sm_python numpy_eigen ${Boost_LIBRARIES})
 
+  # OpenCV rational [k1,k2,p1,p2,k3,k4,k5,k6] support.  Like radtan5, this
+  # remains out-of-tree so the frozen ETHZ source and native optimizer stages
+  # are unchanged.
+  add_python_export_library(kalibr_radtan8_cv_python
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/camera_models/radtan8/python/kalibr_radtan8"
+    src/camera_models/radtan8/src/cv_module.cpp)
+  target_include_directories(kalibr_radtan8_cv_python PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/camera_models/radtan8/include")
+  target_link_libraries(kalibr_radtan8_cv_python
+    aslam_cv_python aslam_cameras aslam_cv_serialization sm_python numpy_eigen
+    ${Boost_LIBRARIES})
+
+  add_python_export_library(kalibr_radtan8_backend_python
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/camera_models/radtan8/python/kalibr_radtan8"
+    src/camera_models/radtan8/src/backend_module.cpp)
+  target_include_directories(kalibr_radtan8_backend_python PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/camera_models/radtan8/include")
+  target_link_libraries(kalibr_radtan8_backend_python
+    aslam_cv_backend_python aslam_cv_backend aslam_backend_python
+    aslam_backend aslam_backend_expressions aslam_cv_python aslam_cameras
+    aslam_splines sm_python numpy_eigen ${Boost_LIBRARIES})
+
   # Zero-skew OpenCV cv::fisheye-compatible [k1, k2, k3, k4] projection and Kalibr
   # design-variable bindings.  This remains an out-of-tree extension so the
   # frozen ETHZ source and all native optimizer stages stay unchanged.
@@ -489,6 +512,10 @@ if(KALIBR_ENABLE_TESTING AND KALIBR_BUILD_NATIVE)
     COMMAND "${CMAKE_COMMAND}" -E env
       "PYTHONPATH=${KALIBR_PYTHON_DIR}"
       "${PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/radtan5_native_check.py")
+  add_test(NAME radtan8_native_tests
+    COMMAND "${CMAKE_COMMAND}" -E env
+      "PYTHONPATH=${KALIBR_PYTHON_DIR}"
+      "${PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/radtan8_native_check.py")
   add_test(NAME opencv_fisheye_native_tests
     COMMAND "${CMAKE_COMMAND}" -E env
       "PYTHONPATH=${KALIBR_PYTHON_DIR}"
@@ -516,7 +543,7 @@ if(KALIBR_ENABLE_TESTING AND KALIBR_BUILD_NATIVE)
     "MPLBACKEND=Agg"
     "MPLCONFIGDIR=${CMAKE_BINARY_DIR}/matplotlib")
   set_tests_properties(
-    radtan5_native_tests opencv_fisheye_native_tests
+    radtan5_native_tests radtan8_native_tests opencv_fisheye_native_tests
     opencv_fisheye_full_native_tests
     opencv_fisheye_full_projection_tests opencv_fisheye_full_yaml_tests
     igraph_plot_compat_tests

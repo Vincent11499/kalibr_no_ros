@@ -92,6 +92,8 @@ def _normalise_model(model):
         return "opencv_fisheye"
     if model in {"radtan5", "plumb_bob"}:
         return "radtan5"
+    if model in {"radtan8", "rational_polynomial"}:
+        return "radtan8"
     if model == "radtan":
         return "radtan"
     raise ValueError("unsupported distortion model {!r}".format(model))
@@ -111,6 +113,14 @@ def _normalise_model_for_coefficients(model, coefficient_count):
                 coefficient_count
             )
         )
+    if normalized == "rational_polynomial":
+        if coefficient_count != 8:
+            raise ValueError(
+                "rational_polynomial requires 8 coefficients, got {}".format(
+                    coefficient_count
+                )
+            )
+        return "radtan8"
     return _normalise_model(model)
 
 
@@ -143,7 +153,12 @@ def _validate_camera_matrix(matrix, skew_tolerance=1e-12):
 def _validate_distortion(coefficients, model):
     coefficients = np.asarray(coefficients, dtype=np.float64).reshape(-1)
     model = _normalise_model_for_coefficients(model, coefficients.size)
-    expected = 4 if model in {"opencv_fisheye", "radtan"} else 5
+    expected = {
+        "opencv_fisheye": 4,
+        "radtan": 4,
+        "radtan5": 5,
+        "radtan8": 8,
+    }[model]
     if coefficients.size != expected:
         raise ValueError(
             "distortion model {} requires {} coefficients, got {}".format(
@@ -460,11 +475,13 @@ def _model_from_storage(storage, default_model, coefficient_count):
             declared = camera_model
     if declared:
         return _normalise_model_for_coefficients(declared, coefficient_count)
-    # Five coefficients unambiguously select this project's OpenCV radtan5
-    # extension.  Four coefficients remain ambiguous between plumb-bob and
-    # fisheye, so retain the caller's explicit/default choice.
+    # Five and eight coefficients unambiguously select this project's OpenCV
+    # radial extensions.  Four coefficients remain ambiguous between
+    # plumb-bob and fisheye, so retain the caller's explicit/default choice.
     if coefficient_count == 5:
         return "radtan5"
+    if coefficient_count == 8:
+        return "radtan8"
     return _normalise_model_for_coefficients(default_model, coefficient_count)
 
 
@@ -795,7 +812,12 @@ def read_kalibr_camchain(path):
 
 
 def _opencv_model_name(model):
-    return "fisheye" if _normalise_model(model) == "opencv_fisheye" else "plumb_bob"
+    normalized = _normalise_model(model)
+    if normalized == "opencv_fisheye":
+        return "fisheye"
+    if normalized == "radtan8":
+        return "rational_polynomial"
+    return "plumb_bob"
 
 
 def _write_values(path, values):
@@ -920,7 +942,7 @@ def build_argument_parser():
     mono.add_argument("--resolution", nargs=2, type=int, metavar=("WIDTH", "HEIGHT"))
     mono.add_argument(
         "--distortion-model",
-        choices=("opencv_fisheye", "radtan", "radtan5"),
+        choices=("opencv_fisheye", "radtan", "radtan5", "radtan8"),
         default="opencv_fisheye",
     )
 
@@ -940,7 +962,7 @@ def build_argument_parser():
     stereo.add_argument("--right-resolution", nargs=2, type=int, metavar=("WIDTH", "HEIGHT"))
     stereo.add_argument(
         "--distortion-model",
-        choices=("opencv_fisheye", "radtan", "radtan5"),
+        choices=("opencv_fisheye", "radtan", "radtan5", "radtan8"),
         default="opencv_fisheye",
     )
     stereo.add_argument(

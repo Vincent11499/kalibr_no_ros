@@ -23,6 +23,8 @@ import signal
 
 import kalibr_radtan5 as kr5
 kr5.install()
+import kalibr_radtan8 as kr8
+kr8.install()
 import kalibr_opencv_fisheye as kof
 kof.install()
 import kalibr_opencv_fisheye_full as koff
@@ -49,6 +51,7 @@ cameraModels = { 'pinhole-radtan': acvb.DistortedPinhole,
                  'eucm-none':      acvb.ExtendedUnified,
                  'ds-none':        acvb.DoubleSphere,
                  'pinhole-radtan5': kr5.PinholeRadtan5,
+                 'pinhole-radtan8': kr8.PinholeRadtan8,
                  'pinhole-opencv-fisheye': koff.PinholeOpenCvFisheyeFull}
 
 def signal_exit(signal, frame):

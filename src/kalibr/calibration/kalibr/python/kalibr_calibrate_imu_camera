@@ -16,6 +16,8 @@ import multiprocessing
 # make numpy print prettier
 import kalibr_radtan5 as kr5
 kr5.install()
+import kalibr_radtan8 as kr8
+kr8.install()
 import kalibr_opencv_fisheye as kof
 kof.install()
 import kalibr_opencv_fisheye_full as koff

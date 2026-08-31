@@ -45,6 +45,14 @@ def _write_camchain(calibrator, result_file, graph, full_model):
         distortion_models[PinholeRadtan5] = "radtan5"
 
     try:
+        from kalibr_radtan8 import PinholeRadtan8
+    except ImportError:
+        PinholeRadtan8 = None
+    if PinholeRadtan8 is not None:
+        camera_models[PinholeRadtan8] = "pinhole"
+        distortion_models[PinholeRadtan8] = "radtan8"
+
+    try:
         from kalibr_opencv_fisheye import PinholeOpenCvFisheye
     except ImportError:
         PinholeOpenCvFisheye = None

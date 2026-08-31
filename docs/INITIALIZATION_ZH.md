@@ -157,6 +157,7 @@ $$
 |---|---|---|
 | `pinhole-radtan` | $[f_u,f_v,c_u,c_v]$ | $[k_1,k_2,p_1,p_2]$ |
 | `pinhole-radtan5` | $[f_u,f_v,c_u,c_v]$ | $[k_1,k_2,p_1,p_2,k_3]$ |
+| `pinhole-radtan8` | $[f_u,f_v,c_u,c_v]$ | $[k_1,k_2,p_1,p_2,k_3,k_4,k_5,k_6]$ |
 | `pinhole-equi` | $[f_u,f_v,c_u,c_v]$ | $[k_1,k_2,k_3,k_4]$ |
 | `pinhole-fov` | $[f_u,f_v,c_u,c_v]$ | $[w]$ |
 | `pinhole-opencv-fisheye` | $[f_u,f_v,c_u,c_v,\alpha]$ | $[k_1,k_2,k_3,k_4]$ |

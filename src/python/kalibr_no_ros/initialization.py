@@ -22,6 +22,7 @@ _JOB_KINDS = {
 CAMERA_MODEL_DIMENSIONS = {
     "pinhole-radtan": (4, 4),
     "pinhole-radtan5": (4, 5),
+    "pinhole-radtan8": (4, 8),
     "pinhole-equi": (4, 4),
     "pinhole-fov": (4, 1),
     "pinhole-opencv-fisheye": (5, 4),

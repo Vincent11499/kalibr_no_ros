@@ -42,6 +42,14 @@ def _write_camchain(calibrator, result_file, graph, fisheye_model):
         camera_models[PinholeRadtan5] = "pinhole"
         distortion_models[PinholeRadtan5] = "radtan5"
 
+    try:
+        from kalibr_radtan8 import PinholeRadtan8
+    except ImportError:
+        PinholeRadtan8 = None
+    if PinholeRadtan8 is not None:
+        camera_models[PinholeRadtan8] = "pinhole"
+        distortion_models[PinholeRadtan8] = "radtan8"
+
     chain = cr.CameraChainParameters(result_file, createYaml=True)
     for camera_id, camera in enumerate(calibrator.cameras):
         try:

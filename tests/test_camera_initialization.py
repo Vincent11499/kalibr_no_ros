@@ -180,6 +180,7 @@ class CameraInitializationTest(unittest.TestCase):
     def test_seed_geometry_construction_covers_every_public_camera_model(self):
         import kalibr_opencv_fisheye_full as opencv_fisheye
         import kalibr_radtan5 as radtan5
+        import kalibr_radtan8 as radtan8
 
         options = acv.CheckerboardOptions()
         target = acv.GridCalibrationTargetCheckerboard(
@@ -194,6 +195,9 @@ class CameraInitializationTest(unittest.TestCase):
             ("pinhole-radtan5", radtan5.PinholeRadtan5,
              [400.0, 401.0, 320.0, 240.0],
              [0.1, -0.02, 0.003, -0.004, 0.001]),
+            ("pinhole-radtan8", radtan8.PinholeRadtan8,
+             [400.0, 401.0, 320.0, 240.0],
+             [0.1, -0.02, 0.003, -0.004, 0.001, 0.01, -0.002, 0.0003]),
             ("pinhole-equi", acvb.EquidistantPinhole,
              [400.0, 401.0, 320.0, 240.0], [0.1, -0.02, 0.003, -0.004]),
             ("pinhole-fov", acvb.FovPinhole,

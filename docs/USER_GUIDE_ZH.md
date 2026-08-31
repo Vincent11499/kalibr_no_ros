@@ -124,7 +124,14 @@ task 已内嵌初值和 `refine`，正常运行不必再传初始化 CLI 参数�
 |---|---|---|
 | `pinhole-radtan` | `[k1,k2,p1,p2]` | 普通镜头，等价于 OpenCV `k3=0` |
 | `pinhole-radtan5` | `[k1,k2,p1,p2,k3]` | 普通到较大广角，参数顺序与 OpenCV 一致 |
+| `pinhole-radtan8` | `[k1,k2,p1,p2,k3,k4,k5,k6]` | OpenCV rational model；径向变化复杂且数据覆盖充分的普通/广角镜头 |
 | `pinhole-equi` / OpenCV fisheye | `[k1,k2,k3,k4]` | 更大视场或鱼眼镜头 |
+
+`pinhole-radtan8` 对应 OpenCV `CALIB_RATIONAL_MODEL` 的前 8 个系数，不包含
+thin-prism 的 $s_1\ldots s_4$ 或 tilted sensor 的 $\tau_x,\tau_y$。它比
+`pinhole-radtan5` 多三个分母径向参数，表达能力更强，但也更容易出现参数相关和过拟合。
+普通镜头应优先从 `radtan5` 开始；只有画面边缘有稳定系统残差、标定板覆盖中心到四角且
+姿态/距离变化充分时，才建议使用 `radtan8`。
 
 OpenCV fisheye 内部保留 zero-skew 和 full 两个 projection 类型：前者兼容旧四内参
 YAML，后者使用 `[fu,fv,cu,cv,alpha]` 并可无损保存非零 skew，满足

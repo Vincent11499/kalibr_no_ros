@@ -227,6 +227,7 @@ cameras:
 |---|---|
 | `pinhole-radtan` | pinhole + 4 参数 radtan |
 | `pinhole-radtan5` | pinhole + OpenCV 顺序的 5 参数 radtan |
+| `pinhole-radtan8` | pinhole + OpenCV rational 顺序的 8 参数 radtan |
 | `pinhole-equi` | pinhole + 4 参数 equidistant |
 | `pinhole-fov` | pinhole + FOV distortion |
 | `pinhole-opencv-fisheye` | 完整 OpenCV fisheye 扩展 |
@@ -241,6 +242,11 @@ cameras:
 优化；相机 `direct` 要求每台相机内参和畸变、以及所有相邻 baseline 完整，然后跳过
 这些前置初值优化。两种策略的最终增量标定参数仍按原生活动集合优化，详见
 [`INITIALIZATION_ZH.md`](INITIALIZATION_ZH.md)。
+
+`pinhole-radtan8` 的畸变顺序固定为
+`[k1,k2,p1,p2,k3,k4,k5,k6]`。OpenCV YAML 中的
+`distortion_model: rational_polynomial` 会在导入时规范化为 Kalibr camchain 的
+`distortion_model: radtan8`；导出时执行反向映射。不能把 8 个系数截成 `radtan5`。
 
 ### 3.2 算法超参数总表
 

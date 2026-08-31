@@ -12,7 +12,7 @@ compatible with the pinned ETHZ implementation.
 - `src/kalibr`: editable production source, grouped into foundation, camera,
   optimization, trajectory, calibration and third-party domains.
 - `src/python`: ROS-free dataset I/O, public CLI and runtime instrumentation.
-- `src/camera_models`: OpenCV radtan5 and fisheye model extensions.
+- `src/camera_models`: OpenCV radtan5/radtan8 and fisheye model extensions.
 - `config`: concise camera, camera–IMU and directory-dataset YAML templates.
 - `tools`: dependency bootstrap, source audit, comparison and benchmark tools.
 
@@ -130,7 +130,7 @@ alpha/skew OpenCV fisheye conversion.
 - standard `sensor_msgs/Image`, `CompressedImage` and `Imu`;
 - directory images supported by the installed OpenCV codecs, including PNG,
   JPEG/JPG and BMP, plus strict nanosecond camera/IMU CSV tables;
-- native Kalibr camera models plus OpenCV-order radtan5;
+- native Kalibr camera models plus OpenCV-order radtan5 and rational radtan8;
 - zero-skew and full `[fu,fv,cu,cv,alpha]` OpenCV fisheye;
 - calibrated, scale-misalignment and scale-misalignment-size-effect IMU models.
 

@@ -304,6 +304,56 @@ class OpenCvYamlRoundTripTest(unittest.TestCase):
         np.testing.assert_allclose(stereo.R, self.R)
         np.testing.assert_allclose(stereo.T, self.T)
 
+    def test_radtan8_rational_polynomial_round_trip(self):
+        coefficients = np.array(
+            [-0.18, 0.052, 0.0012, -0.0007, -0.008, 0.014, -0.003, 0.0004]
+        )
+        camera = opencv_yaml.OpenCvCamera(
+            self.K0,
+            coefficients,
+            (640, 480),
+            "rational_polynomial",
+            "rational",
+            "/cam0/image_raw",
+        )
+        self.assertEqual(camera.distortion_model, "radtan8")
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rational.yaml"
+            opencv_yaml.write_opencv_camera(camera, path)
+            restored = opencv_yaml.read_opencv_camera(path)
+            storage = cv2.FileStorage(str(path), cv2.FILE_STORAGE_READ)
+            try:
+                self.assertEqual(
+                    storage.getNode("distortion_model").string(),
+                    "rational_polynomial",
+                )
+                self.assertEqual(storage.getNode("D").mat().shape, (1, 8))
+            finally:
+                storage.release()
+
+        self.assertEqual(restored.distortion_model, "radtan8")
+        np.testing.assert_array_equal(restored.D, coefficients)
+
+    def test_undeclared_eight_coefficients_infer_radtan8(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rational-flat.yaml"
+            path.write_text(
+                yaml.safe_dump(
+                    {
+                        "K": self.K0.reshape(-1).tolist(),
+                        "D": [-0.18, 0.052, 0.0012, -0.0007,
+                              -0.008, 0.014, -0.003, 0.0004],
+                        "image_width": 640,
+                        "image_height": 480,
+                    },
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+            camera = opencv_yaml.read_opencv_camera(path)
+        self.assertEqual(camera.distortion_model, "radtan8")
+
     def test_native_equidistant_camchain_exports_as_cv_fisheye(self):
         chain = opencv_yaml.opencv_mono_to_camchain(self.left)
         chain["cam0"]["distortion_model"] = "equidistant"
@@ -340,6 +390,15 @@ class OpenCvYamlRoundTripTest(unittest.TestCase):
         )
         self.assertEqual(radtan.distortion_model, "radtan")
         self.assertEqual(radtan5.distortion_model, "radtan5")
+
+    def test_rational_polynomial_rejects_non_eight_coefficients(self):
+        with self.assertRaisesRegex(ValueError, "requires 8 coefficients"):
+            opencv_yaml.OpenCvCamera(
+                self.K0,
+                [-0.4, 0.2, 0.001, -0.002, -0.08],
+                (640, 480),
+                "rational_polynomial",
+            )
 
 
 if __name__ == "__main__":

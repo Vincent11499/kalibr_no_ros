@@ -1,4 +1,4 @@
-"""Small runtime adapters that register radtan5 with Kalibr's Python layer."""
+"""Register the OpenCV rational radtan8 model with Kalibr's Python layer."""
 
 from pathlib import Path
 
@@ -20,15 +20,17 @@ def _camera_matrix(projection):
     )
 
 
-def _opencv_distortion(camera, distorted_pinhole, radtan5_model):
+def _rational_distortion(camera, distorted_pinhole, radtan5_model, radtan8_model):
     values = np.asarray(
         camera.geometry.projection().distortion().getParameters(), dtype=np.float64
     ).reshape(-1)
     if camera.model is distorted_pinhole:
-        values = np.concatenate((values, np.zeros(1, dtype=np.float64)))
-    elif camera.model is not radtan5_model:
-        return None
-    return values.reshape(1, 5)
+        return np.pad(values, (0, 8 - values.size)).reshape(1, 8)
+    if radtan5_model is not None and camera.model is radtan5_model:
+        return np.pad(values, (0, 8 - values.size)).reshape(1, 8)
+    if camera.model is radtan8_model:
+        return values.reshape(1, 8)
+    return None
 
 
 def _write_matrix_file(path, values):
@@ -42,14 +44,16 @@ def _write_matrix_file(path, values):
         storage.release()
 
 
-def _export_opencv_files(calibrator, result_file, distorted_pinhole, radtan5_model):
-    if not any(camera.model is radtan5_model for camera in calibrator.cameras):
+def _export_opencv_files(
+    calibrator, result_file, distorted_pinhole, radtan5_model, radtan8_model
+):
+    if not any(camera.model is radtan8_model for camera in calibrator.cameras):
         return []
 
     result_path = Path(result_file)
     suffix = "-camchain.yaml"
     result_text = str(result_path)
-    bagtag = (
+    prefix = (
         result_text[: -len(suffix)]
         if result_text.endswith(suffix)
         else str(result_path.with_suffix(""))
@@ -58,19 +62,25 @@ def _export_opencv_files(calibrator, result_file, distorted_pinhole, radtan5_mod
     camera_data = {}
 
     for index, camera in enumerate(calibrator.cameras):
-        distortion = _opencv_distortion(camera, distorted_pinhole, radtan5_model)
+        distortion = _rational_distortion(
+            camera, distorted_pinhole, radtan5_model, radtan8_model
+        )
         if distortion is None:
             continue
         projection = camera.geometry.projection()
         matrix = _camera_matrix(projection)
-        path = Path("{}-cam{}-opencv.yaml".format(bagtag, index))
+        path = Path("{}-cam{}-opencv.yaml".format(prefix, index))
         _write_matrix_file(
             path,
             [
                 ("camera_name", "cam{}".format(index)),
                 ("image_width", int(projection.ru())),
                 ("image_height", int(projection.rv())),
-                ("distortion_model", "plumb_bob"),
+                ("camera_model", "pinhole"),
+                ("distortion_model", "rational_polynomial"),
+                ("kalibr_distortion_model", "radtan8"),
+                ("K", matrix),
+                ("D", distortion),
                 ("camera_matrix", matrix),
                 ("distortion_coefficients", distortion),
             ],
@@ -102,13 +112,15 @@ def _export_opencv_files(calibrator, result_file, distorted_pinhole, radtan5_mod
         )
         essential = tx.dot(rotation)
         left_matrix, left_distortion, left_width, left_height = camera_data[left_index]
-        right_matrix, right_distortion, right_width, right_height = camera_data[right_index]
+        right_matrix, right_distortion, right_width, right_height = camera_data[
+            right_index
+        ]
         fundamental = np.linalg.inv(right_matrix).T.dot(essential).dot(
             np.linalg.inv(left_matrix)
         )
         path = Path(
             "{}-cam{}-cam{}-opencv-stereo.yaml".format(
-                bagtag, left_index, right_index
+                prefix, left_index, right_index
             )
         )
         _write_matrix_file(
@@ -120,6 +132,12 @@ def _export_opencv_files(calibrator, result_file, distorted_pinhole, radtan5_mod
                 ("left_image_height", left_height),
                 ("right_image_width", right_width),
                 ("right_image_height", right_height),
+                ("camera_model", "pinhole"),
+                ("distortion_model", "rational_polynomial"),
+                ("kalibr_distortion_model", "radtan8"),
+                ("transform_direction", "cam0-to-cam1"),
+                ("translation_unit", "m"),
+                ("translation_scale", 1.0),
                 ("K1", left_matrix),
                 ("D1", left_distortion),
                 ("K2", right_matrix),
@@ -149,30 +167,27 @@ def install():
     from kalibr_common import ConfigReader as cr
 
     from . import (
-        PinholeRadtan5,
-        RadialTangentialDistortion5,
-        Radtan5PinholeCameraGeometry,
-        Radtan5PinholeFrame,
-        Radtan5PinholeProjection,
-        Radtan5PinholeReprojectionErrorSimple,
+        PinholeRadtan8,
+        RadialTangentialDistortion8,
+        Radtan8PinholeCameraGeometry,
+        Radtan8PinholeFrame,
+        Radtan8PinholeProjection,
+        Radtan8PinholeReprojectionErrorSimple,
     )
 
-    # Keep mixed radtan5/radtan8 chains independent of extension install
-    # order.  If radtan8 already wrapped the writer, let that outer-capability
-    # writer serialize and export the complete rational chain.
     try:
-        from kalibr_radtan8 import PinholeRadtan8
+        from kalibr_radtan5 import PinholeRadtan5
     except ImportError:
-        PinholeRadtan8 = None
+        PinholeRadtan5 = None
 
     original_check_distortion = cr.CameraParameters.checkDistortion
 
     def check_distortion(self, model, coeffs):
-        if model == "radtan5":
-            if len(coeffs) != 5:
+        if model in ("radtan8", "rational_polynomial"):
+            if len(coeffs) != 8:
                 self.raiseError(
-                    "distortion model 'radtan5' requires 5 coefficients; {} given".format(
-                        len(coeffs)
+                    "distortion model '{}' requires 8 coefficients; {} given".format(
+                        model, len(coeffs)
                     )
                 )
             return
@@ -185,12 +200,15 @@ def install():
     def aslam_camera_init(
         self, camera_model, intrinsics, dist_model, dist_coeff, resolution
     ):
-        if camera_model != "pinhole" or dist_model != "radtan5":
+        if camera_model != "pinhole" or dist_model not in (
+            "radtan8",
+            "rational_polynomial",
+        ):
             return original_aslam_camera_init(
                 self, camera_model, intrinsics, dist_model, dist_coeff, resolution
             )
-        distortion = RadialTangentialDistortion5(*dist_coeff)
-        projection = Radtan5PinholeProjection(
+        distortion = RadialTangentialDistortion8(*dist_coeff)
+        projection = Radtan8PinholeProjection(
             intrinsics[0],
             intrinsics[1],
             intrinsics[2],
@@ -199,10 +217,10 @@ def install():
             resolution[1],
             distortion,
         )
-        self.geometry = Radtan5PinholeCameraGeometry(projection)
-        self.frameType = Radtan5PinholeFrame
+        self.geometry = Radtan8PinholeCameraGeometry(projection)
+        self.frameType = Radtan8PinholeFrame
         self.keypointType = cv.Keypoint2
-        self.reprojectionErrorType = Radtan5PinholeReprojectionErrorSimple
+        self.reprojectionErrorType = Radtan8PinholeReprojectionErrorSimple
         self.undistorterType = None
 
     cr.AslamCamera.__init__ = aslam_camera_init
@@ -210,22 +228,14 @@ def install():
     original_save_chain_parameters_yaml = CameraUtils.saveChainParametersYaml
 
     def save_chain_parameters_yaml(calibrator, result_file, graph):
-        if (PinholeRadtan8 is not None and any(
-                camera.model is PinholeRadtan8
-                for camera in calibrator.cameras)):
-            return original_save_chain_parameters_yaml(
-                calibrator, result_file, graph)
-        # Preserve Kalibr's original four-parameter and non-pinhole paths
-        # exactly.  The custom writer is needed only because upstream does not
-        # know the radtan5 model name or its fifth design variable.
         if not any(
-            camera.model is PinholeRadtan5 for camera in calibrator.cameras
+            camera.model is PinholeRadtan8 for camera in calibrator.cameras
         ):
             return original_save_chain_parameters_yaml(calibrator, result_file, graph)
 
         camera_models = {
             cvb.DistortedPinhole: "pinhole",
-            PinholeRadtan5: "pinhole",
+            PinholeRadtan8: "pinhole",
             cvb.EquidistantPinhole: "pinhole",
             cvb.FovPinhole: "pinhole",
             cvb.Omni: "omni",
@@ -235,7 +245,7 @@ def install():
         }
         distortion_models = {
             cvb.DistortedPinhole: "radtan",
-            PinholeRadtan5: "radtan5",
+            PinholeRadtan8: "radtan8",
             cvb.EquidistantPinhole: "equidistant",
             cvb.FovPinhole: "fov",
             cvb.Omni: "none",
@@ -243,9 +253,21 @@ def install():
             cvb.ExtendedUnified: "none",
             cvb.DoubleSphere: "none",
         }
+        if PinholeRadtan5 is not None:
+            camera_models[PinholeRadtan5] = "pinhole"
+            distortion_models[PinholeRadtan5] = "radtan5"
+
         chain = cr.CameraChainParameters(result_file, createYaml=True)
-        for camera_id, camera in enumerate(calibrator.cameras):
-            model = camera_models[camera.model]
+        for camera in calibrator.cameras:
+            try:
+                model = camera_models[camera.model]
+                distortion_model = distortion_models[camera.model]
+            except KeyError:
+                raise RuntimeError(
+                    "radtan8 integration cannot serialize camera model {}".format(
+                        camera.model
+                    )
+                )
             params = cr.CameraParameters(result_file, createYaml=True)
             params.setRosTopic(camera.dataset.topic)
             projection = camera.geometry.projection()
@@ -287,7 +309,7 @@ def install():
             params.setIntrinsics(model, intrinsics)
             params.setResolution([projection.ru(), projection.rv()])
             params.setDistortion(
-                distortion_models[camera.model],
+                distortion_model,
                 projection.distortion().getParameters().flatten(),
             )
             chain.addCameraAtEnd(params)
@@ -301,7 +323,11 @@ def install():
             )
         chain.writeYaml()
         _export_opencv_files(
-            calibrator, result_file, cvb.DistortedPinhole, PinholeRadtan5
+            calibrator,
+            result_file,
+            cvb.DistortedPinhole,
+            PinholeRadtan5,
+            PinholeRadtan8,
         )
 
     CameraUtils.saveChainParametersYaml = save_chain_parameters_yaml
