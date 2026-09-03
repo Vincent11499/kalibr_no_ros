@@ -9,17 +9,37 @@
 | `camera_imu_calibration_task.yaml` | 相机与 IMU 联合标定 |
 | `directory_dataset.yaml` | 图像文件和 IMU CSV 目录的数据清单 |
 
-`euroc/` 保存本机 EuRoC 数据集的完整可运行配置，包括 task、AprilGrid、IMU 参数和
-已验证 camchain，运行命令见 [`euroc/README_ZH.md`](euroc/README_ZH.md)。根目录
-三份 YAML 只是用于复制的通用模板。
+EuRoC 配置按是否带初值明确分开：
+
+| 目录 | 用途 |
+|---|---|
+| [`euroc/`](euroc/README_ZH.md) | 不带初值；原生自动初始化和冻结基线对比 |
+| [`euroc_init/`](euroc_init/README_ZH.md) | 带正常/`10%` 扰动初值；task 默认 `refine` |
+| [`euroc_bad_init/`](euroc_bad_init/README_ZH.md) | 带差内参或大外参；只用于鲁棒性测试 |
+
+三个目录的 task 都能直接传给 `--config`。`euroc_init` 和 `euroc_bad_init` 已在 task
+内部选择初值，不要求额外的初始化 CLI 参数。根目录三份 YAML 只是用于复制的通用模板。
 
 task 中只需要注意：
 
-- `schema_version` 固定为 `1`；
+- task 的 `schema_version` 固定为整数 `1`；可选 initialization 文件也使用自己的
+  schema v1，而程序输出的 `calibration.yaml` 是结果 schema v2；
 - `job` 与运行的子命令一致；
 - `dataset.type` 只能是 `bag` 或 `directory`；
 - 相对路径以 task YAML 所在目录为基准；
 - 普通运行不必写 `execution`，并行数可从命令行传入。
+
+显式初值也是可选 task 顶层块：
+
+```yaml
+initialization:
+  path: camera_calibration_initialization.yaml
+  strategy: refine
+```
+
+`strategy` 可省略并默认为 `refine`。初值文件的格式、`direct` 的完整性要求和 CLI
+覆盖规则见
+[`../docs/INITIALIZATION_ZH.md`](../docs/INITIALIZATION_ZH.md)。
 
 例如：
 

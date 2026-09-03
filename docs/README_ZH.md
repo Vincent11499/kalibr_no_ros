@@ -6,6 +6,7 @@
 | 文档 | 适合什么时候看 | 主要内容 |
 |---|---|---|
 | [`USER_GUIDE_ZH.md`](USER_GUIDE_ZH.md) | 准备和运行标定 | 最简 task、目录数据集、CSV、相机模型 |
+| [`CAMERA_MODELS_ZH.md`](CAMERA_MODELS_ZH.md) | 选择相机模型或核对优化变量 | 全部模型、参数顺序、投影公式，以及 camera/Camera–IMU 各阶段 active 状态 |
 | [`TASK_PARAMETERS_ZH.md`](TASK_PARAMETERS_ZH.md) | 配置或调参 | 两类 task 的全部字段、默认值、算法作用、有效范围和固定参数 |
 | [`INITIALIZATION_ZH.md`](INITIALIZATION_ZH.md) | 已有物理初值或弱数据需要诊断 | 两类 seed YAML、refine/direct、坐标单位、模型门控、秩诊断 |
 | [`INITIALIZATION_ROBUSTNESS_VALIDATION_ZH.md`](INITIALIZATION_ROBUSTNESS_VALIDATION_ZH.md) | 评估初值可信范围 | EuRoC 10% 随机扰动、差内参、大外参的 direct/refine 实测结果 |

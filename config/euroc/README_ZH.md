@@ -30,3 +30,14 @@ build/project-profile/bin/kalibr-noros calibrate imu-camera \
 引用本目录中已经验证的双目 `radtan` camchain 和 ADIS16448 IMU 噪声参数，因此它
 可以独立运行，不要求先重新执行相机标定。两个输出目录若已经存在结果，程序会
 拒绝覆盖；确认需要替换时才添加 `--force`。
+
+## 与初值配置的边界
+
+本目录只包含**无初值** task，用于原生自动初始化和冻结基线对比。需要初值时，不必在
+命令行追加参数，直接选择相应目录的 task：
+
+- [`../euroc_init/`](../euroc_init/README_ZH.md)：正常或 `10%` 扰动初值，默认 `refine`；
+- [`../euroc_bad_init/`](../euroc_bad_init/README_ZH.md)：差内参或大外参测试，默认 `refine`。
+
+初值坐标方向、单位和策略语义见
+[`../../docs/INITIALIZATION_ZH.md`](../../docs/INITIALIZATION_ZH.md)。
