@@ -80,13 +80,14 @@ boost::python::tuple estimateTransformation(const C * camera, aslam::cameras::Gr
 }
 
 template<typename C>
-bool initializeIntrinsics(C* camera, const boost::python::object& py_obslist)
+bool initializeIntrinsics(C* camera, const boost::python::object& py_obslist,
+                          double minVisibleCornerRatio)
 {
   //convert python list to stl vector
   boost::python::stl_input_iterator<aslam::cameras::GridCalibrationTargetObservation> begin(py_obslist), end;
   std::vector<aslam::cameras::GridCalibrationTargetObservation> obslist(begin, end);
 
-  bool success = camera->initializeIntrinsics(obslist);
+  bool success = camera->initializeIntrinsics(obslist, minVisibleCornerRatio);
   return success;
 }
 
@@ -129,7 +130,10 @@ void exportCameraGeometryBase() {
       .def("getParameters", &getParameters<CameraGeometryBase>)
       .def("setParameters", &CameraGeometryBase::setParameters)
       .def("estimateTransformation", &detail::estimateTransformation<CameraGeometryBase>, "estimate the transformation of the camera with respect to the calibration target, returns tuple (bool, sm.Transformation)")
-      .def("initializeIntrinsics", &detail::initializeIntrinsics<CameraGeometryBase>, "intialize intrinsics on a list of observations")
+      .def("initializeIntrinsics", &detail::initializeIntrinsics<CameraGeometryBase>,
+           (boost::python::arg("observations"),
+            boost::python::arg("minVisibleCornerRatio") = 1.0),
+           "initialize intrinsics on a list of observations")
       .def_pickle( sm::python::pickle_suite<CameraGeometryBase>())
       ;
 }

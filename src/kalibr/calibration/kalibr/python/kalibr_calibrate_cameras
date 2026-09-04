@@ -121,6 +121,10 @@ def parseArgs():
     groupCalibrator.add_argument(
         '--max-displacement-px', type=float, dest='maxDisplacementPx',
         help=argparse.SUPPRESS)
+    groupCalibrator.add_argument(
+        '--focal-initialization-min-visible-corner-ratio', type=float,
+        default=1.0, dest='focalInitializationMinVisibleCornerRatio',
+        help=argparse.SUPPRESS)
     
     outlierSettings = parser.add_argument_group('Outlier filtering options')
     outlierSettings.add_argument('--no-outliers-removal', action='store_false', default=True, dest='removeOutliers', help='Disable corner outlier filtering')
@@ -165,6 +169,14 @@ def parseArgs():
             (parsed.maxDisplacementPx <= 0.0 or
              not np.isfinite(parsed.maxDisplacementPx))):
         sm.logError("Please specify a positive value (--max-displacement-px).")
+        sys.exit(2)
+    if (parsed.focalInitializationMinVisibleCornerRatio <= 0.0 or
+            parsed.focalInitializationMinVisibleCornerRatio > 1.0 or
+            not np.isfinite(
+                parsed.focalInitializationMinVisibleCornerRatio)):
+        sm.logError(
+            "Please specify a finite value in (0, 1] "
+            "(--focal-initialization-min-visible-corner-ratio).")
         sys.exit(2)
     
     #there is a with the gtk plot widget, so we cant plot if we have opencv windows open...
@@ -267,12 +279,14 @@ def main():
                         "camera_intrinsics_initialization",
                         "initialization", {"inclusive": True},
                         cam.initGeometryFromObservationsWithSeed,
-                        observations, camera_name, camera_initialization):
+                        observations, camera_name, camera_initialization,
+                        parsed.focalInitializationMinVisibleCornerRatio):
                     raise RuntimeError("Could not initialize the intrinsics for camera with topic: {0}. Try to use --verbose and check whether the calibration target extraction is successful.".format(topic))
             elif not native_runtime.timed_call(
                     "camera_intrinsics_initialization",
                     "initialization", {"inclusive": True},
-                    cam.initGeometryFromObservations, observations):
+                    cam.initGeometryFromObservations, observations,
+                    parsed.focalInitializationMinVisibleCornerRatio):
                 raise RuntimeError("Could not initialize the intrinsics for camera with topic: {0}. Try to use --verbose and check whether the calibration target extraction is successful.".format(topic))
             
             print("\tProjection initialized to: %s" % cam.geometry.projection().getParameters().flatten())
@@ -618,12 +632,14 @@ def main():
                                 "initialization", {"inclusive": True},
                                 cam.initGeometryFromObservationsWithSeed,
                                 observations, camera_name,
-                                camera_initialization):
+                                camera_initialization,
+                                parsed.focalInitializationMinVisibleCornerRatio):
                             raise RuntimeError("Could not re-initialize the intrinsics for camera with topic: {0}".format(cam.dataset.topic))
                     elif not native_runtime.timed_call(
                             "camera_intrinsics_initialization",
                             "initialization", {"inclusive": True},
-                            cam.initGeometryFromObservations, observations):
+                            cam.initGeometryFromObservations, observations,
+                            parsed.focalInitializationMinVisibleCornerRatio):
                         raise RuntimeError("Could not re-initialize the intrinsics for camera with topic: {0}".format(topic))
                     
                     print("\tProjection initialized to: %s" % cam.geometry.projection().getParameters().flatten())

@@ -449,6 +449,14 @@ class OpenCvFisheyeProjection {
     return _base.initializeIntrinsics(observations);
   }
 
+  bool initializeIntrinsics(
+      const std::vector<GridCalibrationTargetObservation>& observations,
+      double min_visible_corner_ratio) {
+    _alpha = 0.0;
+    return _base.initializeIntrinsics(observations,
+                                      min_visible_corner_ratio);
+  }
+
   size_t computeReprojectionError(
       const GridCalibrationTargetObservation& observation,
       const sm::kinematics::Transformation& target_from_camera,

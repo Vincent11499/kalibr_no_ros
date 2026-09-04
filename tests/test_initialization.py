@@ -624,6 +624,35 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
                 with self.assertRaises(TaskError):
                     _camera_arguments(invalid, "bag", "target", {})
 
+    def test_partial_focal_initialization_ratio_is_forwarded_and_validated(self):
+        task = {
+            "dataset": {},
+            "cameras": [{"topic": "/cam0", "model": "pinhole-radtan8"}],
+            "calibration": {
+                "focal_initialization_min_visible_corner_ratio": 0.75,
+            },
+        }
+        arguments = _camera_arguments(task, "bag", "target", {})
+        option = "--focal-initialization-min-visible-corner-ratio"
+        self.assertEqual(arguments[arguments.index(option) + 1], "0.75")
+
+        without_setting = dict(task)
+        without_setting["calibration"] = {}
+        self.assertNotIn(
+            option, _camera_arguments(
+                without_setting, "bag", "target", {}))
+
+        for value in (
+                0.0, -0.1, 1.01, float("inf"), float("nan"), True,
+                "0.75"):
+            invalid = dict(task)
+            invalid["calibration"] = {
+                "focal_initialization_min_visible_corner_ratio": value,
+            }
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(TaskError, r"in \(0, 1\]"):
+                    _camera_arguments(invalid, "bag", "target", {})
+
     def test_public_cli_flags_and_cwd_resolution(self):
         arguments = build_parser().parse_args([
             "calibrate", "cameras", "--config", "task.yaml",

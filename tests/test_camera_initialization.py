@@ -1,3 +1,4 @@
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -35,6 +36,142 @@ class CameraInitializationTest(unittest.TestCase):
         path = Path(directory.name) / "initialization.yaml"
         path.write_text(yaml.safe_dump(document), encoding="utf-8")
         return path
+
+    def test_partial_focal_initialization_ratio_reaches_native_geometry(self):
+        camera = CameraGeometry.__new__(CameraGeometry)
+        camera.geometry = mock.Mock()
+        camera.geometry.initializeIntrinsics.return_value = True
+        camera.model = object()
+        camera.dataset = type("Dataset", (), {"topic": "/cam0"})()
+
+        with mock.patch.object(
+            camera_calibrator.kcc, "calibrateIntrinsics", return_value=True
+        ):
+            success = camera.initGeometryFromObservations(
+                ["observation"], 0.75)
+
+        self.assertTrue(success)
+        camera.geometry.initializeIntrinsics.assert_called_once_with(
+            ["observation"], 0.75)
+
+    def test_partial_focal_ratio_reaches_distortion_only_seed_path(self):
+        camera = CameraGeometry.__new__(CameraGeometry)
+        camera.geometry = mock.Mock()
+        camera.geometry.initializeIntrinsics.return_value = True
+        camera.model = object()
+        camera.dataset = type("Dataset", (), {"topic": "/cam0"})()
+        seed = {"distortion_coeffs": (0.1, -0.02, 0.003, -0.004)}
+
+        with mock.patch.object(
+            camera_calibrator.kcc, "calibrateIntrinsics", return_value=True
+        ), mock.patch.object(
+            camera, "_restoreUnseededInitializationDefaults"
+        ), mock.patch.object(camera, "_applyInitializationSeed"):
+            success = camera.initGeometryFromObservationsWithSeed(
+                ["observation"], "cam0", seed, 0.75
+            )
+
+        self.assertTrue(success)
+        camera.geometry.initializeIntrinsics.assert_called_once_with(
+            ["observation"], 0.75
+        )
+
+    @staticmethod
+    def _partial_circle_grid_observation():
+        options = acv.CheckerboardOptions()
+        target = acv.GridCalibrationTargetCheckerboard(
+            8, 8, 0.04, 0.04, options
+        )
+        observation = acv.GridCalibrationTargetObservation(target)
+        observation.setImage(np.zeros((1200, 2000), dtype=np.uint8))
+        first_vanishing_point = np.asarray([250.0, 300.0])
+        second_vanishing_point = np.asarray([1500.0, 300.0])
+        center_x = 0.5 * (
+            first_vanishing_point[0] + second_vanishing_point[0]
+        )
+        for row in range(8):
+            center = np.asarray([center_x, -700.0 + 200.0 * row])
+            first_angle = math.atan2(
+                first_vanishing_point[1] - center[1],
+                first_vanishing_point[0] - center[0],
+            )
+            second_angle = math.atan2(
+                second_vanishing_point[1] - center[1],
+                second_vanishing_point[0] - center[0],
+            )
+            angle_difference = second_angle - first_angle
+            while angle_difference > math.pi:
+                angle_difference -= 2.0 * math.pi
+            while angle_difference < -math.pi:
+                angle_difference += 2.0 * math.pi
+            radius = np.linalg.norm(first_vanishing_point - center)
+            for column in range(1, 7):
+                fraction = column / 7.0
+                angle = first_angle + fraction * angle_difference
+                observation.updateImagePoint(
+                    target.gridCoordinatesToPoint(row, column),
+                    center + radius * np.asarray(
+                        [math.cos(angle), math.sin(angle)]
+                    ),
+                )
+        return observation
+
+    def test_partial_focal_initialization_covers_public_extended_models(self):
+        import kalibr_opencv_fisheye_full as opencv_fisheye
+        import kalibr_radtan8 as radtan8
+
+        observation = self._partial_circle_grid_observation()
+        expected_focal_length = 1250.0 / math.pi
+        for name, model in (
+            ("pinhole-radtan8", radtan8.PinholeRadtan8),
+            ("pinhole-opencv-fisheye",
+             opencv_fisheye.PinholeOpenCvFisheyeFull),
+        ):
+            with self.subTest(model=name):
+                geometry = model.geometry()
+                self.assertTrue(
+                    geometry.initializeIntrinsics([observation], 0.75)
+                )
+                parameters = geometry.projection().getParameters().flatten()
+                self.assertAlmostEqual(
+                    parameters[0], expected_focal_length, places=7
+                )
+                self.assertAlmostEqual(
+                    parameters[1], expected_focal_length, places=7
+                )
+
+    def test_partial_focal_initialization_rejects_below_threshold_view(self):
+        import kalibr_radtan8 as radtan8
+
+        geometry = radtan8.PinholeRadtan8.geometry()
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.assertFalse(
+                geometry.initializeIntrinsics(
+                    [self._partial_circle_grid_observation()], 0.76
+                )
+            )
+
+    def test_partial_focal_initialization_rejects_degenerate_rows(self):
+        import kalibr_radtan8 as radtan8
+
+        options = acv.CheckerboardOptions()
+        target = acv.GridCalibrationTargetCheckerboard(
+            8, 8, 0.04, 0.04, options
+        )
+        observation = acv.GridCalibrationTargetObservation(target)
+        observation.setImage(np.zeros((1200, 2000), dtype=np.uint8))
+        for row in range(8):
+            for column in range(8):
+                observation.updateImagePoint(
+                    target.gridCoordinatesToPoint(row, column),
+                    np.asarray([200.0 + 100.0 * column, 100.0 + 80.0 * row]),
+                )
+
+        geometry = radtan8.PinholeRadtan8.geometry()
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.assertFalse(
+                geometry.initializeIntrinsics([observation], 0.75)
+            )
 
     @staticmethod
     def base_document(strategy="refine"):

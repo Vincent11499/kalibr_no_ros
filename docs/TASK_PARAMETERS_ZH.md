@@ -49,6 +49,7 @@ cameras:
 calibration:
   window_half_size_px: 2
   max_displacement_px: 1.224744871391589
+  focal_initialization_min_visible_corner_ratio: 1.0
   synchronization_tolerance_s: 0.02
   qr_tolerance: 0.02
   information_gain_tolerance: 0.2
@@ -254,6 +255,7 @@ cameras:
 |---|---:|---|---|
 | `window_half_size_px` | `2` px | 强制整数 `>= 1` | AprilGrid `cornerSubPix` 半窗口；实际搜索区域为 $(2w+1)\times(2w+1)$ |
 | `max_displacement_px` | $\sqrt{1.5}\approx1.224745$ px | 强制有限数 `> 0` | AprilGrid 亚像素角点相对原始检测的最大允许位移 |
+| `focal_initialization_min_visible_corner_ratio` | `1.0` | 强制有限数，范围 $(0,1]$ | 无显式内参初值时，筛选可进入 pinhole 焦距解析初始化的部分标定板观测；`1.0` 严格保持原生完整帧路径 |
 | `synchronization_tolerance_s` | `0.02` s | 当前未前置校验；算法上应 `>= 0` | 多相机观测近似同步、相机连接图和 baseline 初始化 |
 | `qr_tolerance` | `0.02` | 接受任意 float；**当前不生效** | 只生成 `--qr-tol`，解析后未写入线性求解器 |
 | `information_gain_tolerance` | `0.2` | 特殊值 `-1`；常规值建议 `>= 0` | 决定增量估计器是否保留新 target view |
@@ -262,6 +264,40 @@ cameras:
 | `remove_outliers` | `true` | 布尔值 | 是否运行显式 $4\sigma$ 角点删除流程 |
 | `final_filtering` | `true` | 布尔值 | 所有 view 处理完后是否再检查全部已接受 batch |
 | `blake_zisserman` | `false` | 布尔值 | 是否对每个二维重投影误差启用 Blake–Zisserman M-estimator |
+
+#### `focal_initialization_min_visible_corner_ratio`
+
+该字段只作用于没有提供相机内参初值时的 pinhole 系列焦距解析初始化。对一帧观测定义：
+
+$$
+\rho_{\mathrm{visible}}
+=
+\frac{N_{\mathrm{valid\ corners}}}
+     {N_{\mathrm{all\ target\ corners}}}.
+$$
+
+其中，有效角点是经过标定板检测、ID 映射和亚像素有效性检查后仍可用的角点；分母是
+标定板的理论角点总数。以 8×8 AprilGrid 为例，内部目标为 16×16 个角点，因此设置
+`0.75` 表示一帧至少需要 192/256 个有效角点，才会进入候选检查。
+
+```yaml
+calibration:
+  focal_initialization_min_visible_corner_ratio: 0.75
+```
+
+- 字段省略或设为 `1.0`：直接调用冻结 ETHZ 的完整标定板实现，保持原生运算顺序和
+  数值行为；
+- 小于 `1.0`：启用部分可见扩展，先按上述全局比例筛帧；
+- 全局比例只是第一道门槛。内部还固定要求足够的行内角点数、角点跨度、有效行数、
+  跨行覆盖范围、圆拟合条件和稳定圆交点，并使用中位数/MAD 排除焦距异常候选；
+- 已通过 `initialization` 提供 `intrinsics` 时，解析焦距初始化被跳过，因此该字段不
+  影响该相机；
+- Camera–IMU task 读取既有相机标定，不重新执行相机焦距初始化；当前 task 解析器会忽略
+  该字段，但不应配置它。
+
+降低该值改变了可用于产生焦距初值的观测集合，只解决“没有完整帧导致无法产生 seed”
+的问题，不等价于改善数据可观性。它也不会改变后续单相机 LM、双目 baseline 初始化、
+full-batch refinement 或最终增量 GN 的超参数。
 
 #### `synchronization_tolerance_s`
 
@@ -776,6 +812,7 @@ cameras[].model
 target 物理尺寸
 window_half_size_px
 max_displacement_px
+focal_initialization_min_visible_corner_ratio
 synchronization_tolerance_s
 information_gain_tolerance
 shuffle

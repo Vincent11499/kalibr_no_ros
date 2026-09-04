@@ -201,6 +201,19 @@ calibration:
 - 两项省略时必须严格保留原生默认 `2` 和 `sqrt(1.5)`；
 - 新字段必须同时贯通 camera、Camera–IMU、Python 绑定及多进程 pickle。
 
+Pinhole 系列无内参 seed 时可显式放宽焦距初始化的完整帧要求：
+
+```yaml
+calibration:
+  focal_initialization_min_visible_corner_ratio: 0.75
+```
+
+- 比例定义为单帧有效角点数除以目标理论总角点数，合法范围为 $(0,1]$；
+- 省略或设为 `1.0` 时必须直接走冻结 ETHZ 的完整帧实现；
+- 小于 `1.0` 时，全局比例只负责候选筛选，行内覆盖、拟合条件和圆交点稳定性仍是不可
+  绕过的内部检查；
+- Camera–IMU 从 camchain 读取内参，不执行该焦距初始化，因此不使用此字段。
+
 ## 8. Task、初始化和结果契约
 
 - camera task 与 Camera–IMU task 的 `schema_version` 当前固定为整数 `1`。

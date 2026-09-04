@@ -1,9 +1,62 @@
 // Bring in gtest
 #include <gtest/gtest.h>
+#include <limits>
 #include <sm/eigen/gtest.hpp>
 #include <aslam/cameras.hpp>
+#include <aslam/cameras/GridCalibrationTargetCheckerboard.hpp>
 #include <sm/kinematics/homogeneous_coordinates.hpp>
 #include <aslam/cameras/test/CameraGeometryTestHarness.hpp>
+
+namespace {
+
+aslam::cameras::GridCalibrationTargetObservation makeCircleGridObservation(
+    bool partial) {
+  using aslam::cameras::GridCalibrationTargetCheckerboard;
+  using aslam::cameras::GridCalibrationTargetObservation;
+
+  GridCalibrationTargetCheckerboard::Ptr target(
+      new GridCalibrationTargetCheckerboard(8, 8, 0.04, 0.04));
+  GridCalibrationTargetObservation observation(
+      target, cv::Mat::zeros(1200, 2000, CV_8UC1));
+
+  const cv::Point2d firstVanishingPoint(250.0, 300.0);
+  const cv::Point2d secondVanishingPoint(1500.0, 300.0);
+  const double centerX =
+      0.5 * (firstVanishingPoint.x + secondVanishingPoint.x);
+  for (size_t row = 0; row < target->rows(); ++row) {
+    const cv::Point2d center(centerX, -700.0 + 200.0 * row);
+    const double firstAngle =
+        std::atan2(firstVanishingPoint.y - center.y,
+                   firstVanishingPoint.x - center.x);
+    const double rawSecondAngle =
+        std::atan2(secondVanishingPoint.y - center.y,
+                   secondVanishingPoint.x - center.x);
+    double angleDifference = rawSecondAngle - firstAngle;
+    while (angleDifference > M_PI) {
+      angleDifference -= 2.0 * M_PI;
+    }
+    while (angleDifference < -M_PI) {
+      angleDifference += 2.0 * M_PI;
+    }
+    const double radius = cv::norm(firstVanishingPoint - center);
+    for (size_t column = 0; column < target->cols(); ++column) {
+      if (partial && (column == 0 || column + 1 == target->cols())) {
+        continue;
+      }
+      const double fraction =
+          static_cast<double>(column) /
+          static_cast<double>(target->cols() - 1);
+      const double angle = firstAngle + fraction * angleDifference;
+      observation.updateImagePoint(
+          target->gridCoordinatesToPoint(row, column),
+          Eigen::Vector2d(center.x + radius * std::cos(angle),
+                          center.y + radius * std::sin(angle)));
+    }
+  }
+  return observation;
+}
+
+}  // namespace
 
 TEST(AslamCamerasTestSuite, testPinholeCameraGeometry)
 {
@@ -67,6 +120,80 @@ TEST(AslamCamerasTestSuite, testDistortedPinholeRsCameraGeometry)
   SCOPED_TRACE("");
   harness.testAll();
 
+}
+
+TEST(AslamCamerasTestSuite, testPartialGridPinholeInitialization)
+{
+  using namespace aslam::cameras;
+  GridCalibrationTargetObservation observation =
+      makeCircleGridObservation(true);
+  std::vector<GridCalibrationTargetObservation> observations(1, observation);
+
+  PinholeProjection<NoDistortion> projection;
+  ASSERT_TRUE(projection.initializeIntrinsics(observations, 0.75));
+
+  Eigen::MatrixXd parameters;
+  projection.getParameters(parameters);
+  const double expectedFocalLength = 1250.0 / M_PI;
+  EXPECT_NEAR(expectedFocalLength, parameters(0, 0), 1.0e-8);
+  EXPECT_NEAR(expectedFocalLength, parameters(1, 0), 1.0e-8);
+  EXPECT_DOUBLE_EQ(999.5, parameters(2, 0));
+  EXPECT_DOUBLE_EQ(599.5, parameters(3, 0));
+}
+
+TEST(AslamCamerasTestSuite, testVisibleRatioOnePreservesLegacyInitialization)
+{
+  using namespace aslam::cameras;
+  GridCalibrationTargetObservation observation =
+      makeCircleGridObservation(false);
+  std::vector<GridCalibrationTargetObservation> observations(1, observation);
+
+  PinholeProjection<NoDistortion> legacyProjection;
+  PinholeProjection<NoDistortion> ratioProjection;
+  ASSERT_TRUE(legacyProjection.initializeIntrinsics(observations));
+  ASSERT_TRUE(ratioProjection.initializeIntrinsics(observations, 1.0));
+
+  Eigen::MatrixXd legacyParameters;
+  Eigen::MatrixXd ratioParameters;
+  legacyProjection.getParameters(legacyParameters);
+  ratioProjection.getParameters(ratioParameters);
+  ASSERT_EQ(legacyParameters.rows(), ratioParameters.rows());
+  ASSERT_EQ(legacyParameters.cols(), ratioParameters.cols());
+  for (Eigen::Index row = 0; row < legacyParameters.rows(); ++row) {
+    for (Eigen::Index column = 0; column < legacyParameters.cols(); ++column) {
+      EXPECT_DOUBLE_EQ(legacyParameters(row, column),
+                       ratioParameters(row, column));
+    }
+  }
+}
+
+TEST(AslamCamerasTestSuite, testCheckedCircleRejectsDegenerateLine)
+{
+  std::vector<cv::Point2d> points;
+  for (int index = 0; index < 8; ++index) {
+    points.emplace_back(100.0 * index, 50.0 * index + 20.0);
+  }
+
+  cv::Point2d center;
+  double radius = 0.0;
+  EXPECT_FALSE(aslam::cameras::PinholeHelpers::fitCircleChecked(
+      points, center, radius));
+}
+
+TEST(AslamCamerasTestSuite, testPartialGridRejectsInvalidRatio)
+{
+  using namespace aslam::cameras;
+  GridCalibrationTargetObservation observation =
+      makeCircleGridObservation(true);
+  std::vector<GridCalibrationTargetObservation> observations(1, observation);
+  PinholeProjection<NoDistortion> projection;
+
+  EXPECT_THROW(projection.initializeIntrinsics(observations, 0.0),
+               std::runtime_error);
+  EXPECT_THROW(projection.initializeIntrinsics(
+                   observations,
+                   std::numeric_limits<double>::quiet_NaN()),
+               std::runtime_error);
 }
 
 // TEST(AslamCamerasTestSuite, testDistortedPinholeCameraGeometry) {

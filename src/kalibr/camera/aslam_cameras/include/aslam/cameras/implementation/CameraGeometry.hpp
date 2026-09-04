@@ -4,6 +4,34 @@ namespace aslam {
 
   namespace cameras {
 
+    namespace detail {
+
+      // Prefer a projection's partial-target overload when it exists.  This
+      // keeps the new CameraGeometryBase API source-compatible with projection
+      // models whose initializer still only implements the native one-argument
+      // contract.
+      template<typename Projection>
+      auto initializeIntrinsicsWithVisibleRatio(
+          Projection & projection,
+          const std::vector<GridCalibrationTargetObservation> & observations,
+          double minVisibleCornerRatio,
+          int) -> decltype(projection.initializeIntrinsics(
+              observations, minVisibleCornerRatio)) {
+        return projection.initializeIntrinsics(observations,
+                                               minVisibleCornerRatio);
+      }
+
+      template<typename Projection>
+      bool initializeIntrinsicsWithVisibleRatio(
+          Projection & projection,
+          const std::vector<GridCalibrationTargetObservation> & observations,
+          double /*minVisibleCornerRatio*/,
+          long) {
+        return projection.initializeIntrinsics(observations);
+      }
+
+    }  // namespace detail
+
     /// \brief default constructor
     template<typename P, typename S, typename M>
     CameraGeometry<P, S, M>::CameraGeometry() {
@@ -493,6 +521,14 @@ namespace aslam {
     template<typename P, typename S, typename M>
     bool CameraGeometry<P, S, M>::initializeIntrinsics(const std::vector<GridCalibrationTargetObservation> &observations) {
       return _projection.initializeIntrinsics(observations);
+    }
+
+    template<typename P, typename S, typename M>
+    bool CameraGeometry<P, S, M>::initializeIntrinsics(
+        const std::vector<GridCalibrationTargetObservation> & observations,
+        double minVisibleCornerRatio) {
+      return detail::initializeIntrinsicsWithVisibleRatio(
+          _projection, observations, minVisibleCornerRatio, 0);
     }
 
     /// \brief estimate the transformation of the camera with respect to the calibration target

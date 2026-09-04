@@ -228,6 +228,13 @@ class PinholeProjection {
   /// \return true on success
   bool initializeIntrinsics(const std::vector<GridCalibrationTargetObservation> &observations);
 
+  /// \brief initialize intrinsics using observations that meet a minimum
+  /// visible-corner ratio
+  /// \return true on success
+  bool initializeIntrinsics(
+      const std::vector<GridCalibrationTargetObservation> &observations,
+      double minVisibleCornerRatio);
+
   /// \brief compute the reprojection error based on a checkerboard observation.
   /// \return the number of corners successfully observed and projected
   size_t computeReprojectionError(

@@ -367,9 +367,11 @@ class CameraGeometry(object):
         self.dv.distortionDesignVariable().setActive(distortionActive)
         self.dv.shutterDesignVariable().setActive(shutterActice)
 
-    def initGeometryFromObservations(self, observations):
+    def initGeometryFromObservations(
+            self, observations, minVisibleCornerRatio=1.0):
         #obtain focal length guess
-        success = self.geometry.initializeIntrinsics(observations)
+        success = self.geometry.initializeIntrinsics(
+            observations, minVisibleCornerRatio)
         if not success:
             sm.logError("initialization of focal length for cam with topic {0} failed  ".format(self.dataset.topic))
         
@@ -469,10 +471,12 @@ class CameraGeometry(object):
                     camera_name, expected_ru, expected_rv, detail))
 
     def initGeometryFromObservationsWithSeed(self, observations, camera_name,
-                                             seed):
+                                             seed,
+                                             minVisibleCornerRatio=1.0):
         """Apply a partial seed, then run the legacy intrinsic refinement."""
         if 'intrinsics' not in seed:
-            success = self.geometry.initializeIntrinsics(observations)
+            success = self.geometry.initializeIntrinsics(
+                observations, minVisibleCornerRatio)
             if not success:
                 sm.logError(
                     "initialization of focal length for cam with topic {0} "

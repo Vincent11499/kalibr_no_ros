@@ -271,6 +271,12 @@ class CameraGeometry : public CameraGeometryBase {
   /// \return true on success
   bool initializeIntrinsics(const std::vector<GridCalibrationTargetObservation> &observations);
 
+  /// \brief initialize intrinsics with a minimum visible-corner ratio
+  /// \return true on success
+  bool initializeIntrinsics(
+      const std::vector<GridCalibrationTargetObservation> &observations,
+      double minVisibleCornerRatio);
+
   /// \brief estimate the transformation of the camera with respect to the calibration target
   ///        On success out_T_t_c is filled in with the transformation that takes points from
   ///        the camera frame to the target frame

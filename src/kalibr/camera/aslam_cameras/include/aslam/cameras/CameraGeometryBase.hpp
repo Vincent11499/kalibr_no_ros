@@ -91,6 +91,17 @@ class CameraGeometryBase {
   /// \return true on success
   virtual bool initializeIntrinsics(const std::vector<GridCalibrationTargetObservation> &observations) = 0;
 
+  /// \brief initialize the intrinsics while allowing partially observed targets
+  ///
+  /// Projection implementations that support partial-target initialization
+  /// override this method.  The default implementation preserves the legacy
+  /// behavior for projections without such an initializer.
+  virtual bool initializeIntrinsics(
+      const std::vector<GridCalibrationTargetObservation> &observations,
+      double /*minVisibleCornerRatio*/) {
+    return initializeIntrinsics(observations);
+  }
+
   /// \brief estimate the transformation of the camera with respect to the calibration target
   ///        On success out_T_t_c is filled in with the transformation that takes points from
   ///        the camera frame to the target frame

@@ -492,6 +492,23 @@ def _append_corner_refinement(arguments, calibration):
         arguments.extend(["--max-displacement-px", str(displacement)])
 
 
+def _append_focal_initialization(arguments, calibration):
+    ratio = calibration.get(
+        "focal_initialization_min_visible_corner_ratio")
+    if ratio is None:
+        return
+    if (not isinstance(ratio, (int, float))
+            or isinstance(ratio, bool)
+            or ratio <= 0.0
+            or ratio > 1.0
+            or not math.isfinite(ratio)):
+        raise TaskError(
+            "calibration.focal_initialization_min_visible_corner_ratio "
+            "must be a finite number in (0, 1]")
+    arguments.extend([
+        "--focal-initialization-min-visible-corner-ratio", str(ratio)])
+
+
 def _camera_arguments(task, bag, target, overrides, initialization_config=None):
     cameras = task.get("cameras")
     if not isinstance(cameras, list) or not cameras:
@@ -510,6 +527,7 @@ def _camera_arguments(task, bag, target, overrides, initialization_config=None):
     _append_common_dataset(arguments, task)
     calibration = task.get("calibration") or {}
     _append_corner_refinement(arguments, calibration)
+    _append_focal_initialization(arguments, calibration)
     for key, option in (
         ("synchronization_tolerance_s", "--approx-sync"),
         ("qr_tolerance", "--qr-tol"),

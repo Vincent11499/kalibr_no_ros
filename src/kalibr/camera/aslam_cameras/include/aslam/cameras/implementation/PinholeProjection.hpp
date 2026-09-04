@@ -1,7 +1,10 @@
 #include <opencv2/core/eigen.hpp>
 #include <Eigen/StdVector>
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <cstdlib>
+#include <limits>
 
 namespace aslam {
 
@@ -598,6 +601,12 @@ void PinholeProjection<DISTORTION_T>::getBorderRays(Eigen::MatrixXd & rays) {
 class PinholeHelpers {
 public:
 
+  struct CheckedCircle {
+    cv::Point2d center;
+    double radius;
+    size_t row;
+  };
+
   static inline double square(double x) {
     return x*x;
   }
@@ -688,6 +697,159 @@ public:
       sum_r += hypot(x - centerX, y - centerY);
     }
     radius = sum_r / n;
+  }
+
+  // A guarded version of the native modified least-squares circle fit.  The
+  // points are centered and scaled before solving so that the fixed
+  // conditioning test is independent of image resolution.
+  static bool fitCircleChecked(const std::vector<cv::Point2d>& points,
+                               cv::Point2d& center, double& radius) {
+    if (points.size() < 3) {
+      return false;
+    }
+
+    double mean_x = 0.0;
+    double mean_y = 0.0;
+    for (const cv::Point2d& point : points) {
+      if (!std::isfinite(point.x) || !std::isfinite(point.y)) {
+        return false;
+      }
+      mean_x += point.x;
+      mean_y += point.y;
+    }
+    mean_x /= static_cast<double>(points.size());
+    mean_y /= static_cast<double>(points.size());
+
+    double mean_squared_distance = 0.0;
+    for (const cv::Point2d& point : points) {
+      mean_squared_distance += square(point.x - mean_x) +
+                               square(point.y - mean_y);
+    }
+    mean_squared_distance /= static_cast<double>(points.size());
+    if (!std::isfinite(mean_squared_distance) ||
+        mean_squared_distance <= std::numeric_limits<double>::epsilon()) {
+      return false;
+    }
+    const double coordinate_scale = std::sqrt(mean_squared_distance);
+
+    double sum_xx = 0.0;
+    double sum_xy = 0.0;
+    double sum_yy = 0.0;
+    double rhs_x = 0.0;
+    double rhs_y = 0.0;
+    for (const cv::Point2d& point : points) {
+      const double x = (point.x - mean_x) / coordinate_scale;
+      const double y = (point.y - mean_y) / coordinate_scale;
+      const double squared_norm = square(x) + square(y);
+      sum_xx += square(x);
+      sum_xy += x * y;
+      sum_yy += square(y);
+      rhs_x += 0.5 * x * squared_norm;
+      rhs_y += 0.5 * y * squared_norm;
+    }
+
+    const double determinant = sum_xx * sum_yy - square(sum_xy);
+    const double trace = sum_xx + sum_yy;
+    constexpr double kMinimumNormalizedDeterminant = 1.0e-8;
+    if (!std::isfinite(determinant) || !std::isfinite(trace) ||
+        trace <= 0.0 ||
+        determinant <= kMinimumNormalizedDeterminant * square(trace)) {
+      return false;
+    }
+
+    const double normalized_center_x =
+        (rhs_x * sum_yy - sum_xy * rhs_y) / determinant;
+    const double normalized_center_y =
+        (sum_xx * rhs_y - sum_xy * rhs_x) / determinant;
+    if (!std::isfinite(normalized_center_x) ||
+        !std::isfinite(normalized_center_y)) {
+      return false;
+    }
+
+    double normalized_radius = 0.0;
+    for (const cv::Point2d& point : points) {
+      const double x = (point.x - mean_x) / coordinate_scale;
+      const double y = (point.y - mean_y) / coordinate_scale;
+      normalized_radius += hypot(x - normalized_center_x,
+                                 y - normalized_center_y);
+    }
+    normalized_radius /= static_cast<double>(points.size());
+    if (!std::isfinite(normalized_radius) || normalized_radius <= 0.0) {
+      return false;
+    }
+
+    double squared_radial_error = 0.0;
+    for (const cv::Point2d& point : points) {
+      const double x = (point.x - mean_x) / coordinate_scale;
+      const double y = (point.y - mean_y) / coordinate_scale;
+      const double residual =
+          hypot(x - normalized_center_x, y - normalized_center_y) -
+          normalized_radius;
+      squared_radial_error += square(residual);
+    }
+    const double normalized_rms = std::sqrt(
+        squared_radial_error / static_cast<double>(points.size()));
+    constexpr double kMaximumNormalizedCircleRms = 5.0e-2;
+    if (!std::isfinite(normalized_rms) ||
+        normalized_rms > kMaximumNormalizedCircleRms) {
+      return false;
+    }
+
+    center.x = mean_x + coordinate_scale * normalized_center_x;
+    center.y = mean_y + coordinate_scale * normalized_center_y;
+    radius = coordinate_scale * normalized_radius;
+    return std::isfinite(center.x) && std::isfinite(center.y) &&
+           std::isfinite(radius) && radius > 0.0;
+  }
+
+  static bool intersectCirclesChecked(const CheckedCircle& first,
+                                      const CheckedCircle& second,
+                                      cv::Point2d& firstIntersection,
+                                      cv::Point2d& secondIntersection) {
+    if (!std::isfinite(first.center.x) ||
+        !std::isfinite(first.center.y) ||
+        !std::isfinite(second.center.x) ||
+        !std::isfinite(second.center.y) ||
+        !std::isfinite(first.radius) || !std::isfinite(second.radius) ||
+        first.radius <= 0.0 || second.radius <= 0.0) {
+      return false;
+    }
+
+    const double delta_x = second.center.x - first.center.x;
+    const double delta_y = second.center.y - first.center.y;
+    const double distance = hypot(delta_x, delta_y);
+    const double scale = std::max(
+        1.0, std::max(distance, std::max(first.radius, second.radius)));
+    constexpr double kRelativeIntersectionTolerance = 1.0e-10;
+    const double tolerance = kRelativeIntersectionTolerance * scale;
+    if (!std::isfinite(distance) || distance <= tolerance ||
+        distance > first.radius + second.radius + tolerance ||
+        distance < std::fabs(first.radius - second.radius) - tolerance) {
+      return false;
+    }
+
+    const double along =
+        (square(first.radius) - square(second.radius) + square(distance)) /
+        (2.0 * distance);
+    const double height_squared = square(first.radius) - square(along);
+    if (!std::isfinite(along) || !std::isfinite(height_squared) ||
+        height_squared <= square(tolerance)) {
+      return false;
+    }
+    const double height = std::sqrt(height_squared);
+    const double base_x = first.center.x + along * delta_x / distance;
+    const double base_y = first.center.y + along * delta_y / distance;
+
+    firstIntersection = cv::Point2d(
+        base_x + height * delta_y / distance,
+        base_y - height * delta_x / distance);
+    secondIntersection = cv::Point2d(
+        base_x - height * delta_y / distance,
+        base_y + height * delta_x / distance);
+    return std::isfinite(firstIntersection.x) &&
+           std::isfinite(firstIntersection.y) &&
+           std::isfinite(secondIntersection.x) &&
+           std::isfinite(secondIntersection.y);
   }
 
   static double medianOfVectorElements(std::vector<double> values)
@@ -803,6 +965,172 @@ bool PinholeProjection<DISTORTION_T>::initializeIntrinsics(const std::vector<Gri
   _fv = f0;
   updateTemporaries();
 
+  return true;
+}
+
+template<typename DISTORTION_T>
+bool PinholeProjection<DISTORTION_T>::initializeIntrinsics(
+    const std::vector<GridCalibrationTargetObservation> & observations,
+    double minVisibleCornerRatio) {
+  SM_DEFINE_EXCEPTION(Exception, std::runtime_error);
+  SM_ASSERT_TRUE(Exception, std::isfinite(minVisibleCornerRatio),
+                 "Minimum visible-corner ratio must be finite");
+  SM_ASSERT_GT(Exception, minVisibleCornerRatio, 0.0,
+               "Minimum visible-corner ratio must be greater than zero");
+  SM_ASSERT_LE(Exception, minVisibleCornerRatio, 1.0,
+               "Minimum visible-corner ratio must not exceed one");
+
+  // Preserve the original implementation, operation ordering, and numerical
+  // behavior exactly when the extension is not enabled.
+  if (minVisibleCornerRatio == 1.0) {
+    return initializeIntrinsics(observations);
+  }
+
+  SM_ASSERT_TRUE(Exception, observations.size() != 0,
+                 "Need min. one observation");
+
+  _cu = (observations[0].imCols() - 1.0) / 2.0;
+  _cv = (observations[0].imRows() - 1.0) / 2.0;
+  _ru = observations[0].imCols();
+  _rv = observations[0].imRows();
+  _distortion.clear();
+
+  std::vector<double> focalGuesses;
+  for (const GridCalibrationTargetObservation& observation : observations) {
+    SM_ASSERT_TRUE(Exception, observation.target(),
+                   "The GridCalibrationTargetObservation has no target object");
+    const GridCalibrationTargetBase& target = *observation.target();
+    if (target.size() == 0 || target.rows() == 0 || target.cols() == 0) {
+      continue;
+    }
+
+    size_t visibleCornerCount = 0;
+    Eigen::Vector2d imagePoint;
+    for (size_t index = 0; index < target.size(); ++index) {
+      if (observation.imagePoint(index, imagePoint)) {
+        ++visibleCornerCount;
+      }
+    }
+    const double visibleCornerRatio =
+        static_cast<double>(visibleCornerCount) /
+        static_cast<double>(target.size());
+    if (visibleCornerRatio < minVisibleCornerRatio) {
+      continue;
+    }
+
+    const size_t minimumRowPoints = std::min(
+        target.cols(),
+        std::max<size_t>(6, (target.cols() + 1) / 2));
+    std::vector<PinholeHelpers::CheckedCircle> circles;
+    circles.reserve(target.rows());
+    for (size_t row = 0; row < target.rows(); ++row) {
+      std::vector<cv::Point2d> rowPoints;
+      rowPoints.reserve(target.cols());
+      size_t firstVisibleColumn = target.cols();
+      size_t lastVisibleColumn = 0;
+      for (size_t column = 0; column < target.cols(); ++column) {
+        if (observation.imageGridPoint(row, column, imagePoint)) {
+          rowPoints.emplace_back(imagePoint[0], imagePoint[1]);
+          firstVisibleColumn = std::min(firstVisibleColumn, column);
+          lastVisibleColumn = std::max(lastVisibleColumn, column);
+        }
+      }
+      if (rowPoints.size() < minimumRowPoints) {
+        continue;
+      }
+      if (target.cols() > 1 &&
+          2 * (lastVisibleColumn - firstVisibleColumn) < target.cols() - 1) {
+        continue;
+      }
+
+      PinholeHelpers::CheckedCircle circle;
+      circle.row = row;
+      if (PinholeHelpers::fitCircleChecked(rowPoints, circle.center,
+                                           circle.radius)) {
+        circles.push_back(circle);
+      }
+    }
+
+    const size_t minimumRows = std::min<size_t>(3, target.rows());
+    if (circles.size() < minimumRows) {
+      continue;
+    }
+    if (target.rows() > 1 &&
+        2 * (circles.back().row - circles.front().row) < target.rows() - 1) {
+      continue;
+    }
+
+    for (size_t first = 0; first < circles.size(); ++first) {
+      for (size_t second = first + 1; second < circles.size(); ++second) {
+        cv::Point2d firstIntersection;
+        cv::Point2d secondIntersection;
+        if (!PinholeHelpers::intersectCirclesChecked(
+                circles[first], circles[second], firstIntersection,
+                secondIntersection)) {
+          continue;
+        }
+        const double focalGuess =
+            cv::norm(firstIntersection - secondIntersection) / M_PI;
+        if (std::isfinite(focalGuess) && focalGuess > 0.0) {
+          focalGuesses.push_back(focalGuess);
+        }
+      }
+    }
+  }
+
+  // Require several independent row pairs, then deterministically remove
+  // extreme focal candidates with a median absolute-deviation gate.
+  constexpr size_t kMinimumFocalGuessCount = 3;
+  if (focalGuesses.size() >= kMinimumFocalGuessCount) {
+    const double median =
+        PinholeHelpers::medianOfVectorElements(focalGuesses);
+    std::vector<double> absoluteDeviations;
+    absoluteDeviations.reserve(focalGuesses.size());
+    for (double guess : focalGuesses) {
+      absoluteDeviations.push_back(std::fabs(guess - median));
+    }
+    const double mad =
+        PinholeHelpers::medianOfVectorElements(absoluteDeviations);
+    if (mad > 0.0 && std::isfinite(mad)) {
+      constexpr double kMadScale = 1.4826;
+      constexpr double kMadGate = 3.0;
+      const double maximumDeviation = kMadGate * kMadScale * mad;
+      std::vector<double> filteredGuesses;
+      filteredGuesses.reserve(focalGuesses.size());
+      for (double guess : focalGuesses) {
+        if (std::fabs(guess - median) <= maximumDeviation) {
+          filteredGuesses.push_back(guess);
+        }
+      }
+      focalGuesses.swap(filteredGuesses);
+    }
+  }
+
+  if (focalGuesses.size() < kMinimumFocalGuessCount) {
+    const char* manualInput = std::getenv("KALIBR_MANUAL_FOCAL_LENGTH_INIT");
+    if (manualInput != nullptr) {
+      double inputGuess;
+      std::cout << "Initialization of focal length failed. Provide manual initialization: "
+                << std::endl;
+      std::cin >> inputGuess;
+      SM_ASSERT_GT(std::runtime_error, inputGuess, 0.0,
+                   "Focal length needs to be positive.");
+      std::cout << "Initializing focal length to " << inputGuess << std::endl;
+      focalGuesses.clear();
+      focalGuesses.push_back(inputGuess);
+    } else {
+      std::cout << "Initialization of focal length failed. You can enable"
+                << " manual input by setting 'KALIBR_MANUAL_FOCAL_LENGTH_INIT'."
+                << std::endl;
+      return false;
+    }
+  }
+
+  const double initialFocalLength =
+      PinholeHelpers::medianOfVectorElements(focalGuesses);
+  _fu = initialFocalLength;
+  _fv = initialFocalLength;
+  updateTemporaries();
   return true;
 }
 
