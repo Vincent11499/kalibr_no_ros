@@ -174,6 +174,7 @@ def load_task(path, expected_job=None):
             validate_task_initialization(task["initialization"])
         except InitializationError as error:
             raise TaskError(str(error)) from error
+    _camera_freeze_intrinsics(task)
     if job == "camera_calibration":
         cameras = task.get("cameras")
         if not isinstance(cameras, list) or not cameras:
@@ -191,6 +192,58 @@ def load_task(path, expected_job=None):
             raise TaskError("imus must be a non-empty list")
     task["_config_dir"] = str(path.parent)
     return task
+
+
+def _camera_freeze_intrinsics(task):
+    """Return the validated camera-intrinsics activity policy.
+
+    Initialization supplies parameter values; this independent flag controls
+    whether those values may change during camera calibration.
+    """
+    calibration = task.get("calibration")
+    if calibration is None:
+        return False
+    if not isinstance(calibration, dict):
+        raise TaskError("calibration must be a mapping")
+    if "freeze_intrinsics" not in calibration:
+        return False
+    value = calibration["freeze_intrinsics"]
+    if type(value) is not bool:
+        raise TaskError("calibration.freeze_intrinsics must be a boolean")
+    job = task.get("job")
+    if job not in (None, "camera_calibration"):
+        raise TaskError(
+            "calibration.freeze_intrinsics is only supported for "
+            "camera_calibration")
+    cameras = task.get("cameras")
+    if value and isinstance(cameras, list) and len(cameras) < 2:
+        raise TaskError(
+            "calibration.freeze_intrinsics: true requires at least two "
+            "cameras because no camera extrinsic exists in a monocular task")
+    return value
+
+
+def _require_frozen_intrinsics_initialization(task, initialization):
+    """Require complete fixed camera models when intrinsics are frozen."""
+    if not _camera_freeze_intrinsics(task):
+        return
+    if initialization is None:
+        raise TaskError(
+            "calibration.freeze_intrinsics: true requires an "
+            "initialization path")
+    camera_seeds = initialization["document"].get("cameras", {})
+    missing = []
+    for index, _camera in enumerate(task.get("cameras") or []):
+        camera_id = "cam{}".format(index)
+        block = camera_seeds.get(camera_id, {})
+        for field in ("intrinsics", "distortion_coeffs"):
+            if field not in block:
+                missing.append("{}.{}".format(camera_id, field))
+    if missing:
+        raise TaskError(
+            "calibration.freeze_intrinsics: true requires complete camera "
+            "intrinsics and distortion coefficients; missing: {}".format(
+                ", ".join(missing)))
 
 
 def resolve_task_path(task, value):
@@ -254,6 +307,7 @@ def resolve_initialization(task, expected_job=None, initialization=None,
     if path is None:
         if strategy is not None:
             raise TaskError("initialization strategy requires an initialization path")
+        _require_frozen_intrinsics_initialization(task, None)
         return None
     if strategy is None:
         strategy = "refine"
@@ -272,7 +326,7 @@ def resolve_initialization(task, expected_job=None, initialization=None,
                 path, error)) from error
     except InitializationError as error:
         raise TaskError(str(error)) from error
-    return {
+    resolved = {
         "path": path,
         "strategy": strategy,
         "document": document,
@@ -281,6 +335,8 @@ def resolve_initialization(task, expected_job=None, initialization=None,
         "camera_ids": camera_ids,
         "source_sha256": source_sha256,
     }
+    _require_frozen_intrinsics_initialization(task, resolved)
+    return resolved
 
 
 def _write_initialization_config(initialization, temporary):
@@ -526,6 +582,11 @@ def _camera_arguments(task, bag, target, overrides, initialization_config=None):
     ]
     _append_common_dataset(arguments, task)
     calibration = task.get("calibration") or {}
+    freeze_intrinsics = _camera_freeze_intrinsics(task)
+    if freeze_intrinsics and initialization_config is None:
+        raise TaskError(
+            "calibration.freeze_intrinsics: true requires an "
+            "initialization path")
     _append_corner_refinement(arguments, calibration)
     _append_focal_initialization(arguments, calibration)
     for key, option in (
@@ -543,6 +604,7 @@ def _camera_arguments(task, bag, target, overrides, initialization_config=None):
     _flag(arguments, bool(calibration.get("verbose")), "--verbose")
     _flag(arguments, bool(calibration.get("show_extraction")), "--show-extraction")
     _flag(arguments, bool(calibration.get("export_poses")), "--export-poses")
+    _flag(arguments, freeze_intrinsics, "--freeze-intrinsics")
     if not calibration.get("interactive_report", False):
         arguments.append("--dont-show-report")
     if initialization_config is not None:

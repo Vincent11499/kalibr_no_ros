@@ -37,6 +37,68 @@ class CameraInitializationTest(unittest.TestCase):
         path.write_text(yaml.safe_dump(document), encoding="utf-8")
         return path
 
+    @staticmethod
+    def camera_with_activity_policy(freeze_intrinsics):
+        camera = CameraGeometry.__new__(CameraGeometry)
+        camera.freezeIntrinsics = freeze_intrinsics
+        camera.dv = mock.Mock()
+        camera.dv.projectionDesignVariable.return_value = mock.Mock()
+        camera.dv.distortionDesignVariable.return_value = mock.Mock()
+        camera.dv.shutterDesignVariable.return_value = mock.Mock()
+        return camera
+
+    def test_default_activity_policy_preserves_requested_camera_states(self):
+        camera = self.camera_with_activity_policy(False)
+
+        camera.setDvActiveStatus(True, False, True)
+
+        camera.dv.projectionDesignVariable().setActive.assert_called_once_with(
+            True)
+        camera.dv.distortionDesignVariable().setActive.assert_called_once_with(
+            False)
+        camera.dv.shutterDesignVariable().setActive.assert_called_once_with(
+            True)
+
+    def test_frozen_intrinsics_policy_clamps_projection_and_distortion(self):
+        camera = self.camera_with_activity_policy(True)
+
+        # Every native stage requests its normal activity state through this
+        # method.  The policy must win even when a later factory requests both
+        # blocks active again.
+        camera.setDvActiveStatus(True, True, False)
+
+        camera.dv.projectionDesignVariable().setActive.assert_called_once_with(
+            False)
+        camera.dv.distortionDesignVariable().setActive.assert_called_once_with(
+            False)
+        camera.dv.shutterDesignVariable().setActive.assert_called_once_with(
+            False)
+
+    def test_camera_geometry_constructor_applies_frozen_policy_to_native_dvs(self):
+        dataset = type("Dataset", (), {"topic": "/cam0"})()
+        with mock.patch.object(
+                camera_calibrator, "TargetDetector", return_value="detector"):
+            default_camera = CameraGeometry(
+                acvb.DistortedPinhole, object(), dataset)
+            frozen_camera = CameraGeometry(
+                acvb.DistortedPinhole, object(), dataset,
+                freezeIntrinsics=True)
+
+        self.assertFalse(default_camera.freezeIntrinsics)
+        self.assertTrue(
+            default_camera.dv.projectionDesignVariable().isActive())
+        self.assertTrue(
+            default_camera.dv.distortionDesignVariable().isActive())
+        self.assertTrue(frozen_camera.freezeIntrinsics)
+        self.assertFalse(
+            frozen_camera.dv.projectionDesignVariable().isActive())
+        self.assertFalse(
+            frozen_camera.dv.distortionDesignVariable().isActive())
+        with self.assertRaisesRegex(TypeError, "must be a bool"):
+            CameraGeometry(
+                acvb.DistortedPinhole, object(), dataset,
+                freezeIntrinsics=1)
+
     def test_partial_focal_initialization_ratio_reaches_native_geometry(self):
         camera = CameraGeometry.__new__(CameraGeometry)
         camera.geometry = mock.Mock()

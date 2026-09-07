@@ -6,13 +6,14 @@ CLI 映射、作用阶段、内部算法和有效范围。审计基准为提交
 `39b5b8280f347a68cecf5c1cfe437ae4c75f0877` 加当前工作区改动，日期为
 2026-08-26。
 
-需要先区分五类配置：
+需要先区分六类配置：
 
 | 类别 | 典型字段 | 是否可能改变数值结果 |
 |---|---|---:|
 | 数据选择 | `time_range_s`、`frequency_hz` | 是 |
 | 算法超参数 | `information_gain_tolerance`、`reprojection_sigma_px` | 是 |
 | 显式物理初值 | `initialization.path`、`initialization.strategy` | 是；改变前置阶段和初始点 |
+| 参数活动策略 | `freeze_intrinsics`、`recompute_camera_chain_extrinsics` | 是；改变进入优化器的 active 物理参数块 |
 | 执行资源 | `detector_processes`、`optimizer_threads` | 理论算法不变，但并行浮点归约可能造成末位差异 |
 | 显示与输出 | `verbose`、`export_poses`、`interactive_report` | 不应改变目标函数，但会明显影响耗时，部分选项会关闭多进程检测 |
 
@@ -47,6 +48,7 @@ cameras:
   - {topic: /cam1/image_raw, model: pinhole-radtan5}
 
 calibration:
+  freeze_intrinsics: false
   window_half_size_px: 2
   max_displacement_px: 1.224744871391589
   focal_initialization_min_visible_corner_ratio: 1.0
@@ -224,18 +226,21 @@ cameras:
 
 当前相机标定入口接受以下模型名：
 
-| task 模型名 | 投影/畸变模型 |
-|---|---|
-| `pinhole-radtan` | pinhole + 4 参数 radtan |
-| `pinhole-radtan5` | pinhole + OpenCV 顺序的 5 参数 radtan |
-| `pinhole-radtan8` | pinhole + OpenCV rational 顺序的 8 参数 radtan |
-| `pinhole-equi` | pinhole + 4 参数 equidistant |
-| `pinhole-fov` | pinhole + FOV distortion |
-| `pinhole-opencv-fisheye` | 完整 OpenCV fisheye 扩展 |
-| `omni-none` | unified omni，无额外 distortion |
-| `omni-radtan` | unified omni + radtan |
-| `eucm-none` | Extended Unified Camera Model |
-| `ds-none` | Double Sphere |
+| task 模型名 | 投影/畸变模型 | 单相机参数量 |
+|---|---|---:|
+| `pinhole-radtan` | pinhole + 4 参数 radtan | 8 |
+| `pinhole-radtan5` | pinhole + OpenCV 顺序的 5 参数 radtan | 9 |
+| `pinhole-radtan8` | pinhole + OpenCV rational 顺序的 8 参数 radtan | 12 |
+| `pinhole-equi` | pinhole + 4 参数 equidistant | 8 |
+| `pinhole-fov` | pinhole + FOV distortion | 5 |
+| `pinhole-opencv-fisheye` | 完整 OpenCV fisheye 扩展 | 9 |
+| `omni-none` | unified omni，无额外 distortion | 5 |
+| `omni-radtan` | unified omni + radtan | 9 |
+| `eucm-none` | Extended Unified Camera Model | 6 |
+| `ds-none` | Double Sphere | 6 |
+
+完整的 `intrinsics`/`distortion_coeffs` 参数顺序、投影公式和默认 active 阶段统一见
+[`CAMERA_MODELS_ZH.md`](CAMERA_MODELS_ZH.md)，该文档是模型参数表的权威来源。
 
 `id` 当前可以出现在条目中，但 task 适配器不会使用它；相机编号严格由列表顺序决定。
 未配置 `initialization` 时，内参、畸变、每帧 target pose 和相邻相机 baseline 仍全部
@@ -253,6 +258,7 @@ cameras:
 
 | 字段 | 默认值 | 程序接受/算法有效范围 | 作用阶段与影响 |
 |---|---:|---|---|
+| `freeze_intrinsics` | `false` | 严格布尔值；`true` 要求至少两台相机，且每台有完整内参和畸变 initialization seed | 同时固定 projection/intrinsics 与 distortion；跳过单相机内参 LM，后续只放开 baseline 和 target pose |
 | `window_half_size_px` | `2` px | 强制整数 `>= 1` | AprilGrid `cornerSubPix` 半窗口；实际搜索区域为 $(2w+1)\times(2w+1)$ |
 | `max_displacement_px` | $\sqrt{1.5}\approx1.224745$ px | 强制有限数 `> 0` | AprilGrid 亚像素角点相对原始检测的最大允许位移 |
 | `focal_initialization_min_visible_corner_ratio` | `1.0` | 强制有限数，范围 $(0,1]$ | 无显式内参初值时，筛选可进入 pinhole 焦距解析初始化的部分标定板观测；`1.0` 严格保持原生完整帧路径 |
@@ -264,6 +270,39 @@ cameras:
 | `remove_outliers` | `true` | 布尔值 | 是否运行显式 $4\sigma$ 角点删除流程 |
 | `final_filtering` | `true` | 布尔值 | 所有 view 处理完后是否再检查全部已接受 batch |
 | `blake_zisserman` | `false` | 布尔值 | 是否对每个二维重投影误差启用 Blake–Zisserman M-estimator |
+
+#### `freeze_intrinsics`
+
+该字段只属于 `camera_calibration`：
+
+```yaml
+initialization:
+  path: camera_calibration_initialization.yaml
+  strategy: refine
+
+calibration:
+  freeze_intrinsics: true
+```
+
+启用条件和状态边界为：
+
+- 必须提供初始化文件，且每台相机都必须完整包含 `intrinsics` 和
+  `distortion_coeffs`；空畸变模型也必须显式写 `distortion_coeffs: []`；
+- 至少配置两台相机；单目任务没有相机间外参可优化，会在运行前拒绝该组合；
+- `refine` 仍允许缺少 baseline，由相机对 stereo LM 使用固定内参估计；
+- `direct` 保持原有完整性要求，必须同时给出所有相邻 baseline；
+- 单相机内参 LM 被跳过；stereo、full-batch、最终增量以及异常点删除后的问题重建
+  都保持内参和畸变 fixed；
+- 相邻 baseline $\mathbf B$ 和每帧标定板位姿 $\mathbf P$ 仍 active。因此“只优化
+  外参”是指最终物理相机参数中只有 $\mathbf B$ 被更新，不是说优化问题里只剩一个
+  变量块；
+- 省略或设为 `false` 时不会增加隐藏约束，完整恢复原生各阶段活动集合。
+
+它与 Camera–IMU 的 `recompute_camera_chain_extrinsics` 不是同一开关。Camera–IMU
+本来就固定相机内参和畸变；后者只决定是否在 Camera–IMU 联合 LM 中额外放开已有
+camchain 的相邻 baseline。
+
+完整逐阶段变量表见 [`INITIALIZATION_ZH.md`](INITIALIZATION_ZH.md)。
 
 #### `focal_initialization_min_visible_corner_ratio`
 
@@ -813,6 +852,7 @@ target 物理尺寸
 window_half_size_px
 max_displacement_px
 focal_initialization_min_visible_corner_ratio
+freeze_intrinsics
 synchronization_tolerance_s
 information_gain_tolerance
 shuffle

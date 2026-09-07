@@ -282,6 +282,55 @@ class InitializationValidationTest(unittest.TestCase):
             if item["stage"] == "camera_chain_baselines")
         self.assertEqual(baseline["pairwise_stereo_lm"], "skipped")
         self.assertEqual(baseline["full_batch_lm"], "skipped")
+        self.assertNotIn("camera_intrinsics_state", baseline)
+        self.assertFalse(report["semantics"]["fixed_parameter"])
+        self.assertTrue(
+            report["semantics"]["final_optimizer_activity_unchanged"])
+
+    def test_report_records_frozen_intrinsics_activity_policy(self):
+        task = self.camera_task("pinhole-radtan", "pinhole-radtan")
+        task["job"] = "camera_calibration"
+        task["calibration"] = {"freeze_intrinsics": True}
+        document = {
+            "schema_version": 1,
+            "kind": "camera_calibration_initialization",
+            "cameras": {
+                "cam0": {
+                    "intrinsics": [400.0, 400.0, 320.0, 240.0],
+                    "distortion_coeffs": [0.0, 0.0, 0.0, 0.0],
+                },
+                "cam1": {
+                    "intrinsics": [400.0, 400.0, 320.0, 240.0],
+                    "distortion_coeffs": [0.0, 0.0, 0.0, 0.0],
+                },
+            },
+        }
+
+        report = build_initialization_report(
+            document, "refine", task, source_path="seed.yaml",
+            source_sha256="abc", path_origin="task",
+            strategy_origin="task")
+
+        semantics = report["semantics"]
+        self.assertEqual(
+            semantics["role"], "initial_value_and_activity_policy")
+        self.assertTrue(semantics["fixed_parameter"])
+        self.assertFalse(semantics["final_optimizer_activity_unchanged"])
+        camera_stages = [
+            item for item in report["stage_decisions"]
+            if item["stage"].startswith("single_camera_intrinsics.")
+        ]
+        self.assertTrue(camera_stages)
+        for stage in camera_stages:
+            self.assertEqual(stage["single_camera_lm"], "skipped")
+            self.assertEqual(stage["final_incremental_state"], "fixed")
+        baseline = next(
+            item for item in report["stage_decisions"]
+            if item["stage"] == "camera_chain_baselines")
+        self.assertEqual(baseline["pairwise_stereo_lm"], "run")
+        self.assertEqual(baseline["full_batch_lm"], "run")
+        self.assertEqual(baseline["camera_intrinsics_state"], "fixed")
+        self.assertEqual(baseline["final_incremental_state"], "active")
 
     def test_report_marks_disabled_camera_time_correlation(self):
         task = {
@@ -332,16 +381,20 @@ class InitializationValidationTest(unittest.TestCase):
 
 
 class InitializationTaskIntegrationTest(unittest.TestCase):
-    def _write_camera_task(self, directory, initialization=None):
+    def _write_camera_task(self, directory, initialization=None,
+                           num_cameras=1):
         directory = Path(directory)
         lines = [
             "schema_version: 1",
             "job: camera_calibration",
             "dataset: {type: bag, path: missing.bag}",
             "target: {path: target.yaml}",
-            "cameras: [{topic: /cam0, model: pinhole-radtan}",
+            "cameras: [" + ", ".join(
+                "{{topic: /cam{0}, model: pinhole-radtan}}".format(index)
+                for index in range(num_cameras)
+            ),
         ]
-        # Keep the fixture readable while producing a one-element YAML list.
+        # Keep the fixture readable while producing a flow-style YAML list.
         lines[-1] += "]"
         if initialization is not None:
             lines.extend([
@@ -652,6 +705,97 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(TaskError, r"in \(0, 1\]"):
                     _camera_arguments(invalid, "bag", "target", {})
+
+    def test_freeze_intrinsics_is_forwarded_only_when_enabled(self):
+        base = {
+            "dataset": {},
+            "cameras": [
+                {"topic": "/cam0", "model": "pinhole-radtan"},
+                {"topic": "/cam1", "model": "pinhole-radtan"},
+            ],
+        }
+        self.assertNotIn(
+            "--freeze-intrinsics",
+            _camera_arguments(base, "bag", "target", {}))
+
+        disabled = dict(base)
+        disabled["calibration"] = {"freeze_intrinsics": False}
+        self.assertNotIn(
+            "--freeze-intrinsics",
+            _camera_arguments(disabled, "bag", "target", {}))
+
+        enabled = dict(base)
+        enabled["calibration"] = {"freeze_intrinsics": True}
+        arguments = _camera_arguments(
+            enabled, "bag", "target", {}, Path("initialization.yaml"))
+        self.assertIn("--freeze-intrinsics", arguments)
+
+    def test_freeze_intrinsics_requires_boolean_and_initialization(self):
+        base = {
+            "dataset": {},
+            "cameras": [
+                {"topic": "/cam0", "model": "pinhole-radtan"},
+                {"topic": "/cam1", "model": "pinhole-radtan"},
+            ],
+        }
+        for value in (0, 1, "true", None):
+            invalid = dict(base)
+            invalid["calibration"] = {"freeze_intrinsics": value}
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(TaskError, "must be a boolean"):
+                    _camera_arguments(invalid, "bag", "target", {})
+
+        enabled = dict(base)
+        enabled["calibration"] = {"freeze_intrinsics": True}
+        with self.assertRaisesRegex(TaskError, "requires an initialization"):
+            _camera_arguments(enabled, "bag", "target", {})
+
+        monocular = {
+            "dataset": {},
+            "cameras": [{"topic": "/cam0", "model": "pinhole-radtan"}],
+            "calibration": {"freeze_intrinsics": True},
+        }
+        with self.assertRaisesRegex(TaskError, "at least two cameras"):
+            _camera_arguments(
+                monocular, "bag", "target", {}, Path("initialization.yaml"))
+
+    def test_freeze_intrinsics_requires_complete_camera_models(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            task_path = self._write_camera_task(
+                root, ("seed.yaml", "refine"), num_cameras=2)
+            with task_path.open("a", encoding="utf-8") as stream:
+                stream.write("calibration: {freeze_intrinsics: true}\n")
+            (root / "seed.yaml").write_text(
+                "schema_version: 1\n"
+                "kind: camera_calibration_initialization\n"
+                "cameras:\n"
+                "  cam0:\n"
+                "    intrinsics: [400, 400, 320, 240]\n"
+                "  cam1:\n"
+                "    intrinsics: [400, 400, 320, 240]\n",
+                encoding="utf-8")
+            task = load_task(task_path)
+            with self.assertRaisesRegex(
+                    TaskError, r"missing: cam0\.distortion_coeffs"):
+                resolve_initialization(task)
+
+            (root / "seed.yaml").write_text(
+                "schema_version: 1\n"
+                "kind: camera_calibration_initialization\n"
+                "cameras:\n"
+                "  cam0:\n"
+                "    intrinsics: [400, 400, 320, 240]\n"
+                "    distortion_coeffs: [0, 0, 0, 0]\n"
+                "  cam1:\n"
+                "    intrinsics: [400, 400, 320, 240]\n"
+                "    distortion_coeffs: [0, 0, 0, 0]\n",
+                encoding="utf-8")
+            resolved = resolve_initialization(task)
+            self.assertEqual(
+                resolved["document"]["cameras"]["cam0"]
+                ["distortion_coeffs"],
+                [0.0, 0.0, 0.0, 0.0])
 
     def test_public_cli_flags_and_cwd_resolution(self):
         arguments = build_parser().parse_args([

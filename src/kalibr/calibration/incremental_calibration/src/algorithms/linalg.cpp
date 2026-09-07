@@ -244,12 +244,17 @@ namespace aslam {
 
     std::ptrdiff_t estimateNumericalRank(const Eigen::VectorXd& sv, double
         tol) {
-      std::ptrdiff_t nrank = sv.size();
-      for (std::ptrdiff_t i = sv.size() - 1; i > 0; --i) {
-        if (sv(i) > tol)
+      // Singular values are sorted in descending order.  The original loop
+      // stopped at index one and therefore reported rank one for an all-zero
+      // spectrum.  That produces a division by zero in solveSVD() when a
+      // calibration batch initially contains no information for the active
+      // calibration block (for example a cam0-only view while only the stereo
+      // baseline is active).
+      std::ptrdiff_t nrank = 0;
+      for (std::ptrdiff_t i = 0; i < sv.size(); ++i) {
+        if (!std::isfinite(sv(i)) || sv(i) <= tol)
           break;
-        else
-          nrank--;
+        ++nrank;
       }
       return nrank;
     }
@@ -273,13 +278,12 @@ namespace aslam {
     }
 
     double svGap(const Eigen::VectorXd& sv, std::ptrdiff_t rank) {
-      if (rank > sv.size() || rank <= 0)
+      if (rank > sv.size() || rank < 0)
         throw InvalidOperationException("inconsistent rank", __FILE__, __LINE__,
           __PRETTY_FUNCTION__);
-      if (rank < sv.size())
-        return sv(rank - 1) / sv(rank);
-      else
+      if (rank == 0 || rank == sv.size())
         return std::numeric_limits<double>::infinity();
+      return sv(rank - 1) / sv(rank);
     }
 
     void reduceLeftHandSide(SuiteSparseQR_factorization<double>* factor,

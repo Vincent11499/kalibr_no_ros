@@ -116,6 +116,9 @@ def parseArgs():
         '--initialization-config', dest='initializationConfig',
         help=argparse.SUPPRESS)
     groupCalibrator.add_argument(
+        '--freeze-intrinsics', action='store_true', default=False,
+        dest='freezeIntrinsics', help=argparse.SUPPRESS)
+    groupCalibrator.add_argument(
         '--window-half-size-px', type=int, dest='windowHalfSizePx',
         help=argparse.SUPPRESS)
     groupCalibrator.add_argument(
@@ -215,6 +218,26 @@ def main():
             initialization_config, numCams, selected_camera_models)
         print("Using {0} camera calibration initialization from: {1}".format(
             initialization['strategy'], initialization_config))
+    if parsed.freezeIntrinsics:
+        if numCams < 2:
+            raise RuntimeError(
+                "--freeze-intrinsics requires at least two cameras")
+        if initialization is None:
+            raise RuntimeError(
+                "--freeze-intrinsics requires --initialization-config")
+        incomplete = list()
+        for camera_index in range(numCams):
+            camera_name = 'cam{0}'.format(camera_index)
+            camera_seed = initialization['cameras'].get(camera_name, {})
+            for field_name in ('intrinsics', 'distortion_coeffs'):
+                if field_name not in camera_seed:
+                    incomplete.append(
+                        '{0}.{1}'.format(camera_name, field_name))
+        if incomplete:
+            raise RuntimeError(
+                "--freeze-intrinsics requires complete camera intrinsics "
+                "and distortion coefficients; missing: {0}".format(
+                    ', '.join(incomplete)))
 
     obsdb = kcc.ObservationDatabase(parsed.max_delta_approxsync)
         
@@ -238,7 +261,8 @@ def main():
                 cameraModel, targetConfig, dataset,
                 verbose=(parsed.verbose or parsed.showextraction),
                 windowHalfSizePx=parsed.windowHalfSizePx,
-                maxDisplacementPx=parsed.maxDisplacementPx)
+                maxDisplacementPx=parsed.maxDisplacementPx,
+                freezeIntrinsics=parsed.freezeIntrinsics)
                 
             #extract the targets
             multithreading = not (parsed.verbose or parsed.showextraction)
@@ -261,14 +285,18 @@ def main():
                     geometry=seeded_geometry,
                     verbose=(parsed.verbose or parsed.showextraction),
                     windowHalfSizePx=parsed.windowHalfSizePx,
-                    maxDisplacementPx=parsed.maxDisplacementPx)
+                    maxDisplacementPx=parsed.maxDisplacementPx,
+                    freezeIntrinsics=parsed.freezeIntrinsics)
             
             #populate the database
             for obs in observations:
                 obsdb.addObservation(cam_id, obs)
 
             #initialize the intrinsics
-            if (initialization is not None and
+            if parsed.freezeIntrinsics:
+                cam.initGeometryFromSeed(
+                    observations, camera_name, camera_initialization)
+            elif (initialization is not None and
                     initialization['strategy'] == 'direct'):
                 cam.initGeometryFromSeed(
                     observations, camera_name, camera_initialization)
@@ -619,7 +647,11 @@ def main():
                     camera_initialization = (
                         initialization['cameras'].get(camera_name, {})
                         if initialization is not None else None)
-                    if (initialization is not None and
+                    if parsed.freezeIntrinsics:
+                        cam.initGeometryFromSeed(
+                            observations, camera_name,
+                            camera_initialization)
+                    elif (initialization is not None and
                             initialization['strategy'] == 'direct'):
                         cam.initGeometryFromSeed(
                             observations, camera_name,

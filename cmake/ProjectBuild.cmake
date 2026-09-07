@@ -463,6 +463,12 @@ if(KALIBR_BUILD_NATIVE)
   target_include_directories(aslam_splines_python BEFORE PRIVATE
     "${KALIBR_TRAJECTORY}/aslam_splines/include")
   add_subdirectory(${KALIBR_CALIBRATION}/incremental_calibration native/incremental_calibration)
+  if(KALIBR_PROJECT_SOURCE AND KALIBR_ENABLE_TESTING)
+    add_executable(kalibr_incremental_rank_test
+      tests/incremental_rank_test.cpp)
+    target_link_libraries(kalibr_incremental_rank_test
+      incremental_calibration)
+  endif()
   add_subdirectory(${KALIBR_CALIBRATION}/incremental_calibration_python native/incremental_calibration_python)
   add_subdirectory(${KALIBR_KALIBR_PACKAGE} native/kalibr)
   # The upstream Kalibr package adds its Python export to kalibr_TARGETS, but
@@ -536,6 +542,8 @@ if(KALIBR_ENABLE_TESTING AND KALIBR_BUILD_NATIVE)
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_native_optimizer_boost_types.py")
     add_test(NAME block_cholesky_parallel_tests
       COMMAND kalibr_block_cholesky_parallel_test)
+    add_test(NAME incremental_rank_tests
+      COMMAND kalibr_incremental_rank_test)
   endif()
   file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/matplotlib")
   set(_native_test_environment
@@ -550,7 +558,8 @@ if(KALIBR_ENABLE_TESTING AND KALIBR_BUILD_NATIVE)
     PROPERTIES ENVIRONMENT "${_native_test_environment}")
   if(KALIBR_PROJECT_SOURCE)
     set_tests_properties(
-      block_cholesky_parallel_tests native_optimizer_boost_type_tests
+      block_cholesky_parallel_tests incremental_rank_tests
+      native_optimizer_boost_type_tests
       PROPERTIES ENVIRONMENT "${_native_test_environment}")
   endif()
 endif()

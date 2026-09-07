@@ -6,25 +6,31 @@
 [`kalibr_calibrate_cameras`](../src/kalibr/calibration/kalibr/python/kalibr_calibrate_cameras)
 中的 `cameraModels` 为准，而不是以 OpenCV 转换工具接受的别名为准。
 
-## 1. 快速结论
+## 1. 公开模型与优化参数总表
 
 当前 `cameras[].model` 支持以下 10 个值：
 
-| task 模型 | 投影参数 `intrinsics` | 畸变参数 `distortion_coeffs` | 单相机模型自由度 | 典型用途 |
+| task 模型 | 投影参数 `intrinsics`（维数） | 畸变参数 `distortion_coeffs`（维数） | 单相机参数量 | 典型用途 |
 |---|---|---|---:|---|
-| `pinhole-radtan` | $[f_u,f_v,c_u,c_v]$ | $[k_1,k_2,p_1,p_2]$ | 8 | 普通镜头、轻中度广角；原生 Kalibr radtan |
-| `pinhole-radtan5` | $[f_u,f_v,c_u,c_v]$ | $[k_1,k_2,p_1,p_2,k_3]$ | 9 | 需要三阶径向项的普通/较广角镜头 |
-| `pinhole-radtan8` | $[f_u,f_v,c_u,c_v]$ | $[k_1,k_2,p_1,p_2,k_3,k_4,k_5,k_6]$ | 12 | OpenCV rational 8 参数；数据覆盖充分时拟合复杂畸变 |
-| `pinhole-equi` | $[f_u,f_v,c_u,c_v]$ | $[k_1,k_2,k_3,k_4]$ | 8 | 原生 Kalibr equidistant 鱼眼模型 |
-| `pinhole-fov` | $[f_u,f_v,c_u,c_v]$ | $[w]$ | 5 | 单参数 FOV 畸变模型 |
-| `pinhole-opencv-fisheye` | $[f_u,f_v,c_u,c_v,\alpha]$ | $[k_1,k_2,k_3,k_4]$ | 9 | 完整 OpenCV fisheye，并显式标定 skew/alpha |
-| `omni-none` | $[\xi,f_u,f_v,c_u,c_v]$ | `[]` | 5 | Unified omnidirectional，无附加畸变 |
-| `omni-radtan` | $[\xi,f_u,f_v,c_u,c_v]$ | $[k_1,k_2,p_1,p_2]$ | 9 | Unified omnidirectional + radtan |
-| `eucm-none` | $[\alpha,\beta,f_u,f_v,c_u,c_v]$ | `[]` | 6 | Extended Unified Camera Model |
-| `ds-none` | $[\xi,\alpha,f_u,f_v,c_u,c_v]$ | `[]` | 6 | Double Sphere，大视场/鱼眼 |
+| `pinhole-radtan` | $[f_u,f_v,c_u,c_v]$（4） | $[k_1,k_2,p_1,p_2]$（4） | 8 | 普通镜头、轻中度广角；原生 Kalibr radtan |
+| `pinhole-radtan5` | $[f_u,f_v,c_u,c_v]$（4） | $[k_1,k_2,p_1,p_2,k_3]$（5） | 9 | 需要三阶径向项的普通/较广角镜头 |
+| `pinhole-radtan8` | $[f_u,f_v,c_u,c_v]$（4） | $[k_1,k_2,p_1,p_2,k_3,k_4,k_5,k_6]$（8） | 12 | OpenCV rational 8 参数；数据覆盖充分时拟合复杂畸变 |
+| `pinhole-equi` | $[f_u,f_v,c_u,c_v]$（4） | $[k_1,k_2,k_3,k_4]$（4） | 8 | 原生 Kalibr equidistant 鱼眼模型 |
+| `pinhole-fov` | $[f_u,f_v,c_u,c_v]$（4） | $[w]$（1） | 5 | 单参数 FOV 畸变模型 |
+| `pinhole-opencv-fisheye` | $[f_u,f_v,c_u,c_v,\alpha]$（5） | $[k_1,k_2,k_3,k_4]$（4） | 9 | 完整 OpenCV fisheye，并显式标定 skew/alpha |
+| `omni-none` | $[\xi,f_u,f_v,c_u,c_v]$（5） | `[]`（0） | 5 | Unified omnidirectional，无附加畸变 |
+| `omni-radtan` | $[\xi,f_u,f_v,c_u,c_v]$（5） | $[k_1,k_2,p_1,p_2]$（4） | 9 | Unified omnidirectional + radtan |
+| `eucm-none` | $[\alpha,\beta,f_u,f_v,c_u,c_v]$（6） | `[]`（0） | 6 | Extended Unified Camera Model |
+| `ds-none` | $[\xi,\alpha,f_u,f_v,c_u,c_v]$（6） | `[]`（0） | 6 | Double Sphere，大视场/鱼眼 |
 
-表中的“单相机模型自由度”只统计投影参数和畸变参数，不包含相机之间的外参、标定板
+表中的“单相机参数量”只统计投影参数和畸变参数，不包含相机之间的外参、标定板
 位姿、Camera–IMU 外参或时间偏移。
+
+默认 `camera_calibration` 流程中，这 10 种模型的全部投影参数和畸变参数都会进入每台
+相机的单目标定 LM，并在全相机 full-batch 与最终增量联合优化中保持 active。相机对
+baseline 初始化 LM 是一个原生例外：该阶段投影参数 active、畸变参数暂时 fixed，随后
+会重新放开。只有显式设置 `calibration.freeze_intrinsics: true`，才会从头到尾同时
+固定这两个参数块。
 
 最容易混淆的两点是：
 
@@ -255,8 +261,10 @@ $$
 - shutter design variable 在这些阶段为 fixed，当前 task 没有把 rolling-shutter
   参数作为相机标定变量；
 - 图像分辨率 fixed；
-- `direct`/`refine` 只改变初值如何产生以及跳过哪些前置初值阶段，不会把最终增量
-  问题中的内参、畸变或 baseline 固定住。详细语义见
+- `direct`/`refine` 只改变初值如何产生以及跳过哪些前置初值阶段，不会自行把最终
+  增量问题中的内参、畸变或 baseline 固定住；需要固定相机模型时显式使用
+  `calibration.freeze_intrinsics: true`。无初始化、`refine`、`direct` 以及冻结模式的
+  逐阶段 active 变量表见
   [`INITIALIZATION_ZH.md`](INITIALIZATION_ZH.md)。
 
 因此，“给了内外参初值”不等于“固定内外参”。若最终阶段有足够观测，结果仍可以
@@ -336,4 +344,3 @@ task 中的模型组合会被拆成结果中的 `camera_model` 和 `distortion_m
 | OpenCV fisheye 扩展 | [`opencv_fisheye`](../src/camera_models/opencv_fisheye) |
 | 相机标定 active 参数 | [`CameraIntializers.py`](../src/kalibr/calibration/kalibr/python/kalibr_camera_calibration/CameraIntializers.py)、[`CameraCalibrator.py`](../src/kalibr/calibration/kalibr/python/kalibr_camera_calibration/CameraCalibrator.py) |
 | Camera–IMU active 参数 | [`IccSensors.py`](../src/kalibr/calibration/kalibr/python/kalibr_imu_camera_calibration/IccSensors.py)、[`IccCalibrator.py`](../src/kalibr/calibration/kalibr/python/kalibr_imu_camera_calibration/IccCalibrator.py) |
-

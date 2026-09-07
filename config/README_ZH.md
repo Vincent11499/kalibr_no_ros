@@ -41,6 +41,16 @@ initialization:
 覆盖规则见
 [`../docs/INITIALIZATION_ZH.md`](../docs/INITIALIZATION_ZH.md)。
 
+多相机任务若要固定 seed 中的内参和畸变、只重新估计相机间 baseline，可增加：
+
+```yaml
+calibration:
+  freeze_intrinsics: true
+```
+
+该开关默认 `false`，要求至少两台相机和每台相机完整的内参、畸变 seed；详细阶段
+行为见 [`../docs/TASK_PARAMETERS_ZH.md`](../docs/TASK_PARAMETERS_ZH.md)。
+
 例如：
 
 ```bash

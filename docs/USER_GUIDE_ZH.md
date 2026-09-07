@@ -102,6 +102,9 @@ kalibr-noros calibrate cameras --config task.yaml --output-dir output \
   baseline 完整；
 - 两种策略都只是初始化，最终联合问题的原有 active 参数不会因此被固定，也不会
   增加“靠近 seed”的先验残差；
+- 相机任务若需要固定已知内参和畸变、只重新估计多相机 baseline，可另外设置
+  `calibration.freeze_intrinsics: true`；它要求每台相机有完整内参和畸变 seed，默认
+  `false`，且仅对至少两台相机的任务有意义；
 - 显式初值任务会先输出 `initialization_report.yaml`；到达最终可观性分析后再输出
   `observability.yaml`。基于机器 epsilon 的 hard rank gate 不通过时任务失败，只保留这两份
   诊断，不会用 seed 填出一个假成功结果；更早失败时可能只有初值报告。
@@ -117,6 +120,10 @@ kalibr-noros calibrate cameras --config task.yaml --output-dir output \
 task 已内嵌初值和 `refine`，正常运行不必再传初始化 CLI 参数。
 
 ## 3. 相机模型
+
+公开的 `calibrate cameras` task 当前支持 10 种模型。下表只列最常用选择；全部模型的
+参数顺序、单相机参数量和各阶段 active 状态见
+[`CAMERA_MODELS_ZH.md`](CAMERA_MODELS_ZH.md)。
 
 常用选择如下：
 

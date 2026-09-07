@@ -124,6 +124,11 @@ cmake --build --preset reference-release --parallel 4
 5. 全批量联合 refinement 同时优化内参、畸变、baseline 和 target pose。
 6. 最终按原生增量流程加入 view、计算信息增益并执行异常点过滤。
 
+`calibration.freeze_intrinsics` 默认必须为 `false`。仅至少两台相机、显式设为 `true`
+且每台相机提供完整内参与畸变 seed 时，才允许跳过单相机内参 LM，并在 stereo、
+full-batch、最终增量和异常点重建中持续固定 projection/distortion；相邻 baseline 与
+target pose 仍保持 active。
+
 `shuffle: false` 是可重复 benchmark 的必要条件。同步成功只表示两路有效观测的时间差
 满足 `synchronization_tolerance_s`；相机连接图还要求共同全局角点 ID。
 
@@ -309,7 +314,7 @@ execution:
 6. 影响生产路径时重新 configure、最多 4 jobs 编译 `project-release`。
 7. 只有算法、数据选择或模型发生变化时，才运行用户授权的真实数据 Candidate 验证。
 
-当前完整 Project 测试基线是 26 项通过、0 项失败，另有 1 项长期 Disabled。测试数量
+当前完整 Project 测试基线是 27 项通过、0 项失败，另有 1 项长期 Disabled。测试数量
 可以随新增测试增加，因此验收应同时检查失败数和 disabled 原因，不能只硬编码数量。
 
 模型扩展至少验证：

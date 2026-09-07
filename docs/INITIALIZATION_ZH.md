@@ -2,7 +2,8 @@
 
 本文说明 `camera_calibration` 和 `camera_imu_calibration` 如何从独立 YAML 接收
 物理参数初值。这个接口解决的是“已有可信近似值时，如何绕过脆弱的自动初值阶段，
-或从更好的位置开始优化”，不是给参数增加固定约束或先验残差。
+或从更好的位置开始优化”。`initialization` 本身不会增加固定约束或先验残差；相机
+内参是否固定由独立的 `calibration.freeze_intrinsics` 活动策略决定。
 
 需要先明确三个边界：
 
@@ -153,21 +154,23 @@ $$
 
 向量长度由 task 中每个相机的 `model` 决定：
 
-| task 模型 | `intrinsics` 顺序 | `distortion_coeffs` 顺序 |
-|---|---|---|
-| `pinhole-radtan` | $[f_u,f_v,c_u,c_v]$ | $[k_1,k_2,p_1,p_2]$ |
-| `pinhole-radtan5` | $[f_u,f_v,c_u,c_v]$ | $[k_1,k_2,p_1,p_2,k_3]$ |
-| `pinhole-radtan8` | $[f_u,f_v,c_u,c_v]$ | $[k_1,k_2,p_1,p_2,k_3,k_4,k_5,k_6]$ |
-| `pinhole-equi` | $[f_u,f_v,c_u,c_v]$ | $[k_1,k_2,k_3,k_4]$ |
-| `pinhole-fov` | $[f_u,f_v,c_u,c_v]$ | $[w]$ |
-| `pinhole-opencv-fisheye` | $[f_u,f_v,c_u,c_v,\alpha]$ | $[k_1,k_2,k_3,k_4]$ |
-| `omni-none` | $[\xi,f_u,f_v,c_u,c_v]$ | `[]` |
-| `omni-radtan` | $[\xi,f_u,f_v,c_u,c_v]$ | $[k_1,k_2,p_1,p_2]$ |
-| `eucm-none` | $[\alpha,\beta,f_u,f_v,c_u,c_v]$ | `[]` |
-| `ds-none` | $[\xi,\alpha,f_u,f_v,c_u,c_v]$ | `[]` |
+| task 模型 | `intrinsics` 顺序 | `distortion_coeffs` 顺序 | 单相机参数量 |
+|---|---|---|---:|
+| `pinhole-radtan` | $[f_u,f_v,c_u,c_v]$ | $[k_1,k_2,p_1,p_2]$ | 8 |
+| `pinhole-radtan5` | $[f_u,f_v,c_u,c_v]$ | $[k_1,k_2,p_1,p_2,k_3]$ | 9 |
+| `pinhole-radtan8` | $[f_u,f_v,c_u,c_v]$ | $[k_1,k_2,p_1,p_2,k_3,k_4,k_5,k_6]$ | 12 |
+| `pinhole-equi` | $[f_u,f_v,c_u,c_v]$ | $[k_1,k_2,k_3,k_4]$ | 8 |
+| `pinhole-fov` | $[f_u,f_v,c_u,c_v]$ | $[w]$ | 5 |
+| `pinhole-opencv-fisheye` | $[f_u,f_v,c_u,c_v,\alpha]$ | $[k_1,k_2,k_3,k_4]$ | 9 |
+| `omni-none` | $[\xi,f_u,f_v,c_u,c_v]$ | `[]` | 5 |
+| `omni-radtan` | $[\xi,f_u,f_v,c_u,c_v]$ | $[k_1,k_2,p_1,p_2]$ | 9 |
+| `eucm-none` | $[\alpha,\beta,f_u,f_v,c_u,c_v]$ | `[]` | 6 |
+| `ds-none` | $[\xi,\alpha,f_u,f_v,c_u,c_v]$ | `[]` | 6 |
 
 其中 OpenCV fisheye 的 skew 满足 $K_{01}=f_u\alpha$。无独立畸变块的模型仍应在
 `direct` 中显式写 `distortion_coeffs: []`，因为“完整 seed”和“漏写字段”必须可区分。
+各模型的公式、使用范围和默认优化阶段统一见
+[`CAMERA_MODELS_ZH.md`](CAMERA_MODELS_ZH.md)。
 
 ### 3.3 `refine` 的实际阶段
 
@@ -202,6 +205,125 @@ $$
 
 最终增量问题中的相机内参、畸变和 baseline 仍是原有 active 状态，可以离开 seed。
 `direct` 不是“固定相机参数”，只是声明这些值足够可信，可以省略前置初值优化。
+
+### 3.5 初始化策略与参数活动状态
+
+为避免把“提供初值”“跳过前置阶段”和“冻结参数”混为一谈，本节统一使用以下记号：
+
+- $\mathbf I$：每台相机的投影内参，例如 pinhole 的
+  $[f_u,f_v,c_u,c_v]$；
+- $\mathbf D$：每台相机的畸变参数；
+- $\mathbf B$：相邻相机间的 baseline
+  ${}^{C_k}_{C_{k-1}}\mathbf T$；
+- $\mathbf P$：每个 target view 的标定板位姿。
+
+这里的 `active` 表示对应 design variable 会被加入当前优化问题并允许产生增量；
+`fixed` 表示本阶段使用其当前值计算残差，但不允许优化器更新。$\mathbf P$ 是形成
+重投影误差所必需的 nuisance variable，不是最终输出中的相机内外参。
+
+#### 3.5.1 不提供初始化文件
+
+不配置 `initialization` 时，程序保持原生 Kalibr 的完整自动初始化和优化流程：
+
+| 阶段 | active 变量 | fixed 或不参与的相机参数 |
+|---|---|---|
+| 单相机内参 LM | $\mathbf I,\mathbf D,\mathbf P$ | 该阶段尚无 $\mathbf B$ |
+| 相机对 stereo LM | $\mathbf I,\mathbf B,\mathbf P$ | $\mathbf D$ 暂时 fixed |
+| 全相机 full-batch LM | $\mathbf I,\mathbf D,\mathbf B,\mathbf P$ | — |
+| 最终增量优化 | $\mathbf I,\mathbf D,\mathbf B,\mathbf P$ | — |
+
+相机对阶段暂时固定畸变，是原生
+`stereoCalibrate(..., distortionActive=False)` 的行为；畸变会在后续 full-batch 和
+最终增量问题中重新放开。
+
+#### 3.5.2 `refine`
+
+`refine` 只改变部分参数的起点，并保留原生前置 refinement：
+
+| 阶段 | 行为和 active 变量 |
+|---|---|
+| 解析焦距初始化 | 已提供 $\mathbf I$ 的相机可跳过；未提供的相机仍自动估计 |
+| 单相机 LM | $\mathbf I,\mathbf D,\mathbf P$ 仍 active，允许离开 seed |
+| 相机对 stereo LM | 缺失 baseline 时继续运行；运行时 $\mathbf I,\mathbf B,\mathbf P$ active，$\mathbf D$ fixed；所有 baseline 均已提供时可跳过该阶段 |
+| full-batch | $\mathbf I,\mathbf D,\mathbf B,\mathbf P$ 全部 active |
+| 最终增量优化 | $\mathbf I,\mathbf D,\mathbf B,\mathbf P$ 全部 active |
+
+因此，`refine` 不会永久冻结任何相机参数。若把显式 seed 记为
+$\boldsymbol\theta_0$，其语义只是设置优化起点：
+
+$$
+\boldsymbol\theta\leftarrow\boldsymbol\theta_0,
+\qquad
+\delta\boldsymbol\theta\ \text{仍可由优化器更新}.
+$$
+
+#### 3.5.3 `direct`
+
+`direct` 要求完整的相机内参、畸变和 baseline seed，并跳过三个前置优化阶段，但不
+改变最终问题的参数活动策略：
+
+| 阶段 | 行为和 active 变量 |
+|---|---|
+| 单相机内参 LM | 跳过 |
+| 相机对 stereo LM | 跳过 |
+| full-batch 初始化 LM | 跳过 |
+| 最终增量优化 | $\mathbf I,\mathbf D,\mathbf B,\mathbf P$ 重新全部 active |
+
+所以不能用 `direct` 实现“固定内参，只标定外参”。它仅表示信任完整 seed，允许程序
+从最终增量阶段开始；一旦进入该阶段，内参和畸变仍可能变化。
+
+#### 3.5.4 `freeze_intrinsics`
+
+`camera_calibration` 支持把参数活动策略与 `refine`/`direct` 初始化策略正交配置：
+
+```yaml
+initialization:
+  path: camera_calibration_initialization.yaml
+  strategy: refine
+
+calibration:
+  freeze_intrinsics: true
+```
+
+`freeze_intrinsics: true` 同时固定 $\mathbf I$ 和 $\mathbf D$。只固定焦距、主点而允许
+畸变继续变化，不能称为“固定相机模型”。其约束语义应为：
+
+$$
+\mathbf I=\mathbf I_0,
+\qquad
+\mathbf D=\mathbf D_0,
+\qquad
+\delta\mathbf I=\mathbf 0,
+\qquad
+\delta\mathbf D=\mathbf 0.
+$$
+
+该字段默认是 `false`；省略或显式设为 `false` 时，阶段和 active 状态与原生路径完全
+相同。设为 `true` 时，必须配置 `initialization.path`，而且初始化文件必须为每台相机
+完整提供与模型维数一致的 `intrinsics` 和 `distortion_coeffs`。baseline seed 可在
+`refine` 中省略；`direct` 仍要求完整 baseline。该模式至少需要两台相机，因为单目
+任务冻结相机模型后不存在需要估计的相机外参。
+
+实际分阶段行为为：
+
+| 阶段 | `freeze_intrinsics: true` 后的行为 |
+|---|---|
+| 输入校验 | 每台相机必须已有完整 $\mathbf I,\mathbf D$，且长度与相机模型严格一致 |
+| 单相机内参 LM | 跳过 |
+| PnP pose 初始化 | 使用固定 $\mathbf I,\mathbf D$ 计算，$\mathbf P$ 仍需初始化 |
+| 相机对 stereo LM | 只优化 $\mathbf B,\mathbf P$；允许由该阶段生成缺失的 baseline 初值 |
+| full-batch | 只优化 $\mathbf B,\mathbf P$ |
+| 最终增量优化 | 物理 calibration block 只优化 $\mathbf B$，同时保持每帧 $\mathbf P$ active |
+| 异常点删除后重建问题 | 必须继续保持 $\mathbf I,\mathbf D$ fixed，不能被工厂默认值重新激活 |
+
+在这种配置下，“只优化外参”的准确含义是：**相机标定的物理参数中只有
+$\mathbf B$ active**；每帧 $\mathbf P$ 仍必须参与联合求解。单目任务不存在
+$\mathbf B$，因此配置 `freeze_intrinsics: true` 会在运行前被明确拒绝。
+
+这个概念不要套用到 `camera_imu_calibration`：该任务当前已经始终固定相机
+$\mathbf I,\mathbf D$。其相邻 baseline 默认也 fixed；只有
+`recompute_camera_chain_extrinsics: true` 才会放开 $\mathbf B$，而 cam0–IMU 外参、
+轨迹、bias、重力和按配置启用的时间偏移等状态仍按 Camera–IMU 联合问题求解。
 
 ## 4. `camera_imu_calibration` 初值
 

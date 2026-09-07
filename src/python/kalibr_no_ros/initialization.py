@@ -464,6 +464,8 @@ def initialization_stage_decisions(document, strategy, task, camera_ids=None):
     job = task["job"]
     decisions = []
     if job == "camera_calibration":
+        freeze_intrinsics = (task.get("calibration") or {}).get(
+            "freeze_intrinsics", False) is True
         cameras = document.get("cameras", {})
         for index, _camera in enumerate(task["cameras"]):
             camera_id = "cam{}".format(index)
@@ -478,8 +480,13 @@ def initialization_stage_decisions(document, strategy, task, camera_ids=None):
                     "skipped_seeded_geometry_from_observation_resolution"
                     if "intrinsics" in fields else "native"
                 ),
-                "single_camera_lm": "skipped" if strategy == "direct" else "run",
-                "final_incremental_state": "active",
+                "single_camera_lm": (
+                    "skipped"
+                    if strategy == "direct" or freeze_intrinsics else "run"
+                ),
+                "final_incremental_state": (
+                    "fixed" if freeze_intrinsics else "active"
+                ),
             })
         if len(task["cameras"]) > 1:
             supplied = [
@@ -489,7 +496,7 @@ def initialization_stage_decisions(document, strategy, task, camera_ids=None):
                     "cam{}".format(index), {})
             ]
             complete = len(supplied) == len(task["cameras"]) - 1
-            decisions.append({
+            baseline_decision = {
                 "stage": "camera_chain_baselines",
                 "supplied_transforms": supplied,
                 "pairwise_stereo_lm": (
@@ -497,7 +504,10 @@ def initialization_stage_decisions(document, strategy, task, camera_ids=None):
                 ),
                 "full_batch_lm": "skipped" if strategy == "direct" else "run",
                 "final_incremental_state": "active",
-            })
+            }
+            if freeze_intrinsics:
+                baseline_decision["camera_intrinsics_state"] = "fixed"
+            decisions.append(baseline_decision)
         return decisions
 
     camera_ids = list(camera_ids or ())
@@ -599,6 +609,11 @@ def build_initialization_report(document, strategy, task, *, source_path,
                                 source_sha256, path_origin,
                                 strategy_origin, camera_ids=None):
     """Build the stable provenance report written before native execution."""
+    freeze_intrinsics = (
+        task.get("job") == "camera_calibration"
+        and (task.get("calibration") or {}).get(
+            "freeze_intrinsics", False) is True
+    )
     return {
         "schema_version": 1,
         "kind": "calibration_initialization_report",
@@ -612,13 +627,19 @@ def build_initialization_report(document, strategy, task, *, source_path,
             "strategy_origin": str(strategy_origin),
         },
         "semantics": {
-            "role": "initial_value_only",
-            "fixed_parameter": False,
+            "role": (
+                "initial_value_and_activity_policy"
+                if freeze_intrinsics else "initial_value_only"
+            ),
+            "fixed_parameter": freeze_intrinsics,
             "fixed_parameter_meaning": (
+                "camera projection and distortion remain fixed; camera-chain "
+                "baselines and target poses remain active"
+                if freeze_intrinsics else
                 "the seed adds no fixed state; native task activity still applies"
             ),
             "prior_error_term_added": False,
-            "final_optimizer_activity_unchanged": True,
+            "final_optimizer_activity_unchanged": not freeze_intrinsics,
             "transform_convention": "p_target = T_target_source * p_source",
             "gravity_magnitude_m_s2": 9.80655,
         },

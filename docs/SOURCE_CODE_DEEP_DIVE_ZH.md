@@ -308,6 +308,13 @@ N个worker：读取/反序列化/解码/AprilGrid检测
 主控制流位于
 [`kalibr_calibrate_cameras`](../src/kalibr/calibration/kalibr/python/kalibr_calibrate_cameras)。
 
+显式配置 `calibration.freeze_intrinsics: true` 时，主控制流要求完整相机内参/畸变
+seed，并跳过单相机内参 LM。固定状态不是靠各阶段各自记住一个松散开关，而是保存在
+每个 `CameraGeometry.freezeIntrinsics` 中；所有阶段调用 `setDvActiveStatus()` 时，策略
+闸门都会把 projection 和 distortion 强制设为 inactive。相机对、full-batch、最终
+batch 工厂以及异常点删除后的 batch 重建都经过这一入口，因此不会在重建问题时意外
+解冻。默认 `false` 时，该入口原样执行调用者请求的 active 状态，保持原生流程。
+
 ### 4.2 单相机内参初始化
 
 每台相机先独立运行 `calibrateIntrinsics()`。设计变量包括：

@@ -339,8 +339,14 @@ def cameraGeometryFromInitialization(camera_model, camera_name, seed,
 class CameraGeometry(object):
     def __init__(self, cameraModel, targetConfig, dataset, geometry=None,
                  verbose=False, windowHalfSizePx=None,
-                 maxDisplacementPx=None):
+                 maxDisplacementPx=None, freezeIntrinsics=False):
+        if type(freezeIntrinsics) is not bool:
+            raise TypeError('freezeIntrinsics must be a bool')
         self.dataset = dataset
+        # This is an activity policy, not an initialization strategy.  Keep
+        # the invariant on the camera object so every optimization-problem
+        # factory (including outlier rebuilds) passes through the same gate.
+        self.freezeIntrinsics = freezeIntrinsics
         
         self.model = cameraModel
         if geometry is None:
@@ -363,6 +369,9 @@ class CameraGeometry(object):
             maxDisplacementPx=maxDisplacementPx)
 
     def setDvActiveStatus(self, projectionActive, distortionActive, shutterActice):
+        if self.freezeIntrinsics:
+            projectionActive = False
+            distortionActive = False
         self.dv.projectionDesignVariable().setActive(projectionActive)
         self.dv.distortionDesignVariable().setActive(distortionActive)
         self.dv.shutterDesignVariable().setActive(shutterActice)
