@@ -12,14 +12,17 @@ import cv2
 import numpy as np
 import yaml
 
+from kalibr_no_ros.version import SCHEMA_VERSION
+
 from .model import FileImageIndex, ImageRecord, ImuRecord, TopicInfo
 
 
 MANIFEST_NAME = "dataset.yaml"
 MANIFEST_TYPE = "kalibr_directory_dataset"
-SCHEMA_VERSION = 1
-_CAMERA_FIELDS = {"topic", "timestamps", "images"}
-_IMU_FIELDS = {"topic", "data"}
+_CAMERA_FIELDS = {"id", "timestamps", "images"}
+_IMU_FIELDS = {"id", "data"}
+_CAMERA_METADATA = {"topic", "frame_id", "resolution", "clock_source"}
+_IMU_METADATA = {"topic", "frame_id", "clock_source", "angular_velocity_unit", "linear_acceleration_unit"}
 _IMU_REQUIRED_COLUMNS = (
     "timestamp_ns", "wx", "wy", "wz", "ax", "ay", "az",
 )
@@ -60,11 +63,11 @@ def _resolve_child(root: Path, value, label: str, *, expected: str) -> Path:
     return resolved
 
 
-def _strict_fields(value, allowed, label):
+def _strict_fields(value, allowed, label, optional=()):
     if not isinstance(value, dict):
         raise DirectoryDatasetError("{} must be a mapping".format(label))
     missing = sorted(allowed - set(value))
-    unknown = sorted(set(value) - allowed)
+    unknown = sorted(set(value) - allowed - set(optional))
     if missing:
         raise DirectoryDatasetError(
             "{} is missing field(s): {}".format(label, ", ".join(missing)))
@@ -162,12 +165,19 @@ def _decode_image(rawdata: bytes, source: str, grayscale: bool):
     return np.ascontiguousarray(image)
 
 
+def _check_resolution(image, expected, source):
+    actual = [int(image.shape[1]), int(image.shape[0])]
+    if expected is not None and actual != list(expected):
+        raise DirectoryDatasetError("image resolution {} does not match manifest {}: {}".format(actual, expected, source))
+
+
 class DeferredFileImagePayload:
     """Picklable image path read and decoded later by a detector worker."""
 
-    def __init__(self, source, grayscale):
+    def __init__(self, source, grayscale, resolution=None):
         self.source = source
         self.grayscale = grayscale
+        self.resolution = resolution
 
     def decode_for_kalibr(self, collect_timing=False):
         if collect_timing:
@@ -184,6 +194,7 @@ class DeferredFileImagePayload:
             decode_wall_start = time.perf_counter()
             decode_cpu_start = time.process_time()
         image = _decode_image(rawdata, self.source, self.grayscale)
+        _check_resolution(image, self.resolution, self.source)
         if not collect_timing:
             return image, {}
         return image, {
@@ -208,9 +219,13 @@ class IndexedDirectoryImageDataset:
         rows = _read_csv(table, ("timestamp_ns", "filename"))
         seen_paths = set()
         self.index = []
+        previous_timestamp = None
         for line, row in rows:
             timestamp = _parse_timestamp(
                 row["timestamp_ns"], "{} line {} timestamp_ns".format(table, line))
+            if previous_timestamp is not None and timestamp <= previous_timestamp:
+                raise DirectoryDatasetError("timestamps must be strictly increasing in {} at line {}".format(table, line))
+            previous_timestamp = timestamp
             filename = row["filename"]
             image_path = _resolve_child(
                 images, filename,
@@ -226,10 +241,12 @@ class IndexedDirectoryImageDataset:
                     timestamp,
                     timestamp,
                     normalized,
+                    frame_id=stream.get("frame_id", ""),
+                    sequence=len(self.index),
                     compressed_format=image_path.suffix.lower().lstrip(".") or None,
                 )
             )
-        self.index.sort(key=lambda item: item.header_timestamp_ns)
+        self.resolution = stream.get("resolution")
 
     def __enter__(self):
         return self
@@ -276,7 +293,7 @@ class IndexedDirectoryImageDataset:
         # Keep the producer lightweight: only the path and decode policy cross
         # the process queue.  File I/O and OpenCV decoding happen together in
         # the detector worker, so multiple workers can overlap both phases.
-        payload = DeferredFileImagePayload(selected.path, self.grayscale)
+        payload = DeferredFileImagePayload(selected.path, self.grayscale, self.resolution)
         timing = {
             "bag_read_wall_seconds": 0.0,
             "bag_read_cpu_seconds": 0.0,
@@ -291,6 +308,7 @@ class IndexedDirectoryImageDataset:
             wall_start = time.perf_counter()
             cpu_start = time.process_time()
         image = _decode_image(rawdata, selected.path, self.grayscale)
+        _check_resolution(image, self.resolution, selected.path)
         if collect_timing:
             timing["decode_wall_seconds"] = time.perf_counter() - wall_start
             timing["decode_cpu_seconds"] = time.process_time() - cpu_start
@@ -321,7 +339,7 @@ class DirectoryReader:
         if not manifest_path.is_file():
             raise DirectoryDatasetError("directory dataset is missing {}".format(manifest_path))
         manifest = _load_mapping(manifest_path)
-        allowed = {"schema_version", "type", "cameras", "imus"}
+        allowed = {"schema_version", "type", "dataset_id", "created_at", "producer", "cameras", "imus"}
         unknown = sorted(set(manifest) - allowed)
         if unknown:
             raise DirectoryDatasetError(
@@ -331,6 +349,10 @@ class DirectoryReader:
                 "dataset schema_version must be {}".format(SCHEMA_VERSION))
         if manifest.get("type") != MANIFEST_TYPE:
             raise DirectoryDatasetError("dataset type must be {}".format(MANIFEST_TYPE))
+        if not isinstance(manifest.get("dataset_id"), str) or not manifest["dataset_id"].strip():
+            raise DirectoryDatasetError("dataset.dataset_id must be a non-empty string")
+        self.manifest = manifest
+        self.dataset_id = manifest["dataset_id"]
         cameras = manifest.get("cameras", [])
         imus = manifest.get("imus", [])
         if not isinstance(cameras, list) or not isinstance(imus, list):
@@ -340,14 +362,17 @@ class DirectoryReader:
         self._cameras: Dict[str, dict] = {}
         self._imus: Dict[str, dict] = {}
         topics = set()
+        sensor_ids = set()
         for index, camera in enumerate(cameras):
             label = "cameras[{}]".format(index)
-            _strict_fields(camera, _CAMERA_FIELDS, label)
-            topic = _topic(camera["topic"], label)
+            _strict_fields(camera, _CAMERA_FIELDS, label, _CAMERA_METADATA)
+            self._validate_sensor(camera, label, sensor_ids)
+            topic = _topic(camera.get("topic", camera["id"]), label)
             if topic in topics:
                 raise DirectoryDatasetError("duplicate topic: {}".format(topic))
             topics.add(topic)
             self._cameras[topic] = {
+                **camera,
                 "topic": topic,
                 "timestamps": _resolve_child(
                     self.path, camera["timestamps"], label + ".timestamps", expected="file"),
@@ -356,16 +381,46 @@ class DirectoryReader:
             }
         for index, imu in enumerate(imus):
             label = "imus[{}]".format(index)
-            _strict_fields(imu, _IMU_FIELDS, label)
-            topic = _topic(imu["topic"], label)
+            _strict_fields(imu, _IMU_FIELDS, label, _IMU_METADATA)
+            self._validate_sensor(imu, label, sensor_ids)
+            for field, expected in (("angular_velocity_unit", "rad/s"), ("linear_acceleration_unit", "m/s^2")):
+                if field in imu and imu[field] != expected:
+                    raise DirectoryDatasetError("{}.{} must be {}".format(label, field, expected))
+            topic = _topic(imu.get("topic", imu["id"]), label)
             if topic in topics:
                 raise DirectoryDatasetError("duplicate topic: {}".format(topic))
             topics.add(topic)
             self._imus[topic] = {
+                **imu,
                 "topic": topic,
                 "data": _resolve_child(
                     self.path, imu["data"], label + ".data", expected="file"),
             }
+
+    def sensor_topic(self, sensor_id, kind, topic=None):
+        """Resolve an explicit sensor ID to the native reader's stream key."""
+        streams = {"camera": self._cameras, "imu": self._imus}[kind]
+        for stream in streams.values():
+            if stream["id"] == sensor_id:
+                if topic is not None and topic != stream["topic"]:
+                    raise DirectoryDatasetError(
+                        "{} {} topic disagrees with dataset manifest".format(kind, sensor_id))
+                return stream["topic"]
+        raise DirectoryDatasetError("unknown {} id in dataset: {}".format(kind, sensor_id))
+
+    @staticmethod
+    def _validate_sensor(sensor, label, seen):
+        sensor_id = sensor["id"]
+        if not isinstance(sensor_id, str) or not sensor_id.strip() or sensor_id in seen:
+            raise DirectoryDatasetError("{}.id must be a unique non-empty string".format(label))
+        seen.add(sensor_id)
+        for field in ("frame_id", "clock_source"):
+            if field in sensor and not isinstance(sensor[field], str):
+                raise DirectoryDatasetError("{}.{} must be a string".format(label, field))
+        if "resolution" in sensor:
+            value = sensor["resolution"]
+            if not isinstance(value, list) or len(value) != 2 or any(type(v) is not int or v < 1 for v in value):
+                raise DirectoryDatasetError("{}.resolution must be [positive width, positive height]".format(label))
 
     def topics(self) -> List[TopicInfo]:
         result = []
@@ -433,9 +488,13 @@ class DirectoryReader:
             raise RuntimeError("Could not find topic {} in {}.".format(topic, self.path))
         table = stream["data"]
         records = []
+        previous_timestamp = None
         for line, row in _read_csv(table, _IMU_REQUIRED_COLUMNS, _IMU_OPTIONAL_COLUMNS):
             timestamp = _parse_timestamp(
                 row["timestamp_ns"], "{} line {} timestamp_ns".format(table, line))
+            if previous_timestamp is not None and timestamp <= previous_timestamp:
+                raise DirectoryDatasetError("timestamps must be strictly increasing in {} at line {}".format(table, line))
+            previous_timestamp = timestamp
             values = [
                 _parse_finite(row[name], "{} line {} {}".format(table, line, name))
                 for name in ("wx", "wy", "wz", "ax", "ay", "az")
@@ -452,10 +511,10 @@ class DirectoryReader:
                     timestamp,
                     np.asarray(values[:3], dtype=float),
                     np.asarray(values[3:], dtype=float),
+                    frame_id=stream.get("frame_id", ""),
                     temperature_c=temperature,
                 )
             )
-        records.sort(key=lambda item: item.header_timestamp_ns)
         return self._crop(records, from_to)
 
     def iter_imu(self, *args, **kwargs) -> Iterator[ImuRecord]:

@@ -25,7 +25,7 @@ except ImportError:
     # generates _build_config.py in build/install trees.
     _BUILD_PROFILING_ENABLED = False
 
-_SCHEMA_VERSION = 3
+from kalibr_no_ros.version import SCHEMA_VERSION as _SCHEMA_VERSION
 _profiling_enabled = bool(_BUILD_PROFILING_ENABLED)
 _parallelism = {
     "parallelism": None,

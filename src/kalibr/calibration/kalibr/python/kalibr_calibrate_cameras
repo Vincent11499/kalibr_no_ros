@@ -16,6 +16,7 @@ import multiprocessing
 import pylab as pl
 import argparse
 import kalibr_native_optimizer as native_runtime
+from kalibr_no_ros import artifacts as run_artifacts
 # kalibr-native-runtime-overlay
 import sys
 import random
@@ -509,6 +510,11 @@ def main():
                                     removedOutlierCorners.append( (cidx, calibrator.views[batch_id].rerrs[cidx][pidx].getMeasurement()) )
                             
                             #queue corners on this cam for removal
+                            artifact_context = run_artifacts.current_context()
+                            if artifact_context is not None:
+                                artifact_context.record_removed_corners(
+                                    calibrator.views[batch_id], cidx,
+                                    cornerRemovalList, se_threshold)
                             cornerRemovalList_allCams.append( (cidx, cornerRemovalList) )
                             
                             #plot the observation with the outliers
@@ -535,6 +541,11 @@ def main():
                                 calibrator.estimator.getOptimizerOptions())
                             rval = native_runtime.run_incremental_batch(
                                 calibrator.estimator, new_batch, False)
+                            artifact_context = run_artifacts.current_context()
+                            if artifact_context is not None:
+                                artifact_context.record_view(
+                                    new_batch.timestamp, new_batch.rig_observations,
+                                    rval.batchAccepted, "outlier_rebuild", rval)
                             
                             #queue the batch for removal if the corrected batch was rejected
                             if not rval.batchAccepted:
@@ -559,6 +570,8 @@ def main():
             print("Processed {0} images with {1} images used".format(numViews, calibrator.estimator.getNumBatches()))
             kcc.printParameters(calibrator)
             print("")
+
+            run_artifacts.publish_camera(calibrator, parsed.models)
 
             # Seeded runs must prove that the physical calibration block is
             # observable at the final weighted linearization.  The helper
@@ -612,13 +625,14 @@ def main():
             G=None; 
             if numCams>1: 
                 G=graph
-            native_runtime.timed_call(
-                "report_generation", "output",
-                {"format": "pdf"}, kcc.generateReport,
-                calibrator, reportFile,
-                showOnScreen=not parsed.dontShowReport, graph=G,
-                removedOutlierCorners=removedOutlierCorners)
-            print("  Report written to {0}".format(reportFile))
+            if not run_artifacts.managed_output_enabled():
+                native_runtime.timed_call(
+                    "report_generation", "output",
+                    {"format": "pdf"}, kcc.generateReport,
+                    calibrator, reportFile,
+                    showOnScreen=not parsed.dontShowReport, graph=G,
+                    removedOutlierCorners=removedOutlierCorners)
+                print("  Report written to {0}".format(reportFile))
             print("")
             
             #generate trajectory file

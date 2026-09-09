@@ -377,7 +377,7 @@ def recommended_parameter_document(summary):
         raise RuntimeError(
             "models do not share one recommended principal-point convention")
     return {
-        "schema_version": 1,
+        "schema_version": "1.0.0",
         "kind": "resized_camera_intrinsics",
         "camera_id": "cam{}".format(summary["camera_index"]),
         "topic": summary["topic"],
@@ -801,7 +801,7 @@ def main():
                                 "could not write {}".format(output_path))
 
     summary = {
-        "schema_version": 1,
+        "schema_version": "1.0.0",
         "kind": "camera_intrinsics_resize_validation",
         "manifest": str(manifest_path),
         "target": str(target_path),

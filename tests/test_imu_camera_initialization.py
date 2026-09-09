@@ -119,7 +119,7 @@ class CameraImuInitializationLoaderTest(unittest.TestCase):
     @staticmethod
     def base_document(strategy="refine"):
         return {
-            "schema_version": 1,
+            "schema_version": "1.0.0",
             "kind": "camera_imu_calibration_initialization",
             "strategy": strategy,
         }
@@ -184,7 +184,7 @@ class CameraImuInitializationLoaderTest(unittest.TestCase):
 
         document = self.base_document()
         document["schema_version"] = True
-        with self.assertRaisesRegex(RuntimeError, "integer 1"):
+        with self.assertRaisesRegex(RuntimeError, "string 1.0.0"):
             SENSORS.loadCameraImuCalibrationInitialization(
                 str(self.write_document(document)))
 

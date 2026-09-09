@@ -238,7 +238,7 @@ class CameraInitializationTest(unittest.TestCase):
     @staticmethod
     def base_document(strategy="refine"):
         return {
-            "schema_version": 1,
+            "schema_version": "1.0.0",
             "kind": "camera_calibration_initialization",
             "strategy": strategy,
             "cameras": {},

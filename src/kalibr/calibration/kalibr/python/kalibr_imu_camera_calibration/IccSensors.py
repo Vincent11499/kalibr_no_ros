@@ -18,12 +18,14 @@ import math
 import numbers
 import re
 import numpy as np
+from kalibr_no_ros import artifacts as run_artifacts
+from kalibr_no_ros.version import SCHEMA_VERSION
 import pylab as pl
 import scipy.optimize
 import yaml
 
 
-CAMERA_IMU_CALIBRATION_INITIALIZATION_SCHEMA_VERSION = 1
+CAMERA_IMU_CALIBRATION_INITIALIZATION_SCHEMA_VERSION = SCHEMA_VERSION
 CAMERA_IMU_CALIBRATION_INITIALIZATION_KIND = (
     'camera_imu_calibration_initialization')
 _CAMERA_IMU_INITIALIZATION_STRATEGIES = ('refine', 'direct')
@@ -142,11 +144,11 @@ def loadCameraImuCalibrationInitialization(filename, num_cameras=None,
     _cameraImuInitializationCheckKeys(
         filename, document, _CAMERA_IMU_INITIALIZATION_TOP_LEVEL_KEYS,
         'initialization document')
-    if (type(document.get('schema_version')) is not int or
+    if (type(document.get('schema_version')) is not str or
             document.get('schema_version') !=
             CAMERA_IMU_CALIBRATION_INITIALIZATION_SCHEMA_VERSION):
         _cameraImuInitializationError(
-            filename, 'schema_version must be integer {}'.format(
+            filename, 'schema_version must be string {}'.format(
                 CAMERA_IMU_CALIBRATION_INITIALIZATION_SCHEMA_VERSION))
     if document.get('kind') != CAMERA_IMU_CALIBRATION_INITIALIZATION_KIND:
         _cameraImuInitializationError(
@@ -680,6 +682,9 @@ class IccCamera():
             #as we are applying an initial time shift outside the optimization so 
             #we need to make sure that we dont add data outside the spline definition
             if frameTimeScalar <= poseSplineDv.spline().t_min() or frameTimeScalar >= poseSplineDv.spline().t_max():
+                artifact_context = run_artifacts.current_context()
+                if artifact_context is not None:
+                    artifact_context.record_camera_skipped(obs, "outside_spline_support")
                 continue
             
             T_w_b = poseSplineDv.transformationAtTime(frameTime, timeOffsetPadding, timeOffsetPadding)
@@ -727,6 +732,10 @@ class IccCamera():
                 reprojectionErrors.append(rerr)
             
             allReprojectionErrors.append(reprojectionErrors)
+            artifact_context = run_artifacts.current_context()
+            if artifact_context is not None:
+                artifact_context.record_camera_terms(
+                    self, obs, reprojectionErrors, T_c_w, frameTime)
                         
             #update progress bar
             iProgress.sample()
@@ -1084,6 +1093,9 @@ class IccImu(object):
             iProgress.sample()
         
         self.imuData = imu
+        artifact_context = run_artifacts.current_context()
+        if artifact_context is not None:
+            artifact_context.record_imu_sources(self)
         
         if len(self.imuData)>1:
             print("\r  Read %d imu readings over %.1f seconds                   " \
@@ -1149,6 +1161,7 @@ class IccImu(object):
                 aerr.setMEstimatorPolicy(mest)
                 accelErrors.append(aerr)
                 problem.addErrorTerm(aerr)
+                run_artifacts.record_imu_term(self, im, "accel", aerr)
             else:
                 num_skipped = num_skipped + 1
 
@@ -1187,6 +1200,7 @@ class IccImu(object):
                 gerr.setMEstimatorPolicy(mest)
                 gyroErrors.append(gerr)
                 problem.addErrorTerm(gerr)
+                run_artifacts.record_imu_term(self, im, "gyro", gerr)
             else:
                 num_skipped = num_skipped + 1
 
@@ -1494,6 +1508,7 @@ class IccScaledMisalignedImu(IccImu):
                 aerr.setMEstimatorPolicy(mest)
                 accelErrors.append(aerr)
                 problem.addErrorTerm(aerr)
+                run_artifacts.record_imu_term(self, im, "accel", aerr)
             else:
                 num_skipped = num_skipped + 1
 
@@ -1543,6 +1558,7 @@ class IccScaledMisalignedImu(IccImu):
                 gerr.setMEstimatorPolicy(mest)
                 gyroErrors.append(gerr)
                 problem.addErrorTerm(gerr)
+                run_artifacts.record_imu_term(self, im, "gyro", gerr)
             else:
                 num_skipped = num_skipped + 1
 
@@ -1653,6 +1669,7 @@ class IccScaledMisalignedSizeEffectImu(IccScaledMisalignedImu):
                 aerr.setMEstimatorPolicy(mest)
                 accelErrors.append(aerr)
                 problem.addErrorTerm(aerr)
+                run_artifacts.record_imu_term(self, im, "accel", aerr)
             else:
                 num_skipped = num_skipped + 1
 

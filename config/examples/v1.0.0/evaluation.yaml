@@ -1,0 +1,20 @@
+schema_version: "1.0.0"
+kind: calibration_evaluation
+output:
+  archive_observations: true
+  archive_selection_history: true
+  copy_used_images: false
+  export_opencv: true
+  evaluation_pairing_tolerance_s: 0.0002
+  visualizations:
+    enabled: true
+    max_frames_per_camera: 30
+    max_pairs: 30
+    sampling: uniform
+  rectification:
+    balance: 0.0
+    fov_scale: 1.0
+    size: null
+  assessment:
+    reference_grading: true
+    rules: []

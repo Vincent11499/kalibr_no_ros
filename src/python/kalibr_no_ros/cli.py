@@ -2,7 +2,10 @@
 
 from pathlib import Path
 import argparse
+import json
 import sys
+
+from .version import VERSION, SCHEMA_VERSION
 
 from .reference import verify_snapshot
 from .task import (
@@ -32,7 +35,7 @@ def _add_execution_arguments(parser):
 
 
 def _add_runtime_arguments(parser):
-    parser.add_argument("--config", required=True, help="task schema-version 1 YAML")
+    parser.add_argument("--config", required=True, help="task schema-version 1.0.0 YAML")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument(
         "--initialization",
@@ -50,8 +53,19 @@ def _add_runtime_arguments(parser):
 
 def build_parser():
     parser = argparse.ArgumentParser(prog="kalibr-noros")
-    parser.add_argument("--version", action="version", version="kalibr-noros 2.0.0")
+    parser.add_argument("--version", action="version", version="kalibr-noros " + VERSION)
     commands = parser.add_subparsers(dest="group", required=True)
+
+    validate = commands.add_parser("validate", help="check task and dataset without detection or optimization")
+    validate.add_argument("--config", required=True)
+    validate.add_argument("--output", help="write the validation JSON to a new file")
+
+    evaluate = commands.add_parser("evaluate", help="recompute metrics and reports from saved observations")
+    evaluate.add_argument("--run", required=True, help="existing calibration run")
+    evaluate.add_argument("--config", help="evaluation schema-version 1.0.0 YAML")
+    evaluate.add_argument("--dataset", help="relocated directory dataset")
+    evaluate.add_argument("--output-dir", required=True)
+    evaluate.add_argument("--force", action="store_true")
 
     calibrate = commands.add_parser("calibrate", help="run calibration")
     calibration_commands = calibrate.add_subparsers(dest="calibration", required=True)
@@ -180,7 +194,9 @@ def _convert_job(arguments):
         "dataset": dataset,
         "target": {"path": str(Path(arguments.target).expanduser().resolve())},
     }
-    calibration = {"interactive_report": False}
+    calibration = {}
+    task["kind"] = "calibration_task"
+    task["output"] = {"interactive_report": False}
     if arguments.type == "cameras":
         if not arguments.topics or not arguments.models:
             raise TaskError("camera conversion requires --topics and --models")
@@ -229,6 +245,53 @@ def main(argv=None, prefix=None):
     arguments = build_parser().parse_args(argv)
     prefix = Path(prefix or Path(__file__).resolve().parents[3])
     try:
+        if arguments.group == "validate":
+            from .validation import validate_task
+            report = validate_task(arguments.config)
+            serialized = json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+            if arguments.output:
+                destination = Path(arguments.output).expanduser().resolve()
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with destination.open("x", encoding="utf-8") as stream:
+                    stream.write(serialized)
+            print(serialized, end="")
+            return 0 if report["status"] == "passed" else 2
+        if arguments.group == "evaluate":
+            from .reporting import evaluate_run, validate_output_options
+            from .task import load_yaml, require_document_version, prepare_output_directory, write_run_manifest
+            options = None
+            if arguments.config:
+                document = load_yaml(arguments.config)
+                require_document_version(document, "evaluation", "calibration_evaluation")
+                unknown = set(document) - {"schema_version", "kind", "output"}
+                if unknown:
+                    raise TaskError("unknown evaluation fields: {}".format(", ".join(sorted(unknown))))
+                options = document.get("output", {})
+            options = validate_output_options(options)
+            source = Path(arguments.run).expanduser().resolve()
+            destination = Path(arguments.output_dir).expanduser().resolve()
+            if source == destination or source in destination.parents or destination in source.parents:
+                raise TaskError("evaluation output must be separate from the source run")
+            if not (source / "calibration.yaml").is_file():
+                raise TaskError("source run has no calibration.yaml")
+            require_document_version(load_yaml(source / "calibration.yaml"), "calibration", "calibration_result")
+            if arguments.config:
+                config_path = Path(arguments.config).expanduser().resolve()
+                if destination == config_path or destination in config_path.parents:
+                    raise TaskError("evaluation output contains its configuration file")
+            if arguments.dataset:
+                dataset_path = Path(arguments.dataset).expanduser().resolve()
+                if destination == dataset_path or destination in dataset_path.parents or dataset_path in destination.parents:
+                    raise TaskError("evaluation output must be separate from the relocated dataset")
+            output = prepare_output_directory(destination, force=arguments.force)
+            try:
+                evaluate_run(source, output, options, dataset=arguments.dataset)
+                write_run_manifest(output, status="completed", source_run=source)
+            except Exception as error:
+                write_run_manifest(output, status="output_failed", source_run=source, failure=error)
+                raise
+            print(output)
+            return 0
         if arguments.group == "benchmark":
             from .benchmark import compare_benchmark, run_benchmark
             if arguments.benchmark_command == "run":
@@ -271,14 +334,11 @@ def main(argv=None, prefix=None):
         if arguments.group == "convert" and arguments.conversion == "job":
             return _convert_job(arguments)
         if arguments.group == "convert":
-            if arguments.full_fisheye:
-                from kalibr_opencv_fisheye_full.__main__ import main as converter
-            else:
-                from kalibr_opencv_fisheye.yaml_io import main as converter
+            from .conversion import main as converter
             converter_arguments = list(arguments.arguments)
             if arguments.converter_help:
                 converter_arguments.insert(0, "--help")
-            return converter(converter_arguments)
+            return converter(converter_arguments, full_fisheye=arguments.full_fisheye)
         snapshot = arguments.snapshot or _default_reference_path(prefix, "kalibr")
         manifest = arguments.manifest or _default_reference_path(prefix, "kalibr.sha256")
         result = verify_snapshot(

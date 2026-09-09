@@ -1,0 +1,7 @@
+schema_version: "1.0.0" # 项目配置版本，字符串。
+kind: imu_configuration # IMU噪声与采样配置，不是外参结果。
+update_rate: 100.0 # Hz，>0；现有EVT3.1 imu.yaml的标称采样频率。
+accelerometer_noise_density: 0.0096720633620552 # m/s²/√Hz，>0；继承现有参数，需适配实际IMU。
+accelerometer_random_walk: 5.854489100633343e-05 # m/s³/√Hz，>0；加速度bias随机游走，非外参先验。
+gyroscope_noise_density: 0.0001995062098784993 # rad/s/√Hz，>0；继承现有参数，未在本次重做Allan分析。
+gyroscope_random_walk: 2.0524199104523207e-06 # rad/s²/√Hz，>0；gyro bias随机游走。

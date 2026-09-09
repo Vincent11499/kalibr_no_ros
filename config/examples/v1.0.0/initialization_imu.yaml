@@ -1,0 +1,16 @@
+schema_version: "1.0.0"
+kind: camera_imu_calibration_initialization
+camera_imu:
+  T_cam0_imu:
+    - [1.0, 0.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0, 0.0]
+    - [0.0, 0.0, 1.0, 0.0]
+    - [0.0, 0.0, 0.0, 1.0]
+  timeshift_cam_imu_s:
+    cam0: 0.0
+    cam1: 0.0
+  gravity_direction_target: [0.0, 0.0, -1.0]
+imus:
+  imu0:
+    gyroscope_bias_rad_s: [0.0, 0.0, 0.0]
+    accelerometer_bias_m_s2: [0.0, 0.0, 0.0]

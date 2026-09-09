@@ -1,0 +1,22 @@
+schema_version: "1.0.0"
+kind: calibration_task
+job: camera_calibration
+dataset:
+  type: directory
+  path: data/stereo_imu_YYMMDD_hhmm
+target:
+  path: aprilgrid.yaml
+cameras:
+  - id: cam0
+    model: pinhole-equi
+calibration:
+  shuffle: false
+  synchronization_tolerance_s: 0.0002
+execution:
+  detector_processes: 4
+  optimizer_threads: 4
+  detector_inflight_per_worker: 2
+  detector_opencv_threads: 1
+output:
+  archive_observations: false
+  archive_selection_history: false

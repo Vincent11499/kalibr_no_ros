@@ -1,10 +1,43 @@
 """Drop-in replacements for Kalibr's ROS-backed dataset readers."""
 
 from typing import Optional
+from pathlib import Path
 
 import numpy as np
 
 from kalibr_bag_io import BagReader, open_dataset
+
+
+def _source_metadata(dataset, idx):
+    """Identify a source record without converting its integer timestamp."""
+    source_index = int(idx)
+    entry = dataset.index[source_index]
+    result = {
+        "source_index": source_index,
+        "source_timestamp_ns": int(entry.header_timestamp_ns),
+        "record_timestamp_ns": int(entry.record_timestamp_ns),
+        "dataset_path": str(Path(dataset.bagfile).expanduser().resolve()),
+        "topic": dataset.topic,
+        "source_frame_id": str(getattr(entry, "frame_id", "")),
+        "source_sequence": int(getattr(entry, "sequence", source_index)),
+    }
+    dataset_id = getattr(dataset.bag, "dataset_id", None)
+    if dataset_id is not None:
+        result["dataset_id"] = str(dataset_id)
+    path = getattr(entry, "path", None)
+    if path is not None:
+        result["source_path"] = str(Path(path).resolve())
+        try:
+            result["source_relative_path"] = Path(path).resolve().relative_to(
+                Path(result["dataset_path"])).as_posix()
+        except ValueError:
+            pass
+    # These are enough to disambiguate equal-time bag records for lazy lookup.
+    for name in ("connection_id", "chunk_position", "chunk_offset", "record_ordinal"):
+        value = getattr(entry, name, None)
+        if value is not None:
+            result[name] = int(value)
+    return result
 
 
 class _Iterator:
@@ -123,6 +156,9 @@ class BagImageDatasetReader:
     def numImages(self):
         return len(self.indices)
 
+    def source_metadata(self, idx):
+        return _source_metadata(self, idx)
+
     def getImage(self, idx):
         metadata = self.index[int(idx)]
         record = self._dataset.get_by_entry(metadata)
@@ -200,6 +236,9 @@ class BagImuDatasetReader:
 
     def numMessages(self):
         return len(self.indices)
+
+    def source_metadata(self, idx):
+        return _source_metadata(self, idx)
 
     def getMessage(self, idx):
         record = self.index[int(idx)]

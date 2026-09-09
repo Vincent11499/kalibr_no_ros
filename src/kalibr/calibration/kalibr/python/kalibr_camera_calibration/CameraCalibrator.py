@@ -15,6 +15,8 @@ from matplotlib.backends.backend_pdf import PdfPages
 import mpl_toolkits.mplot3d.axes3d as p3
 import cv2
 import numpy as np
+from kalibr_no_ros import artifacts as run_artifacts
+from kalibr_no_ros.version import SCHEMA_VERSION
 import pylab as pl
 import math
 import gc
@@ -36,7 +38,7 @@ class OptimizationDiverged(Exception):
 CAMERA_CALIBRATION_INITIALIZATION_KIND = (
     'camera_calibration_initialization'
 )
-CAMERA_CALIBRATION_INITIALIZATION_SCHEMA_VERSION = 1
+CAMERA_CALIBRATION_INITIALIZATION_SCHEMA_VERSION = SCHEMA_VERSION
 
 
 def _initialization_error(filename, message):
@@ -151,10 +153,10 @@ def loadCameraCalibrationInitialization(filename, num_cameras,
                 ', '.join(sorted(missing))))
 
     schema_version = document['schema_version']
-    if (type(schema_version) is not int or
+    if (type(schema_version) is not str or
             schema_version != CAMERA_CALIBRATION_INITIALIZATION_SCHEMA_VERSION):
         _initialization_error(
-            filename, 'schema_version must be integer {0}'.format(
+            filename, 'schema_version must be string {0}'.format(
                 CAMERA_CALIBRATION_INITIALIZATION_SCHEMA_VERSION))
     if document['kind'] != CAMERA_CALIBRATION_INITIALIZATION_KIND:
         _initialization_error(
@@ -751,4 +753,9 @@ class CameraCalibration(object):
             self.views.append(batch_problem)
         else:
             sm.logDebug("The estimator did not accept this batch")
+        artifact_context = run_artifacts.current_context()
+        if artifact_context is not None:
+            artifact_context.record_view(
+                timestamp, rig_observations, success, "incremental",
+                self.estimator_return_value)
         return success

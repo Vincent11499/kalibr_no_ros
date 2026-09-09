@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(kalibr_no_ros LANGUAGES CXX)
+project(kalibr_no_ros VERSION 1.0.0 LANGUAGES CXX)
 
 option(KALIBR_BUILD_NATIVE "Build the Kalibr native libraries" ON)
 option(KALIBR_ENABLE_TESTING "Build the C++ and Python test suites" OFF)

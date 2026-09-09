@@ -12,6 +12,7 @@ import traceback
 import cv2
 import numpy as np
 import sm
+from kalibr_no_ros import artifacts as run_artifacts
 
 try:
     import queue
@@ -474,6 +475,9 @@ def extractCornersFromDataset(dataset, detector, multithreading=False,
     print("Extracting calibration target corners")
     targetObservations = []
     numImages = dataset.numImages()
+    artifact_context = run_artifacts.current_context()
+    if artifact_context is not None:
+        artifact_context.register_dataset(dataset)
 
     iProgress = sm.Progress2(numImages)
     iProgress.sample()
@@ -649,6 +653,7 @@ def extractCornersFromDataset(dataset, detector, multithreading=False,
                 # Store a sentinel for unsuccessful detections as well; this
                 # makes duplicate result detection independent of payload.
                 observationsByIndex[idx] = payload
+                run_artifacts.record_detection(dataset, idx, payload)
                 if memoryTracker is not None:
                     memoryTracker.sample(processes)
 
@@ -747,6 +752,8 @@ def extractCornersFromDataset(dataset, detector, multithreading=False,
                     observation.clearImage()
                 if success == 1:
                     targetObservations.append(observation)
+                run_artifacts.record_detection(
+                    dataset, submitted - 1, observation if success == 1 else None)
                 iProgress.sample()
                 if memoryTracker is not None:
                     memoryTracker.sample()

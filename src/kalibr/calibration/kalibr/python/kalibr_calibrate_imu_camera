@@ -7,6 +7,7 @@ from kalibr_imu_camera_calibration import *
 import numpy as np
 import argparse
 import kalibr_native_optimizer as native_runtime
+from kalibr_no_ros import artifacts as run_artifacts
 # kalibr-native-runtime-overlay
 import signal
 import sys
@@ -299,6 +300,7 @@ def main():
     print("")
     print("Optimizing...")
     iCal.optimize(maxIterations=parsed.max_iter, recoverCov=parsed.recover_cov, profileOptimizer=parsed.profile_optimizer)
+    run_artifacts.publish_imu_camera(iCal)
 
     if initializationConfig is not None:
         from kalibr_no_ros import observability as calibration_observability
@@ -353,12 +355,13 @@ def main():
     print("")
     print("Generating result report...")
     reportFile = bagtag + "-report-imucam.pdf"
-    native_runtime.timed_call(
-        "report_generation", "output",
-        {"format": "pdf"}, util.generateReport, iCal,
-        filename=reportFile,
-        showOnScreen=not parsed.dontShowReport)
-    print("  Report written to {0}".format(reportFile))
+    if not run_artifacts.managed_output_enabled():
+        native_runtime.timed_call(
+            "report_generation", "output",
+            {"format": "pdf"}, util.generateReport, iCal,
+            filename=reportFile,
+            showOnScreen=not parsed.dontShowReport)
+        print("  Report written to {0}".format(reportFile))
     print("")
 
     if parsed.exportPoses:

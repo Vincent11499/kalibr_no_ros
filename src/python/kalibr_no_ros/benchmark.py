@@ -30,7 +30,7 @@ from .task import (
 )
 
 
-BENCHMARK_SCHEMA_VERSION = 1
+BENCHMARK_SCHEMA_VERSION = "1.0.0"
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
@@ -87,7 +87,7 @@ def _absolute_effective_task(config, overrides):
         imu["path"] = str(resolve_task_path(task, imu["path"]))
 
     calibration = value.setdefault("calibration", {})
-    calibration.setdefault("interactive_report", False)
+    value.setdefault("output", {}).setdefault("interactive_report", False)
     if task["job"] == "camera_calibration":
         calibration.setdefault("shuffle", False)
         calibration.setdefault("synchronization_tolerance_s", 0.02)
@@ -335,6 +335,11 @@ def run_benchmark(prefix, config, archive_dir, name, repeat=1, **overrides):
 def _yaml_difference(reference, candidate, atol, rtol):
     left = yaml.safe_load(Path(reference).read_text(encoding="utf-8"))
     right = yaml.safe_load(Path(candidate).read_text(encoding="utf-8"))
+    # Only this offline comparison adapter recognizes frozen result schemas.
+    # Version labels are provenance, not calibrated parameters.
+    if isinstance(left, dict) and isinstance(right, dict) and left.get("kind") == right.get("kind") == "calibration_result":
+        left = {key: value for key, value in left.items() if key != "schema_version"}
+        right = {key: value for key, value in right.items() if key != "schema_version"}
     result = {"compatible": True, "max_absolute_difference": 0.0,
               "max_relative_difference": 0.0, "first_difference": None}
 
@@ -386,7 +391,8 @@ def _yaml_difference(reference, candidate, atol, rtol):
 
 def _load_registry(path, baseline_id):
     value = load_yaml(path)
-    if value.get("schema_version") != BENCHMARK_SCHEMA_VERSION:
+    # Frozen benchmark registries are comparison inputs, never runnable tasks.
+    if value.get("schema_version") not in (1, BENCHMARK_SCHEMA_VERSION):
         raise TaskError("unsupported benchmark baseline registry schema")
     try:
         return value["baselines"][baseline_id]

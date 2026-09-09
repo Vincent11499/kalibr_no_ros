@@ -39,7 +39,7 @@ def verify_snapshot(snapshot, manifest, expected_files=None, json_path=None):
         )
     actual_count, actual_digest = snapshot_digest(snapshot)
     result = {
-        "schema_version": 1,
+        "schema_version": "1.0.0",
         "snapshot": str(snapshot),
         "manifest": str(manifest),
         "expected_files": expected_count,

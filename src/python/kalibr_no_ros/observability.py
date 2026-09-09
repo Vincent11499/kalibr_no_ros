@@ -10,7 +10,9 @@ import numpy as np
 import yaml
 
 
-OBSERVABILITY_SCHEMA_VERSION = 1
+from .version import SCHEMA_VERSION
+
+OBSERVABILITY_SCHEMA_VERSION = SCHEMA_VERSION
 
 
 class ObservabilityError(RuntimeError):

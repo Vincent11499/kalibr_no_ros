@@ -11,10 +11,10 @@
 
 | 文件 | 谁创建 | 是否需要经常修改 | 作用 |
 |---|---|---:|---|
-| `task.yaml` | 用户 | 是 | 选择任务、数据、target、模型和可选参数；接口版本为 `1` |
+| `task.yaml` | 用户 | 是 | 选择任务、数据、target、模型和可选参数；接口版本为字符串 `"1.0.0"` |
 | `dataset.yaml` | 用户，仅目录数据集需要 | 很少 | 把图像/IMU 文件映射为逻辑数据流 |
-| `*_initialization.yaml` | 用户，仅显式初值需要 | 按硬件维护 | 保存相机或 Camera–IMU 的物理 seed；接口版本为 `1` |
-| `calibration.yaml` | 程序 | 否 | 保存标定结果；结果接口版本为 `2`，不是 task v2 |
+| `*_initialization.yaml` | 用户，仅显式初值需要 | 按硬件维护 | 保存相机或 Camera–IMU 的物理 seed；接口版本为 `"1.0.0"` |
+| `calibration.yaml` | 程序 | 否 | 保存标定结果；结果接口版本为字符串 `"1.0.0"` |
 | `initialization_report.yaml` / `observability.yaml` | 程序，仅显式初值运行生成 | 否 | 记录初值应用情况和最终标定块可观性 |
 
 `config/` 提供三份可直接复制的简洁模板；字段合法性由 CLI 在运行前检查。详见
@@ -29,7 +29,7 @@
 双目相机标定的最简 task：
 
 ```yaml
-schema_version: 1
+schema_version: "1.0.0"
 job: camera_calibration
 dataset: {type: bag, path: /data/camera.bag}
 target: {path: aprilgrid.yaml}
@@ -42,7 +42,7 @@ calibration: {shuffle: false}
 双目 Camera–IMU 标定的最简 task：
 
 ```yaml
-schema_version: 1
+schema_version: "1.0.0"
 job: camera_imu_calibration
 dataset: {type: bag, path: /data/imu_camera_bag}
 target: {path: aprilgrid.yaml}
@@ -113,11 +113,12 @@ kalibr-noros calibrate cameras --config task.yaml --output-dir output \
 
 两类初始化 YAML 的全部字段、坐标变换方向、单位、相机模型向量长度、IMU 模型门控
 和分阶段行为见
-[`INITIALIZATION_ZH.md`](INITIALIZATION_ZH.md)。EuRoC 已按运行意图拆成
-[`euroc/`](../config/euroc/README_ZH.md)（无初值）、
-[`euroc_init/`](../config/euroc_init/README_ZH.md)（带正常初值）和
-[`euroc_bad_init/`](../config/euroc_bad_init/README_ZH.md)（坏初值测试）。后两者的
-task 已内嵌初值和 `refine`，正常运行不必再传初始化 CLI 参数。
+[`INITIALIZATION_ZH.md`](INITIALIZATION_ZH.md)。
+[`config/euroc/`](../config/euroc/README_ZH.md) 提供无初值配置；
+[`examples/v1.0.0/`](../examples/v1.0.0/README_ZH.md) 提供 `pinhole-equi` 的单目、
+双目和双目＋IMU 完整 task 及匹配初值模板。模板中的数值是教学占位值，默认未启用；
+先换成当前硬件的可信 seed，再启用完整 task 中已注释的 `initialization` 块。
+输入准备、验证和双目到 Camera–IMU 的运行顺序见初始化指南第 8 节。
 
 ## 3. 相机模型
 
@@ -190,19 +191,20 @@ dataset/
 ## 6. `dataset.yaml`
 
 ```yaml
-schema_version: 1
+schema_version: "1.0.0"
 type: kalibr_directory_dataset
+dataset_id: example_dataset
 
 cameras:
-  - topic: /cam0/image_raw
+  - id: cam0
     timestamps: cameras/cam0/timestamps.csv
     images: cameras/cam0/images
-  - topic: /cam1/image_raw
+  - id: cam1
     timestamps: cameras/cam1/timestamps.csv
     images: cameras/cam1/images
 
 imus:
-  - topic: /imu0
+  - id: imu0
     data: imu/imu0.csv
 ```
 
@@ -210,23 +212,23 @@ imus:
 
 | 字段 | 含义 |
 |---|---|
-| `schema_version` | 当前固定为整数 `1` |
+| `schema_version` | 当前固定为字符串 `"1.0.0"` |
 | `type` | 当前固定为 `kalibr_directory_dataset` |
-| `cameras[].topic` | 相机流的逻辑唯一键 |
+| `dataset_id` | 必填的稳定数据集身份 |
+| `cameras[].id`、`imus[].id` | 必填且互不重复的传感器 ID |
+| `cameras[].topic` | 可选的原话题元数据；目录任务通常不填写 |
 | `cameras[].timestamps` | 相机时间戳表，相对根目录 |
 | `cameras[].images` | 图像目录，相对根目录 |
-| `imus[].topic` | IMU 流的逻辑唯一键 |
+| `imus[].topic` | 可选的原话题元数据；目录任务通常不填写 |
 | `imus[].data` | IMU 表，相对根目录 |
 
-这里的 `topic` 不会连接 ROS，也不会订阅消息。保留它有三个目的：
+目录任务通过 `id` 选择上述条目，图像目录与 CSV 路径只在 manifest 中定义一次。
+相机任务使用 `id/model`，IMU task 使用 `id/path/model`，对应噪声 YAML 可省略
+`rostopic`。bag 任务仍要求相机 `topic` 和 IMU `rostopic`。
 
-1. 让原有 Kalibr 的 `--topics` 和 IMU YAML `rostopic` 可以无损复用；
-2. 在一个目录中区分多相机和 IMU 数据流；
-3. 让 ROS1、ROS2 和目录格式共享同一个上层读取接口。
-
-因此 task 中的 `cameras[].topic` 必须与相机条目的 `topic` 完全一致；IMU 配置
-YAML 中的 `rostopic` 必须与 IMU 条目的 `topic` 完全一致。所有相机与 IMU topic
-在同一个 manifest 中必须唯一。
+目录 manifest 的 `topic` 仅是可选元数据。若填写，必须非空且各流唯一；若目录任务
+仍显式填写 `topic` 或噪声 YAML 填写 `rostopic`，它必须与该 ID 的数据流一致，
+冲突时报错。省略时内部自动生成读取键，不需要用户配置 ROS。
 
 `timestamps`、`images` 和 `data` 只允许相对路径。绝对路径、`..` 越出数据集根
 目录以及解析后指向根目录之外的符号链接都会被拒绝。
@@ -248,8 +250,8 @@ timestamp_ns,filename
 - `timestamp_ns` 是区间 $[0,2^{63}-1]$ 内的十进制整数纳秒；
 - `filename` 相对于该相机的 `images` 目录；
 - 文件必须存在，同一个相机表内不能重复引用同一文件；
-- 行可不按时间排列，读取后执行稳定升序排序；
-- 允许重复时间戳，以保持与 bag 后端相同的时间语义。
+- 新目录数据的时间戳必须严格递增；
+- 重复或回退时间戳报错，不静默排序或清洗源数据。
 
 支持的实际格式由构建时 OpenCV 的 `imdecode` 编解码器决定。项目测试至少覆盖
 PNG、JPEG/JPG 和 BMP。读取彩色图时使用 OpenCV 的 BGR/BGRA 灰度转换；16 位
@@ -286,8 +288,8 @@ timestamp_ns,wx,wy,wz,ax,ay,az,temperature_c
 | `ax,ay,az` | m/s² |
 | `temperature_c` | °C |
 
-所有物理量必须是有限数，拒绝 `NaN` 和无穷值。行可不按时间排列，读取后执行
-稳定升序排序，重复时间戳允许。`temperature_c` 当前保存在中立 `ImuRecord` 中，
+所有物理量必须是有限数，拒绝 `NaN` 和无穷值。新目录数据的时间戳必须严格递增，
+重复或回退时间戳报错。`temperature_c` 当前保存在中立 `ImuRecord` 中，
 为后续温漂模型预留；原生 Kalibr 标定算法目前不会把温度加入残差或状态量。
 
 对于目录数据集，`record_timestamp_ns` 与 `header_timestamp_ns` 相等。因此启用
@@ -299,7 +301,7 @@ timestamp_ns,wx,wy,wz,ax,ay,az,temperature_c
 相机标定 task 的数据集段：
 
 ```yaml
-schema_version: 1
+schema_version: "1.0.0"
 job: camera_calibration
 
 dataset:
@@ -310,9 +312,9 @@ target:
   path: aprilgrid.yaml
 
 cameras:
-  - topic: /cam0/image_raw
+  - id: cam0
     model: pinhole-radtan5
-  - topic: /cam1/image_raw
+  - id: cam1
     model: pinhole-radtan5
 ```
 
@@ -330,9 +332,9 @@ kalibr-noros calibrate cameras \
 类型与实际输入不一致时立即报错，不需要把 ROS1、ROS2 或 directory 写入 task
 文件名。
 
-Camera–IMU task 同样只需把 `dataset.path` 指向目录，并确保其相机 topic 与
-camchain、IMU topic 与 IMU YAML 的 `rostopic` 对应；其余命令参数和输出文件均
-与 bag 输入一致。
+Camera–IMU task 同样将 `dataset.path` 指向目录。相机结果和 IMU task 中的传感器
+ID 必须对应 manifest；相机结果的原话题不会决定目录路径。程序读取相机结果的
+内外参，并在内部按当前目录 ID 生成读取键，不改写被引用的相机结果。
 
 AprilGrid 的标签若不是从 0 开始，可在 `target.path` 指向的 target YAML 中增加：
 

@@ -1,4 +1,4 @@
-# Kalibr no-ROS
+# Kalibr no-ROS v1.0.0
 
 ROS-free packaging of the native ETHZ-ASL Kalibr camera and camera–IMU
 calibration algorithms. The optimizer state machines, residual definitions,
@@ -69,6 +69,8 @@ kalibr-noros calibrate imu-camera
 kalibr-noros convert camera
 kalibr-noros convert job
 kalibr-noros reference verify
+kalibr-noros validate
+kalibr-noros evaluate
 ```
 
 Performance candidates can be archived and compared without rerunning the
@@ -86,7 +88,9 @@ kalibr-noros benchmark compare \
 See `docs/BENCHMARK_ZH.md` for the fixed inputs, parameter precedence and
 archive format.
 
-Calibration accepts a strict `schema_version: 1` task. The dataset type is
+Calibration accepts a strict `schema_version: "1.0.0"` task. Project datasets,
+initialization and result documents use the same version; historical project
+schemas are not accepted as runtime input. The dataset type is
 explicitly `bag` or `directory`; ROS1/ROS2 bag storage is detected internally:
 
 ```bash
@@ -98,7 +102,20 @@ kalibr-noros calibrate cameras \
 Both calibration commands support `--parallelism`,
 `--detector-processes`, `--optimizer-threads` and safe `--force` overrides.
 `--timing-json` is operational only in a `project-profile` build. Default
-outputs are `calibration.yaml`, `results.txt` and `report.pdf`.
+outputs include `calibration.yaml`, `metrics.json`, `assessment.json`,
+`results.txt`, `report.html`, `report.pdf`, `run_manifest.json` and
+`task_resolved.yaml`. Detailed observations and image visualizations can be
+enabled in an ordinary release build through the task's `output` block.
+
+Annotated and minimal `pinhole-equi` examples for mono, stereo and stereo–IMU
+calibration live in [`config/examples/v1.0.0`](config/examples/v1.0.0/README_ZH.md).
+The [v1.0.0 interface guide](docs/V1_INTERFACE_ZH.md) describes the capture
+contract, quality rules and offline report regeneration.
+
+Directory tasks select cameras by `id` from `dataset.yaml`; camera `topic`
+and IMU `rostopic` can be omitted. Bag tasks still require topics. See the
+[input and output file guide](docs/DATASET_WORKFLOW_ZH.md) for configuration
+dependencies and observation/visualization file meanings.
 
 Convert legacy arguments into a task without running calibration:
 
@@ -138,4 +155,4 @@ alpha/skew OpenCV fisheye conversion.
 [使用与配置指南](docs/USER_GUIDE_ZH.md)，源码原理见
 [源码深入导读](docs/SOURCE_CODE_DEEP_DIVE_ZH.md)，历史验证结果集中保存在
 [`docs/reports`](docs/reports)。可直接复制的最简配置见
-[`config/README_ZH.md`](config/README_ZH.md)。
+[`config/examples/v1.0.0/README_ZH.md`](config/examples/v1.0.0/README_ZH.md)。

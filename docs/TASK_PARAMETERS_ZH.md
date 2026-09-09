@@ -1,10 +1,9 @@
 # 标定 Task 参数与超参数完整说明
 
-本文基于当前 `docs/kalibr-native-v2.1` 分支源码，逐项说明
+本文基于 v1.0.0 接口源码，逐项说明
 `camera_calibration` 与 `camera_imu_calibration` task 中真正受支持的字段、默认值、
-CLI 映射、作用阶段、内部算法和有效范围。审计基准为提交
-`39b5b8280f347a68cecf5c1cfe437ae4c75f0877` 加当前工作区改动，日期为
-2026-08-26。
+CLI 映射、作用阶段、内部算法和有效范围。字段校验以当前 `validation.py`、
+`task.py`、`initialization.py` 和 `reporting.py` 为准。
 
 需要先区分六类配置：
 
@@ -28,10 +27,10 @@ CLI 映射、作用阶段、内部算法和有效范围。审计基准为提交
 
 ### 1.1 `camera_calibration`
 
-下面列出当前适配器认识的全部字段。实际任务不需要把默认值全部展开。
+以下列出求解参数和基本输出控制。完整输出、归档和评估配置见 [v1.0.0 接口](V1_INTERFACE_ZH.md) 及逐行注释示例。实际任务不需要把默认值全部展开。
 
 ```yaml
-schema_version: 1
+schema_version: "1.0.0"
 job: camera_calibration
 
 dataset:
@@ -60,6 +59,8 @@ calibration:
   remove_outliers: true
   final_filtering: true
   blake_zisserman: false
+
+output:
   verbose: false
   show_extraction: false
   export_poses: false
@@ -76,7 +77,7 @@ execution:
 ### 1.2 `camera_imu_calibration`
 
 ```yaml
-schema_version: 1
+schema_version: "1.0.0"
 job: camera_imu_calibration
 
 dataset:
@@ -105,6 +106,8 @@ calibration:
   calibrate_time_offset: true
   recover_covariance: false
   recompute_camera_chain_extrinsics: false
+
+output:
   verbose: false
   show_extraction: false
   extraction_stepping: false
@@ -128,12 +131,13 @@ execution:
 
 | 字段 | 类型与范围 | 作用 |
 |---|---|---|
-| `schema_version` | 整数，当前必须为 `1` | task 接口版本；不是结果 `calibration.yaml` 的版本 |
+| `schema_version` | 字符串，当前必须为 `"1.0.0"` | 与初始化和结果文档统一版本；由 `job`/`kind` 区分文档用途 |
 | `job` | `camera_calibration` 或 `camera_imu_calibration` | 选择任务及允许出现的顶层字段 |
 | `dataset` | mapping，必填 | 数据来源和数据裁剪参数 |
 | `target` | mapping，必填 | 标定板配置 |
 | `initialization` | mapping，可省略 | 独立物理初值文件与 `refine`/`direct` 策略 |
-| `calibration` | mapping，可省略 | 算法、诊断和结果显示参数 |
+| `calibration` | mapping，可省略 | 当前 job 支持的算法参数 |
+| `output` | mapping，可省略 | 日志、显示、观测归档、结果导出和评估控制；完整字段见 [v1.0.0 接口](V1_INTERFACE_ZH.md) |
 | `execution` | mapping，可省略 | 进程、线程、队列和 profiling 配置 |
 
 相机任务额外要求 `cameras`；Camera–IMU 任务额外要求 `camera_calibration` 和
@@ -149,7 +153,7 @@ initialization:
 
 | 字段 | 默认值 | 范围与路径语义 | 作用 |
 |---|---:|---|---|
-| `path` | 无，配置该块时必填 | 非空路径；task 内相对路径以 task YAML 所在目录为基准 | 选择与当前 job 匹配的 schema v1 物理 seed |
+| `path` | 无，配置该块时必填 | 非空路径；task 内相对路径以 task YAML 所在目录为基准 | 选择与当前 job 匹配的 schema 1.0.0 物理 seed |
 | `strategy` | `refine` | `refine` 或 `direct` | 控制 seed 是进入原生前置 refinement，还是直接跳过已完整提供的初值阶段 |
 
 CLI 的 `--initialization` 和 `--initialization-strategy` 分别覆盖对应字段；CLI seed
@@ -217,7 +221,7 @@ ID，不支持任意离散 ID 映射。其他 AprilTag family 留待后续版本
 
 ### 3.1 `cameras[]`
 
-每项必须包含 `topic` 和 `model`：
+bag 输入每项必须包含 `topic` 和 `model`：
 
 ```yaml
 cameras:
@@ -242,7 +246,10 @@ cameras:
 完整的 `intrinsics`/`distortion_coeffs` 参数顺序、投影公式和默认 active 阶段统一见
 [`CAMERA_MODELS_ZH.md`](CAMERA_MODELS_ZH.md)，该文档是模型参数表的权威来源。
 
-`id` 当前可以出现在条目中，但 task 适配器不会使用它；相机编号严格由列表顺序决定。
+`id` 可省略，默认按列表顺序使用 `cam0`、`cam1` 等编号；显式提供时必须与该顺序
+编号一致，否则在运行前报错。bag 的 topic 必须非空且互不重复。
+目录输入推荐仅写 `id/model`；省略 topic 时必须显式提供 id，通过 dataset.yaml
+定位相机目录和时间戳表。若同时填写 topic，则核验其与该 ID 的数据流一致。
 未配置 `initialization` 时，内参、畸变、每帧 target pose 和相邻相机 baseline 仍全部
 由原生路径自动初始化。配置后，`refine` 可给部分内参/畸变/baseline 并保留相应前置
 优化；相机 `direct` 要求每台相机内参和畸变、以及所有相邻 baseline 完整，然后跳过
@@ -262,9 +269,9 @@ cameras:
 | `window_half_size_px` | `2` px | 强制整数 `>= 1` | AprilGrid `cornerSubPix` 半窗口；实际搜索区域为 $(2w+1)\times(2w+1)$ |
 | `max_displacement_px` | $\sqrt{1.5}\approx1.224745$ px | 强制有限数 `> 0` | AprilGrid 亚像素角点相对原始检测的最大允许位移 |
 | `focal_initialization_min_visible_corner_ratio` | `1.0` | 强制有限数，范围 $(0,1]$ | 无显式内参初值时，筛选可进入 pinhole 焦距解析初始化的部分标定板观测；`1.0` 严格保持原生完整帧路径 |
-| `synchronization_tolerance_s` | `0.02` s | 当前未前置校验；算法上应 `>= 0` | 多相机观测近似同步、相机连接图和 baseline 初始化 |
-| `qr_tolerance` | `0.02` | 接受任意 float；**当前不生效** | 只生成 `--qr-tol`，解析后未写入线性求解器 |
-| `information_gain_tolerance` | `0.2` | 特殊值 `-1`；常规值建议 `>= 0` | 决定增量估计器是否保留新 target view |
+| `synchronization_tolerance_s` | `0.02` s | 强制有限数 `>= 0` | 多相机观测近似同步、相机连接图和 baseline 初始化 |
+| `qr_tolerance` | `0.02` | 接受任意有限 float；**当前不生效** | 只生成 `--qr-tol`，解析后未写入线性求解器 |
+| `information_gain_tolerance` | `0.2` | 强制有限数；仅接受特殊值 `-1` 或常规值 `>= 0` | 决定增量估计器是否保留新 target view |
 | `min_views_for_outlier_statistics` | `20` | 强制整数 `>= 1` | 决定何时开始建立重投影误差统计并删角点 |
 | `shuffle` | `true` | 布尔值 | 是否随机打乱 target view 的增量加入顺序 |
 | `remove_outliers` | `true` | 布尔值 | 是否运行显式 $4\sigma$ 角点删除流程 |
@@ -331,8 +338,8 @@ calibration:
   跨行覆盖范围、圆拟合条件和稳定圆交点，并使用中位数/MAD 排除焦距异常候选；
 - 已通过 `initialization` 提供 `intrinsics` 时，解析焦距初始化被跳过，因此该字段不
   影响该相机；
-- Camera–IMU task 读取既有相机标定，不重新执行相机焦距初始化；当前 task 解析器会忽略
-  该字段，但不应配置它。
+- Camera–IMU task 读取既有相机标定，不重新执行相机焦距初始化；在该 job 中配置
+  此字段会作为不支持的 `calibration` 字段报错。
 
 降低该值改变了可用于产生焦距初值的观测集合，只解决“没有完整帧导致无法产生 seed”
 的问题，不等价于改善数据可观性。它也不会改变后续单相机 LM、双目 baseline 初始化、
@@ -353,7 +360,7 @@ $$
 - 过大：不同真实时刻可能被错误合并，甚至同一相机向同一 view 写入两次；
 - 单目时一般保留默认值即可，因为不存在跨相机配对收益。
 
-当前 task 层未拒绝负值，但负值会让任何观测都无法与已有 view 合并，没有合理用途。
+task 层要求有限数且不小于零，负值会在运行前被拒绝。
 
 #### `information_gain_tolerance`
 
@@ -455,7 +462,7 @@ QR 分解、秩判断或标定结果。真正使用的 QR tolerance 仍由增量
 camera_calibration: {path: camchain.yaml}
 ```
 
-这里既接受原生 Kalibr camchain，也接受本项目 `schema_version: 2` 的相机标定结果。
+这里读取本项目 `schema_version: "1.0.0"` 的相机标定结果。原生格式需通过独立转换入口导入。
 它提供：
 
 - 每个相机的投影模型、内参、畸变和分辨率；
@@ -479,8 +486,12 @@ imus:
   - {path: imu.yaml, model: scale-misalignment}
 ```
 
-`path` 指向包含 topic、噪声密度、随机游走和采样率的原生 IMU YAML。第一个 IMU
-是参考 IMU。`id` 当前不参与编号，编号由列表顺序决定。
+`path` 指向包含 `schema_version: "1.0.0"`、噪声密度、随机游走和采样率的
+IMU YAML；`kind` 若提供，必须为 `imu_configuration`。第一个 IMU 是参考 IMU。
+bag 输入的 IMU YAML 必须填写 `rostopic`；目录输入可省略，按 task 的 IMU ID
+在 dataset.yaml 中查找 CSV。显式提供 rostopic 时会核验一致性。
+`id` 可省略，默认按列表顺序使用 `imu0`、`imu1` 等编号；显式提供时必须与该顺序
+编号一致，否则在运行前报错。
 
 | `model` | 额外参与联合优化的 IMU 参数 | 初始化 |
 |---|---|---|
@@ -500,9 +511,9 @@ imus:
 |---|---:|---|---|
 | `window_half_size_px` | `2` px | 强制整数 `>= 1` | Camera–IMU 重新检测 AprilGrid 时的 `cornerSubPix` 半窗口 |
 | `max_displacement_px` | $\sqrt{1.5}\approx1.224745$ px | 强制有限数 `> 0` | Camera–IMU 检测中亚像素角点允许偏离原始检测的最大距离 |
-| `max_iterations` | `30` | 当前只解析整数；算法上应 `>= 1` | 最终 Camera–IMU 联合 LM 的最大迭代数 |
-| `time_offset_padding_s` | `0.03` s | 当前未前置校验；启用时间标定时应 `> 0` | 扩展 pose spline，并预注册时间变化可能触及的 spline 系数 |
-| `reprojection_sigma_px` | `1.0` px | 当前未前置校验；物理和数值上必须 `> 0` | 所有相机重投影残差的协方差/权重 |
+| `max_iterations` | `30` | 强制整数 `>= 1` | 最终 Camera–IMU 联合 LM 的最大迭代数 |
+| `time_offset_padding_s` | `0.03` s | 强制有限数 `> 0` | 扩展 pose spline，并预注册时间变化可能触及的 spline 系数 |
+| `reprojection_sigma_px` | `1.0` px | 强制有限数 `> 0` | 所有相机重投影残差的协方差/权重 |
 | `synchronize_clocks` | `false` | 布尔值 | 数据读取预处理：拟合 header 时间到 record 时间的时钟映射 |
 | `estimate_multi_imu_delay` | `false` | 布尔值 | 非参考 IMU 与参考 IMU 的角速度模长互相关和连续微调 |
 | `calibrate_time_offset` | `true` | 布尔值 | Camera–IMU 时间偏移的互相关初值及联合优化开关 |
@@ -526,8 +537,8 @@ convergenceDeltaJ = 1e-2
 LM initial lambda = 10
 ```
 
-因此增大 `max_iterations` 只提高迭代上限，不保证实际运行更多轮。当前 task 层未拒绝
-零或负数；为避免 C++ 边界行为，只应使用正整数。
+因此增大 `max_iterations` 只提高迭代上限，不保证实际运行更多轮。task 层强制要求
+正整数，零、负数、浮点数或布尔值会在运行前被拒绝。
 
 #### `reprojection_sigma_px`
 
@@ -818,15 +829,14 @@ task 当前没有暴露底层 `--profile-optimizer`，也没有暴露 spline 阶
 
 ## 7. 参数校验现状与使用风险
 
-当前实现对 task 顶层字段和 `execution` 字段执行严格白名单检查；但是
-`calibration`、`dataset`、`target`、`cameras[]` 和 `imus[]` 尚未全部实行嵌套字段
-白名单与统一类型检查。这带来两个重要结果：
+当前实现对 task 顶层及 `execution`、`calibration`、`dataset`、`target`、
+`cameras[]`、`imus[]`、`output` 配置块执行字段白名单检查。拼错的字段以及只属于
+另一种 job 的算法字段会在运行前被拒绝；输出控制只能放在 `output` 中。
+布尔值、整数、有限数和合法范围按各字段校验，不会将字符串 `"false"` 当作布尔值。
+这不表示标定板参数、物理初值或数据运动已经足以完成求解。
 
-1. `calibration` 中拼错的未知字段可能被静默忽略；
-2. 部分数值虽然能通过 YAML 和 argparse，仍可能在更深的矩阵运算中失败。
-
-`initialization` 是例外：task 初值块和独立 seed YAML 都执行嵌套严格白名单、有限数、
-向量维数、齐次变换与模型门控校验。相机或 IMU 物理值是否足够接近真实设备，仍需要
+task 初值块和独立 seed YAML 还执行有限数、向量维数、齐次变换与模型门控校验。
+相机或 IMU 物理值是否足够接近真实设备，仍需要
 由最终 residual、`calibration.yaml` 与 seed 的人工差值，以及 `observability.yaml`
 判断；`initialization_report.yaml` 本身不直接计算物理参数变化量。
 

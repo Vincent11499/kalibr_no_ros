@@ -1,5 +1,6 @@
 import aslam_backend as aopt
 import kalibr_native_optimizer as native_runtime
+from kalibr_no_ros import artifacts as run_artifacts
 # kalibr-native-source-overlay
 import aslam_splines as asp
 from . import IccUtil as util
@@ -220,6 +221,9 @@ class IccCalibrator(object):
         optimizationFailed=False
         try:
             retval = native_runtime.run_optimizer(self.optimizer)
+            artifact_context = run_artifacts.current_context()
+            if artifact_context is not None:
+                artifact_context.record_optimizer(retval)
             if profileOptimizer:
                 self.optimizer.printTiming()
             if retval.linearSolverFailure:

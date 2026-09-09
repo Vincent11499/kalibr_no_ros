@@ -109,7 +109,9 @@ cmake --build --preset reference-release --parallel 4
 | `reference-test` | Reference 可适用测试 |
 
 普通发布路径禁止无条件打印大量日志、写中间图像或采集性能数据。新增计时、内存、
-调试打印和诊断文件应接入既有 profiling/diagnostic 编译开关，默认关闭。
+调试打印应接入既有 profiling/diagnostic 编译开关，默认关闭。
+v1.0.0 的观测归档、指标和报告属于正式输出能力，普通发布版可通过 `output` 配置
+开启；详细观测归档和原图可视化默认关闭，不依赖 profiling 构建。
 
 ## 6. 标定算法不变量
 
@@ -221,15 +223,16 @@ calibration:
 
 ## 8. Task、初始化和结果契约
 
-- camera task 与 Camera–IMU task 的 `schema_version` 当前固定为整数 `1`。
+- 软件包、CLI 和所有新生成项目文档的版本统一为 `1.0.0`；`schema_version` 必须
+  是字符串 `"1.0.0"`。旧项目 task、目录 manifest 和结果 schema 不再作为运行输入。
 - 两类 task 必须分开，不能把 `camera_calibration` 和
   `camera_imu_calibration` 混成一个 job。
-- 初始化文件也使用各自接口的 schema v1；`direct` 和 `refine` 的语义及完整性要求见
+- 初始化文件也使用字符串版本 `"1.0.0"`；`direct` 和 `refine` 的语义及完整性要求见
   `docs/INITIALIZATION_ZH.md`。
-- 程序输出 `calibration.yaml` 使用独立的结果 `schema_version: 2`。不要因为 task 是
-  v1 就把结果版本改成 1；这会破坏已有结果、benchmark 和下游读取。
-- Camera–IMU 的 `camera_calibration.path` 同时接受原生 Kalibr camchain 和项目结果
-  schema v2。
+- 程序输出 `calibration.yaml` 使用 `schema_version: "1.0.0"` 和
+  `kind: calibration_result`。历史文件及冻结基线不迁移、不改写。
+- Camera–IMU 的 `camera_calibration.path` 读取新版项目结果。原生 Kalibr/OpenCV
+  互操作通过独立转换入口或内部适配实现；冻结结果只允许在数值比较层读取。
 
 结果 YAML 排版是稳定接口的一部分：
 
@@ -247,11 +250,20 @@ calibration:
 calibration.yaml
 results.txt
 report.pdf
+report.html
+metrics.json
+assessment.json
+run_manifest.json
+task_resolved.yaml
 initialization_report.yaml   # 使用初值或产生相应诊断时
 observability.yaml           # 运行可观性分析时
 poses.csv                    # 显式请求时
 timing.json                  # profile 构建并显式请求时
 ```
+
+详细观测表、筛选历史、图像与 OpenCV 导出由 `output` 独立配置。`evaluate` 只能使用
+已有观测证据，禁止隐式重跑检测或优化；不可评估的指标不得写成 0 或判为通过。
+覆盖受管输出目录前，必须检查产物清单内的全部文件，禁止删除未登记的子文件。
 
 ## 9. 并行与数值一致性
 

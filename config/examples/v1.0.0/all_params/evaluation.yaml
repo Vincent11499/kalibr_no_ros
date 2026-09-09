@@ -1,0 +1,30 @@
+schema_version: "1.0.0" # 离线评价配置，与标定任务分开。
+kind: calibration_evaluation # 使用kalibr-noros evaluate，不调用优化器。
+output: # 只能改变后处理、可视化或判定，不改原运行目录。
+  archive_observations: true # 源运行必须已保存observations；新评价目录保留这些证据。
+  archive_selection_history: true # 保留源运行已保存的历史，无法事后补造未采集事件。
+  copy_used_images: false # 不复制原图；搬动数据后用--dataset指定新根。
+  export_opencv: true # 重新导出相机与双目校正参数，标定结果数值不变。
+  evaluation_pairing_tolerance_s: 0.0002 # 秒，>=0；Camera–IMU观测后处理配对，非优化参数。
+  visualizations: # 重绘必须有归档观测及可读取原始图像。
+    enabled: true # 输出角点/残差及校正图。
+    max_frames_per_camera: 30 # 每相机均匀采样上限，正整数。
+    max_pairs: 30 # 双目图对均匀采样上限，正整数。
+    sampling: uniform # 确定性采样，不影响总体指标。
+  rectification: # 改变校正设置需要从归档角点重算极线误差。
+    balance: 0.0 # 无量纲，[0,1]；fisheye视场平衡。
+    fov_scale: 1.0 # 无量纲，>0；校正视场倍率。
+    size: null # null使用源分辨率，或填写[宽,高]像素。
+  assessment: # 没有业务阈值时不自动给出产线合格结论。
+    reference_grading: true # 历史工具风格的参考等级，仅显示用途。
+    rules: [] # 默认not_evaluated；下方只是规则语法演示，阈值必须由业务确认。
+#   rules: # 如需正式规则，替换上方rules: []后再使用，不得保留重复键。
+#     - metric: cameras.cam0.reprojection.rms_px # 最终左目二维点距离RMS，单位像素。
+#       max: 0.5 # 示例上限，不是经过验证的产线标准。
+#       required: true # 缺少必要指标时给出incomplete，不自动放行。
+#     - metric: cameras.cam1.reprojection.rms_px # 双目右目同口径RMS。
+#       max: 0.5 # 示例上限；单目任务删除本条。
+#       required: true # 需要右目证据。
+#     - metric: stereo_pairs.cam0_cam1.alignment.mean_abs_px # 校正后共同角点平均绝对y差。
+#       max: 0.5 # 示例像素阈值；校正设置变化后必须重新评价。
+#       required: true # 无双目共同角点时不自动通过。

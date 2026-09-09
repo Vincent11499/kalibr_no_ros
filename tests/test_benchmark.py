@@ -26,7 +26,7 @@ class BenchmarkTest(unittest.TestCase):
             root = Path(directory)
             config = root / "task.yaml"
             config.write_text(
-                "schema_version: 1\n"
+                "schema_version: 1.0.0\n"
                 "job: camera_calibration\n"
                 "dataset: {type: bag, path: input.bag}\n"
                 "target: {path: target.yaml}\n"
@@ -55,7 +55,7 @@ class BenchmarkTest(unittest.TestCase):
             self._output(reference, 1.0)
             self._output(trial / "outputs", 1.0 + 1e-10)
             task = root / "task.yaml"
-            task.write_text("schema_version: 1\n", encoding="utf-8")
+            task.write_text("schema_version: 1.0.0\n", encoding="utf-8")
             timing = root / "timing.json"
             timing_document = {
                 "status": "ok",

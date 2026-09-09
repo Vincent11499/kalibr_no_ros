@@ -100,7 +100,7 @@ def main(argv=None):
 
     started = time.time()
     result = {
-        "schema_version": 1,
+        "schema_version": "1.0.0",
         "bag": arguments.bag,
         "started_unix_seconds": started,
         "topics": [

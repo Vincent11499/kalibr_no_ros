@@ -216,7 +216,7 @@ class NativeOptimizerRuntimeTest(unittest.TestCase):
             native_runtime.finish()
 
             document = json.loads(output.read_text())
-            self.assertEqual(document["schema_version"], 3)
+            self.assertEqual(document["schema_version"], "1.0.0")
             self.assertEqual(document["status"], "ok")
             self.assertEqual(document["command"], "kalibr_calibrate_cameras")
             categories = [stage["category"] for stage in document["stages"]]

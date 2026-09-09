@@ -10,7 +10,9 @@ import re
 import yaml
 
 
-INITIALIZATION_SCHEMA_VERSION = 1
+from .version import SCHEMA_VERSION
+
+INITIALIZATION_SCHEMA_VERSION = SCHEMA_VERSION
 INITIALIZATION_STRATEGIES = frozenset(("refine", "direct"))
 
 _JOB_KINDS = {
@@ -164,7 +166,7 @@ def _validate_header(document, expected_job):
     if expected_job not in _JOB_KINDS:
         raise InitializationError(
             "unsupported initialization job: {}".format(expected_job))
-    if (type(document.get("schema_version")) is not int
+    if (type(document.get("schema_version")) is not str
             or document.get("schema_version") != INITIALIZATION_SCHEMA_VERSION):
         raise InitializationError(
             "initialization schema_version must be {}".format(
@@ -615,7 +617,7 @@ def build_initialization_report(document, strategy, task, *, source_path,
             "freeze_intrinsics", False) is True
     )
     return {
-        "schema_version": 1,
+        "schema_version": SCHEMA_VERSION,
         "kind": "calibration_initialization_report",
         "job": task["job"],
         "status": "configured",

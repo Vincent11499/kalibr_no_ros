@@ -7,9 +7,8 @@
 
 需要先明确三个边界：
 
-1. task 接口和两类初始化文件的 `schema_version` 都是整数 `1`；程序输出的
-   `calibration.yaml` 仍是结果接口 `schema_version: 2`。`schema_version` 只在对应文件
-   类型/`kind` 内有意义，task v1、initialization v1 和 result v2 互不替代；
+1. task、初始化和标定结果的 `schema_version` 统一为字符串 `"1.0.0"`，
+   各文档通过 `job`/`kind` 区分语义，不接受旧项目整数版本；
 2. 只有显式配置初始化文件时才进入新路径；未配置时仍走原生 Kalibr 的自动初始化、
    优化活动集合和输出路径；
 3. 初值只能改善初始点，不能从缺少激励的数据中创造信息。显式初值运行会在最终状态
@@ -46,14 +45,14 @@ initialization: {path: camera_calibration_initialization.yaml}
 --initialization-strategy refine|direct
 ```
 
-例如：
+例如，完成第 8 节的输入和可信初值准备后，从复制后的示例目录运行：
 
 ```bash
 kalibr-noros calibrate cameras \
-  --config config/euroc/camera_calibration_task.yaml \
-  --output-dir /tmp/euroc_camera_seeded \
-  --initialization config/euroc_init/camera_calibration_initialization.yaml \
-  --initialization-strategy direct
+  --config all_params/stereo_camera_calibration_task_full.yaml \
+  --output-dir output/stereo \
+  --initialization initialization_stereo.yaml \
+  --initialization-strategy refine
 ```
 
 CLI 的 `--initialization` 相对路径以**执行命令时的当前目录**为基准。覆盖采用字段级
@@ -109,7 +108,7 @@ $$
 ### 3.1 文件结构
 
 ```yaml
-schema_version: 1
+schema_version: "1.0.0"
 kind: camera_calibration_initialization
 
 cameras:
@@ -127,8 +126,9 @@ cameras:
       - [0.0, 0.0, 0.0, 1.0]
 ```
 
-`cam0`、`cam1` 等编号严格对应 task 中 `cameras[]` 的列表顺序，不使用 topic 或可选
-`id` 做模糊匹配。对于第 $k$ 个相机，`T_cam_from_previous` 表示：
+`cam0`、`cam1` 等编号严格对应 task 中 `cameras[]` 的列表顺序。task 可省略 `id`，
+显式提供时必须与该顺序编号一致；初始化不通过 topic 重排相机。对于第 $k$ 个相机，
+`T_cam_from_previous` 表示：
 
 $$
 {}^{C_k}_{C_{k-1}}\mathbf T,
@@ -332,7 +332,7 @@ $\mathbf I,\mathbf D$。其相邻 baseline 默认也 fixed；只有
 Camera–IMU 初值与 camera task 的相机内参初值是两个独立文件类型：
 
 ```yaml
-schema_version: 1
+schema_version: "1.0.0"
 kind: camera_imu_calibration_initialization
 
 camera_imu:
@@ -691,40 +691,44 @@ target pose、bias spline 和重力等随时间或规范相关状态作为 nuisa
 必要时降低 IMU 模型维数。不要通过关闭秩诊断、增加 LM 迭代次数或把最终参数锁在 seed
 附近来掩盖信息不足。
 
-## 8. EuRoC 可运行示例
+## 8. v1.0.0 完整示例流程
 
-仓库提供两份与无初值 `config/euroc/` task 匹配的参考文件：
+[`config/examples/v1.0.0`](../config/examples/v1.0.0/README_ZH.md) 提供匹配的 task 与初始化模板：
 
-- [`camera_calibration_initialization.yaml`](../config/euroc_init/camera_calibration_initialization.yaml)：
-  双目 `pinhole-radtan5` 的完整内参、畸变和 baseline，可用于 camera `direct`；
-- [`camera_imu_calibration_initialization.yaml`](../config/euroc_init/camera_imu_calibration_initialization.yaml)：
-  cam0–IMU 外参、两相机时间偏移和 `scale-misalignment` IMU 参数。
+| 完整 task | 初始化模板 | 匹配模型 |
+|---|---|---|
+| [`all_params/mono_camera_calibration_task_full.yaml`](../config/examples/v1.0.0/all_params/mono_camera_calibration_task_full.yaml) | [`initialization_mono.yaml`](../config/examples/v1.0.0/initialization_mono.yaml) | 单目 `pinhole-equi` |
+| [`all_params/stereo_camera_calibration_task_full.yaml`](../config/examples/v1.0.0/all_params/stereo_camera_calibration_task_full.yaml) | [`initialization_stereo.yaml`](../config/examples/v1.0.0/initialization_stereo.yaml) | 双目 `pinhole-equi` |
+| [`all_params/camera_imu_calibration_task_full.yaml`](../config/examples/v1.0.0/all_params/camera_imu_calibration_task_full.yaml) | [`initialization_imu.yaml`](../config/examples/v1.0.0/initialization_imu.yaml) | 读取双目结果；IMU 为 `calibrated` |
 
-`config/euroc_init/` 中的 task 已选择这些初值并默认使用更安全的 `refine`。从仓库根
-目录运行时只需选择 task：
+先把整个示例目录复制到可写运行目录，保留 task 和 `` 的相对位置，并将
+`kalibr-noros` 加入 PATH。按示例 README 将 task 的
+`data/stereo_imu_YYMMDD_hhmm` 占位路径替换为真实新格式数据目录，核对 AprilGrid、
+IMU 噪声参数和话题。
+
+所有初始化默认未启用。模板中的 900 px 焦距、零畸变、100 mm baseline、单位
+Camera–IMU 变换和零 bias 是教学占位值。先替换为本次硬件的可信物理初值，再取消
+所需完整 task 顶层 `initialization` 的三行注释，保留 `strategy: refine`。
+`direct` 的使用仍须满足前文的完整性和可信度要求。
+
+从复制后的示例目录运行；单目与双目任务可按需求选择，Camera–IMU 任务需要先完成
+下面的双目标定：
 
 ```bash
-build/project-profile/bin/kalibr-noros calibrate cameras \
-  --config config/euroc_init/camera_calibration_task.yaml \
-  --output-dir /mnt/q/File/kalibr/data/euroc_cam/output_seeded_camera
+kalibr-noros validate --config all_params/mono_camera_calibration_task_full.yaml
+kalibr-noros calibrate cameras --config all_params/mono_camera_calibration_task_full.yaml --output-dir output/mono
 
-build/project-profile/bin/kalibr-noros calibrate imu-camera \
-  --config config/euroc_init/camera_imu_calibration_task.yaml \
-  --output-dir /mnt/q/File/kalibr/data/euroc_cam/output_seeded_imu_camera
+kalibr-noros validate --config all_params/stereo_camera_calibration_task_full.yaml
+kalibr-noros calibrate cameras --config all_params/stereo_camera_calibration_task_full.yaml --output-dir output/stereo
+
+kalibr-noros validate --config all_params/camera_imu_calibration_task_full.yaml
+kalibr-noros calibrate imu-camera --config all_params/camera_imu_calibration_task_full.yaml --output-dir output/imu
 ```
 
-相机和 IMU intrinsic 数值来自仓库已经冻结的 EuRoC 验证结果，重力方向来自同一次运行
-日志；bias 在既有结果格式中没有保存完整 spline，因此示例中的零 bias 只是格式占位，
-不是高质量物理初值。所以上面两份可直接运行的 task 都使用 `refine`。只有确认全部
-seed 来自同一硬件的可信历史结果后，才建议通过 task 或 CLI 改用 `direct`。这些
-seed 只适用于当前 EuRoC 示例及其配置，不应复制到不同镜头、不同 baseline 或不同
-IMU 的数据上。
+`all_params/camera_imu_calibration_task_full.yaml` 已引用 `../output/stereo/calibration.yaml`，与上面双目输出目录一致；
+更换输出目录时须同步修改该引用。每次运行使用新的输出目录保留既有记录。
+同一示例的 task 与 seed 使用一致的模型和相机顺序；这些等距畸变 seed 不能直接用于
+`config/euroc/` 的 `pinhole-radtan5` 相机任务。
 
-三个 EuRoC 配置目录的边界是：
-
-- `config/euroc/`：不带初值，保持原生自动初始化路径；
-- `config/euroc_init/`：正常或 `10%` 扰动初值，task 内置 `refine`；
-- `config/euroc_bad_init/`：差内参和大外参鲁棒性测试，task 内置 `refine`。
-
-CLI 参数仍可用于一次性覆盖，但日常运行不要求使用。相对初始化路径以 task YAML 所在
-目录为基准。
+也可以保留 task 中初始化块的注释，通过第 1.2 节的 CLI 参数一次性启用初值。
+task 内的相对初始化路径以 task YAML 所在目录为基准；CLI 相对路径以当前目录为基准。

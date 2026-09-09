@@ -2,8 +2,10 @@
 /install/
 /.deps/
 /Testing/
+/validation-runs/
 /.pytest_cache/
 __pycache__/
 *.py[cod]
 *.egg-info/
 /config/*
+!/config/examples/

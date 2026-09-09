@@ -1,6 +1,7 @@
 import pickle
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 import sys
 
@@ -40,8 +41,9 @@ class DirectoryIoTest(unittest.TestCase):
 
     def _write_manifest(self, cameras=None, imus=None):
         value = {
-            "schema_version": 1,
+            "schema_version": "1.0.0",
             "type": "kalibr_directory_dataset",
+            "dataset_id": "test-dataset",
         }
         if cameras is not None:
             value["cameras"] = cameras
@@ -52,13 +54,14 @@ class DirectoryIoTest(unittest.TestCase):
 
     def _camera_stream(self):
         return {
+            "id": "cam0",
             "topic": "/cam0/image_raw",
             "timestamps": "cameras/cam0/timestamps.csv",
             "images": "cameras/cam0/images",
         }
 
     def _imu_stream(self):
-        return {"topic": "/imu0", "data": "imu/imu0.csv"}
+        return {"id": "imu0", "topic": "/imu0", "data": "imu/imu0.csv"}
 
     def _write_images(self):
         color = np.zeros((6, 8, 3), dtype=np.uint8)
@@ -70,9 +73,9 @@ class DirectoryIoTest(unittest.TestCase):
         table = self.root / "cameras" / "cam0" / "timestamps.csv"
         table.write_text(
             "timestamp_ns,filename\n"
-            "3000000000,third.bmp\n"
             "1000000000,first.png\n"
-            "2000000000,second.jpg\n",
+            "2000000000,second.jpg\n"
+            "3000000000,third.bmp\n",
             encoding="utf-8",
         )
         return color
@@ -80,10 +83,33 @@ class DirectoryIoTest(unittest.TestCase):
     def _write_imu(self):
         (self.root / "imu" / "imu0.csv").write_text(
             "timestamp_ns,wx,wy,wz,ax,ay,az,temperature_c\n"
-            "3000000000,3,4,5,6,7,8,41.5\n"
-            "1000000000,1,2,3,4,5,6,\n",
+            "1000000000,1,2,3,4,5,6,\n"
+            "3000000000,3,4,5,6,7,8,41.5\n",
             encoding="utf-8",
         )
+
+    def test_id_only_manifest_reads_identical_images_timestamps_and_imu_values(self):
+        self._write_images()
+        self._write_imu()
+        camera, imu = self._camera_stream(), self._imu_stream()
+        self._write_manifest([camera], [imu])
+        before = DirectoryReader(self.root)
+        images = before.read_images(camera['topic'])
+        measurements = before.read_imu(imu['topic'])
+        del camera['topic'], imu['topic']
+        self._write_manifest([camera], [imu])
+        after = DirectoryReader(self.root)
+        self.assertEqual(after.sensor_topic('cam0', 'camera'), 'cam0')
+        self.assertEqual(after.sensor_topic('imu0', 'imu'), 'imu0')
+        for old, new in zip(images, after.read_images('cam0')):
+            self.assertEqual(old.header_timestamp_ns, new.header_timestamp_ns)
+            np.testing.assert_array_equal(old.image, new.image)
+        for old, new in zip(measurements, after.read_imu('imu0')):
+            self.assertEqual(old.header_timestamp_ns, new.header_timestamp_ns)
+            np.testing.assert_array_equal(old.angular_velocity, new.angular_velocity)
+            np.testing.assert_array_equal(old.linear_acceleration, new.linear_acceleration)
+        with self.assertRaisesRegex(DirectoryDatasetError, 'unknown imu id'):
+            after.sensor_topic('cam0', 'imu')
 
     def test_png_jpeg_bmp_manifest_imu_and_selection(self):
         original = self._write_images()
@@ -208,6 +234,7 @@ class DirectoryIoTest(unittest.TestCase):
             DirectoryReader(self.root)
 
         self._write_manifest([self._camera_stream()], [{
+            "id": "imu0",
             "topic": "/cam0/image_raw", "data": "imu/imu0.csv",
         }])
         self._write_imu()
@@ -243,7 +270,7 @@ class DirectoryIoTest(unittest.TestCase):
         with self.assertRaisesRegex(DirectoryDatasetError, "finite number"):
             DirectoryReader(self.root).read_imu("/imu0")
 
-    def test_duplicate_timestamps_are_stably_sorted_and_bad_image_is_lazy_error(self):
+    def test_unordered_timestamps_are_rejected_and_bad_image_is_lazy_error(self):
         (self.images / "first.png").write_bytes(b"not an image")
         valid = np.full((3, 4), 12, dtype=np.uint8)
         self.assertTrue(cv2.imwrite(str(self.images / "second.png"), valid))
@@ -257,15 +284,10 @@ class DirectoryIoTest(unittest.TestCase):
             encoding="utf-8",
         )
         self._write_manifest([self._camera_stream()], [])
+        with self.assertRaisesRegex(DirectoryDatasetError, "strictly increasing"):
+            DirectoryReader(self.root).index_images("/cam0/image_raw")
+        table.write_text("timestamp_ns,filename\n1000000000,second.png\n2000000000,first.png\n3000000000,third.png\n", encoding="utf-8")
         dataset = DirectoryReader(self.root).index_images("/cam0/image_raw")
-        self.assertEqual(
-            [item.header_timestamp_ns for item in dataset.index],
-            [1_000_000_000, 2_000_000_000, 2_000_000_000],
-        )
-        self.assertEqual(
-            [Path(item.path).name for item in dataset.index],
-            ["second.png", "first.png", "third.png"],
-        )
         with self.assertRaisesRegex(DirectoryDatasetError, "could not decode"):
             dataset.get_by_entry(dataset.index[1])
         with self.assertRaisesRegex(RuntimeError, "Could not find topic"):

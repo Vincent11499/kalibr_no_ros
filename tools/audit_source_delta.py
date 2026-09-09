@@ -41,18 +41,18 @@ ALLOWED_MODIFICATIONS = {
     "calibration/incremental_calibration_python/src/incremental_calibration/__init__.py": "remove rosbuild import",
     "calibration/incremental_calibration_python/src/LinearSolver.cpp": "read-only observability analysis binding",
     "calibration/incremental_calibration/src/algorithms/linalg.cpp": "rank-zero handling for fixed-intrinsics incremental calibration",
-    "calibration/kalibr/python/kalibr_calibrate_cameras": "ROS-free models/runtime, initialization, fixed-intrinsics and partial-visible focal initialization integration",
-    "calibration/kalibr/python/kalibr_calibrate_imu_camera": "ROS-free models/runtime integration",
+    "calibration/kalibr/python/kalibr_calibrate_cameras": "ROS-free models/runtime, initialization, fixed-intrinsics, partial-visible focal initialization, read-only final artifacts and filtering history",
+    "calibration/kalibr/python/kalibr_calibrate_imu_camera": "ROS-free models/runtime, read-only final artifacts and managed report delegation",
     "calibration/kalibr/python/kalibr_camera_validator": "configurable AprilGrid tag ID offset",
-    "calibration/kalibr/python/kalibr_camera_calibration/CameraCalibrator.py": "runtime, initialization, fixed-intrinsics activity policy and partial-visible focal initialization integration",
+    "calibration/kalibr/python/kalibr_camera_calibration/CameraCalibrator.py": "runtime, initialization schema 1.0.0, fixed-intrinsics activity policy, partial-visible focal initialization and incremental view decision records",
     "calibration/kalibr/python/kalibr_camera_calibration/CameraIntializers.py": "runtime integration",
     "calibration/kalibr/python/kalibr_camera_calibration/MulticamGraph.py": "igraph compatibility",
     "calibration/kalibr/python/kalibr_common/ImageDatasetReader.py": "ROS-free bag adapter",
     "calibration/kalibr/python/kalibr_common/ImuDatasetReader.py": "ROS-free bag adapter",
     "calibration/kalibr/python/kalibr_common/ConfigReader.py": "configurable AprilGrid tag ID offset",
-    "calibration/kalibr/python/kalibr_common/TargetExtractor.py": "bounded parallel detector",
-    "calibration/kalibr/python/kalibr_imu_camera_calibration/IccCalibrator.py": "runtime integration",
-    "calibration/kalibr/python/kalibr_imu_camera_calibration/IccSensors.py": "runtime integration",
+    "calibration/kalibr/python/kalibr_common/TargetExtractor.py": "bounded parallel detector and source-index observation records",
+    "calibration/kalibr/python/kalibr_imu_camera_calibration/IccCalibrator.py": "runtime integration and optimizer outcome snapshot",
+    "calibration/kalibr/python/kalibr_imu_camera_calibration/IccSensors.py": "runtime integration, initialization schema 1.0.0 and explicit camera/IMU measurement-to-residual records",
 }
 
 
@@ -109,7 +109,7 @@ def audit(root=ROOT):
             )
         )
     return {
-        "schema_version": 1,
+        "schema_version": "1.0.0",
         "relocated_unchanged": len(relocated),
         "approved_modifications": modified,
         "project_only_files": added,

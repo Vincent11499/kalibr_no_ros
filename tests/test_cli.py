@@ -85,7 +85,7 @@ class TaskCliTest(unittest.TestCase):
             self.assertEqual(code, 0)
             task = load_task(output, "camera_calibration")
             self.assertEqual(len(task["cameras"]), 2)
-            self.assertEqual(task["schema_version"], 1)
+            self.assertEqual(task["schema_version"], "1.0.0")
             self.assertEqual(task["dataset"]["type"], "bag")
             self.assertFalse(task["calibration"]["shuffle"])
             self.assertEqual(task["execution"], STANDARD_EXECUTION)
@@ -134,7 +134,7 @@ class TaskCliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "task.yaml"
             path.write_text(
-                "schema_version: 1\njob: camera_calibration\n"
+                "schema_version: 1.0.0\njob: camera_calibration\n"
                 "dataset: {type: bag, path: data.bag}\n"
                 "target: {path: target.yaml}\n"
                 "unexpected: true\n",
@@ -147,7 +147,7 @@ class TaskCliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "task.yaml"
             path.write_text(
-                "schema_version: 1\njob: camera_calibration\n"
+                "schema_version: 1.0.0\njob: camera_calibration\n"
                 "dataset: {type: directory, path: dataset}\n"
                 "target: {path: target.yaml}\n"
                 "cameras: [{topic: /cam0, model: pinhole-radtan5}]\n",
@@ -156,7 +156,7 @@ class TaskCliTest(unittest.TestCase):
             task = load_task(path)
             self.assertEqual(task["dataset"]["type"], "directory")
             path.write_text(
-                "schema_version: 1\njob: camera_calibration\n"
+                "schema_version: 1.0.0\njob: camera_calibration\n"
                 "dataset: {type: zip, path: dataset}\n"
                 "target: {path: target.yaml}\n"
                 "cameras: [{topic: /cam0, model: pinhole-radtan5}]\n",
@@ -169,7 +169,7 @@ class TaskCliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "task.yaml"
             path.write_text(
-                "schema_version: 1\njob: camera_calibration\n"
+                "schema_version: 1.0.0\njob: camera_calibration\n"
                 "dataset: {path: dataset}\n"
                 "target: {path: target.yaml}\n"
                 "cameras: [{topic: /cam0, model: pinhole-radtan5}]\n",
@@ -182,7 +182,7 @@ class TaskCliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "task.yaml"
             path.write_text(
-                "schema_version: 1\njob: camera_calibration\n"
+                "schema_version: 1.0.0\njob: camera_calibration\n"
                 "dataset: {type: bag, path: data.bag}\n"
                 "target: {path: target.yaml}\n"
                 "cameras: [{topic: /cam0, model: pinhole-radtan5}]\n"

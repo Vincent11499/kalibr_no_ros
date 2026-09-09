@@ -1,4 +1,4 @@
-# Kalibr no-ROS v2 源码深入导读
+# Kalibr no-ROS v1.0.0 源码深入导读
 
 本文面向希望真正理解本项目，而不只是会运行命令的工程人员。默认读者熟悉
 Python、C++、线性代数和最小二乘，但不要求预先掌握 Kalibr。
@@ -200,7 +200,7 @@ tools                      依赖、审计、比较和 benchmark 工具
 ### 2.2 总体数据流
 
 ```text
-task v1 YAML + 可选 initialization schema v1 YAML
+task 1.0.0 YAML + 可选 initialization schema 1.0.0 YAML
   |
   v
 kalibr-noros CLI
@@ -229,7 +229,7 @@ kalibr-noros CLI
 
 [`task.py`](../src/python/kalibr_no_ros/task.py) 的职责是适配，不是重新实现标定：
 
-1. 严格读取 `schema_version: 1`，并校验 `dataset.type`；
+1. 严格读取 `schema_version: "1.0.0"`，并校验 `dataset.type`；
 2. 若配置初值，由 `initialization.py` 按 job、相机模型和 IMU 模型严格校验，再生成
    只供内部阶段机读取的规范化临时 YAML；
 3. 把 task 字段转换成原生 CLI 参数；

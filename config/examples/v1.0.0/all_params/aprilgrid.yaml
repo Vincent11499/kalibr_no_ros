@@ -1,0 +1,8 @@
+schema_version: "1.0.0" # 项目配置版本，字符串；不是tag family版本。
+kind: calibration_target # 标定板配置，与task和result分别识别。
+target_type: aprilgrid # 原生AprilGrid，固定tag36h11。
+tagRows: 8 # 行数，正整数；此示例来自现有EVT3.1标定板参数。
+tagCols: 8 # 列数，正整数；理论角点数量为8×8×4=256。
+tagSize: 0.065 # 米，>0；实测单tag边长65mm，使用前核对实体板。
+tagSpacing: 0.3 # 无量纲，>=0；tag间空隙与tagSize之比，间隙19.5mm。
+tagStartId: 80 # 连续起始ID，>=0且80+8×8<=587；不支持离散ID或其他family。
