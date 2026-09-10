@@ -14,14 +14,13 @@
 
 #include <kalibr_no_ros/opencv_fisheye/CameraTypes.hpp>
 
-BOOST_CLASS_EXPORT_IMPLEMENT(
-    aslam::cameras::OpenCvFisheyePinholeCameraGeometry);
+BOOST_CLASS_EXPORT_IMPLEMENT(aslam::cameras::OpenCvFisheyeCameraGeometry);
 
 namespace bp = boost::python;
 using aslam::cameras::CameraGeometryBase;
+using aslam::cameras::OpenCvFisheyeCameraGeometry;
 using aslam::cameras::OpenCvFisheyeDistortion;
-using aslam::cameras::OpenCvFisheyePinholeCameraGeometry;
-using aslam::cameras::OpenCvFisheyePinholeProjection;
+using aslam::cameras::OpenCvFisheyeProjection;
 
 namespace {
 
@@ -58,33 +57,57 @@ bp::tuple undistortWithInputJacobian(
   return bp::make_tuple(point, jacobian);
 }
 
-Eigen::MatrixXd distortionParameterJacobian(
+Eigen::MatrixXd distortionCoefficientJacobian(
     OpenCvFisheyeDistortion* distortion, Eigen::Vector2d point) {
   Eigen::MatrixXd jacobian;
   distortion->distortParameterJacobian(point, jacobian);
   return jacobian;
 }
 
-Eigen::VectorXd project(OpenCvFisheyePinholeProjection* projection,
+Eigen::VectorXd project(OpenCvFisheyeProjection* projection,
                         const Eigen::Vector3d& point) {
   Eigen::VectorXd keypoint;
   projection->euclideanToKeypoint(point, keypoint);
   return keypoint;
 }
 
-bp::tuple projectWithJacobian(OpenCvFisheyePinholeProjection* projection,
+bp::tuple projectWithJacobian(OpenCvFisheyeProjection* projection,
                               const Eigen::Vector3d& point) {
   Eigen::VectorXd keypoint;
   Eigen::MatrixXd jacobian;
-  const bool valid = projection->euclideanToKeypoint(point, keypoint, jacobian);
+  const bool valid =
+      projection->euclideanToKeypoint(point, keypoint, jacobian);
   return bp::make_tuple(keypoint, jacobian, valid);
 }
 
-Eigen::Vector3d backProject(OpenCvFisheyePinholeProjection* projection,
+Eigen::Vector3d backProject(OpenCvFisheyeProjection* projection,
                             const Eigen::VectorXd& keypoint) {
   Eigen::Vector3d point;
   projection->keypointToEuclidean(keypoint, point);
   return point;
+}
+
+bp::tuple backProjectWithJacobian(OpenCvFisheyeProjection* projection,
+                                  const Eigen::VectorXd& keypoint) {
+  Eigen::Vector3d point;
+  Eigen::MatrixXd jacobian;
+  const bool valid =
+      projection->keypointToEuclidean(keypoint, point, jacobian);
+  return bp::make_tuple(point, jacobian, valid);
+}
+
+Eigen::MatrixXd projectionParameterJacobian(
+    OpenCvFisheyeProjection* projection, const Eigen::Vector3d& point) {
+  Eigen::MatrixXd jacobian;
+  projection->euclideanToKeypointIntrinsicsJacobian(point, jacobian);
+  return jacobian;
+}
+
+Eigen::MatrixXd distortionParameterJacobian(
+    OpenCvFisheyeProjection* projection, const Eigen::Vector3d& point) {
+  Eigen::MatrixXd jacobian;
+  projection->euclideanToKeypointDistortionJacobian(point, jacobian);
+  return jacobian;
 }
 
 void exportDistortion() {
@@ -98,7 +121,7 @@ void exportDistortion() {
       .def("distortWithInputJacobian", &distortWithInputJacobian)
       .def("undistort", &undistort)
       .def("undistortWithInputJacobian", &undistortWithInputJacobian)
-      .def("distortParameterJacobian", &distortionParameterJacobian)
+      .def("distortParameterJacobian", &distortionCoefficientJacobian)
       .def("getParameters", &getParameters<OpenCvFisheyeDistortion>)
       .def("setParameters", &OpenCvFisheyeDistortion::setParameters)
       .def("minimalDimensions", &OpenCvFisheyeDistortion::minimalDimensions)
@@ -109,40 +132,47 @@ void exportDistortion() {
 }
 
 void exportProjection() {
-  OpenCvFisheyePinholeProjection::distortion_t&
-      (OpenCvFisheyePinholeProjection::*distortion)() =
-          &OpenCvFisheyePinholeProjection::distortion;
-  bp::class_<OpenCvFisheyePinholeProjection,
-             boost::shared_ptr<OpenCvFisheyePinholeProjection> > cls(
-      "OpenCvFisheyePinholeProjection", bp::init<>());
+  OpenCvFisheyeProjection::distortion_t&
+      (OpenCvFisheyeProjection::*distortion)() =
+          &OpenCvFisheyeProjection::distortion;
+  bp::class_<OpenCvFisheyeProjection,
+             boost::shared_ptr<OpenCvFisheyeProjection> > cls(
+      "OpenCvFisheyeProjection", bp::init<>());
   sm::python::unique_register_ptr_to_python<
-      boost::shared_ptr<OpenCvFisheyePinholeProjection> >();
-  cls.def(bp::init<double, double, double, double, int, int,
+      boost::shared_ptr<OpenCvFisheyeProjection> >();
+  cls.def(bp::init<double, double, double, double, double, int, int,
                    OpenCvFisheyeDistortion>())
-      .def(bp::init<double, double, double, double, int, int>())
-      .def("fu", &OpenCvFisheyePinholeProjection::fu)
-      .def("fv", &OpenCvFisheyePinholeProjection::fv)
-      .def("cu", &OpenCvFisheyePinholeProjection::cu)
-      .def("cv", &OpenCvFisheyePinholeProjection::cv)
-      .def("ru", &OpenCvFisheyePinholeProjection::ru)
-      .def("rv", &OpenCvFisheyePinholeProjection::rv)
+      .def(bp::init<double, double, double, double, double, int, int>())
+      .def("fu", &OpenCvFisheyeProjection::fu)
+      .def("fv", &OpenCvFisheyeProjection::fv)
+      .def("cu", &OpenCvFisheyeProjection::cu)
+      .def("cv", &OpenCvFisheyeProjection::cv)
+      .def("alpha", &OpenCvFisheyeProjection::alpha)
+      .def("skew", &OpenCvFisheyeProjection::skew)
+      .def("ru", &OpenCvFisheyeProjection::ru)
+      .def("rv", &OpenCvFisheyeProjection::rv)
+      .def("getCameraMatrix", &OpenCvFisheyeProjection::getCameraMatrix)
       .def("distortion", distortion, bp::return_internal_reference<>())
-      .def("setDistortion", &OpenCvFisheyePinholeProjection::setDistortion)
-      .def("getParameters", &getParameters<OpenCvFisheyePinholeProjection>)
-      .def("setParameters", &OpenCvFisheyePinholeProjection::setParameters)
+      .def("setDistortion", &OpenCvFisheyeProjection::setDistortion)
+      .def("getParameters", &getParameters<OpenCvFisheyeProjection>)
+      .def("setParameters", &OpenCvFisheyeProjection::setParameters)
+      .def("minimalDimensions", &OpenCvFisheyeProjection::minimalDimensions)
       .def("euclideanToKeypoint", &project)
       .def("euclideanToKeypointJp", &projectWithJacobian)
-      .def("keypointToEuclidean", &backProject);
+      .def("keypointToEuclidean", &backProject)
+      .def("keypointToEuclideanJk", &backProjectWithJacobian)
+      .def("projectionParameterJacobian", &projectionParameterJacobian)
+      .def("distortionParameterJacobian", &distortionParameterJacobian);
 }
 
 void exportGeometry() {
-  using Geometry = OpenCvFisheyePinholeCameraGeometry;
+  using Geometry = OpenCvFisheyeCameraGeometry;
   Geometry::projection_t& (Geometry::*projection)() = &Geometry::projection;
   Geometry::shutter_t& (Geometry::*shutter)() = &Geometry::shutter;
   Geometry::mask_t& (Geometry::*mask)() = &Geometry::mask;
   bp::class_<Geometry, boost::shared_ptr<Geometry>,
              bp::bases<CameraGeometryBase> >(
-      "OpenCvFisheyePinholeCameraGeometry", bp::init<>())
+      "OpenCvFisheyeCameraGeometry", bp::init<>())
       .def(bp::init<Geometry::projection_t>())
       .def(bp::init<Geometry::projection_t, Geometry::shutter_t>())
       .def("projection", projection, bp::return_internal_reference<>())
@@ -150,7 +180,7 @@ void exportGeometry() {
       .def("mask", mask, bp::return_internal_reference<>())
       .def_pickle(sm::python::pickle_suite<Geometry>());
   sm::python::unique_register_ptr_to_python<boost::shared_ptr<Geometry> >();
-  aslam::python::exportFrame<Geometry>("OpenCvFisheyePinholeFrame");
+  aslam::python::exportFrame<Geometry>("OpenCvFisheyeFrame");
 }
 
 }  // namespace

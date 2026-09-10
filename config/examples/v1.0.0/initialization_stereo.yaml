@@ -7,7 +7,7 @@ cameras:
   cam1:
     intrinsics: [900.0, 900.0, 960.0, 540.0]
     distortion_coeffs: [0.0, 0.0, 0.0, 0.0]
-    T_cam_from_previous:
+    T_cn_cnm1:
       - [1.0, 0.0, 0.0, -0.1]
       - [0.0, 1.0, 0.0, 0.0]
       - [0.0, 0.0, 1.0, 0.0]

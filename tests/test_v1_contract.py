@@ -23,7 +23,7 @@ from kalibr_no_ros.task import (
     TaskError, dump_yaml, load_task, load_yaml, prepare_output_directory,
     require_document_version, resolve_initialization, run_task, write_run_manifest,
 )
-from kalibr_no_ros.validation import load_cameras, load_imu, load_target, validate_task
+from kalibr_no_ros.validation import load_cameras, load_imu, load_target, validate_options, validate_task
 
 
 class V1ContractTest(unittest.TestCase):
@@ -276,10 +276,11 @@ class V1ContractTest(unittest.TestCase):
         self.camera_imu_task()
         output = self.root / "existing_stereo"
         output.mkdir()
-        (self.root / "calibration.yaml").rename(output / "calibration.yaml")
+        (self.root / "calibration.yaml").rename(output / "camera_input.yaml")
         (output / "results.txt").write_text("previous stereo result\n", encoding="utf-8")
         write_run_manifest(output, status="completed")
-        self.task["camera_calibration"]["path"] = "existing_stereo/calibration.yaml"
+        self.task["camera_calibration"]["path"] = "existing_stereo/camera_input.yaml"
+        self.task["output"] = {"name": "camera_input"}
         self.write_inputs()
         before = self.tree_bytes(output)
         with mock.patch("kalibr_no_ros.task._run_legacy") as solver:
@@ -309,6 +310,7 @@ class V1ContractTest(unittest.TestCase):
         cli_seed_path = inputs / "cli_seed.yaml"
         dump_yaml(cli_seed, cli_seed_path)
         self.task["initialization"] = {"path": "configuration/task_seed.yaml", "strategy": "refine"}
+        self.task["output"] = {"save_diagnostics": True}
         self.write_inputs()
         task_bytes = self.task_path.read_bytes()
         output = self.root / "snapshot_run"
@@ -321,7 +323,7 @@ class V1ContractTest(unittest.TestCase):
                          initialization_strategy="direct", optimizer_threads=2)
         relocated = self.root / "relocated" / "task.yaml"
         relocated.parent.mkdir()
-        relocated.write_bytes((output / "task_resolved.yaml").read_bytes())
+        relocated.write_bytes((output / "camera_imu_calibration_cam0_imu0_failed/task_resolved.yaml").read_bytes())
         task = load_task(relocated)
         self.assertEqual(load_target(task), target)
         self.assertEqual(load_imu(task, task["imus"][0])["rostopic"], "/imu0")
@@ -457,19 +459,71 @@ class V1ContractTest(unittest.TestCase):
         dump_yaml(valid, path)
         self.assert_validation_failed("rostopic.*unique")
 
+    def test_camera_ids_select_one_named_directory_camera_and_reject_unsafe_ids(self):
+        self.manifest["cameras"][0]["id"] = "cam1"
+        self.task["cameras"][0]["id"] = "cam1"
+        self.write_inputs()
+        self.assertEqual(validate_task(self.task_path)["status"], "passed")
+        loaded = load_cameras(dict(self.task, _config_dir=str(self.root)))
+        self.assertEqual([camera["id"] for camera in loaded], ["cam1"])
+        for identifier in ("", "../cam1", "cam/1", "cam.1", True):
+            with self.subTest(identifier=identifier):
+                task = copy.deepcopy(self.task)
+                task["cameras"][0]["id"] = identifier
+                with self.assertRaisesRegex(TaskError, "safe camera ID"):
+                    validate_options(task)
+        task = copy.deepcopy(self.task)
+        task["cameras"].append(dict(task["cameras"][0], topic="/other"))
+        with self.assertRaisesRegex(TaskError, "unique safe camera ID"):
+            validate_options(task)
+
+    def test_camera_result_keeps_real_ids_and_validates_quality_summaries(self):
+        self.camera_imu_task()
+        path = self.root / "calibration.yaml"
+        result = load_yaml(path)
+        first = result["cameras"][0]
+        first.update(id="right", rms={"status": "available", "value": .25, "unit": "px", "count": 16})
+        second = copy.deepcopy(first)
+        second.update(id="left", rostopic="/cam1/image_raw", T_cn_cnm1=np.eye(4).tolist(),
+                      from_camera="right", alignment={"status": "unavailable", "reason": "no paired corners"})
+        result["cameras"].append(second)
+        dump_yaml(result, path)
+        task = dict(self.task, dataset={"type": "bag", "path": "unused.bag"}, _config_dir=str(self.root))
+        self.assertEqual([camera["id"] for camera in load_cameras(task)], ["right", "left"])
+        for field, value in (("id", "right"), ("from_camera", "missing"),
+                             ("rms", {"status": "available", "value": float("nan")}),
+                             ("alignment", {"status": "available", "rms": "0.1"}),
+                             ("alignment", {"status": "available", "count": True})):
+            with self.subTest(field=field):
+                invalid = copy.deepcopy(result)
+                invalid["cameras"][1][field] = value
+                dump_yaml(invalid, path)
+                with self.assertRaises(TaskError):
+                    load_cameras(task)
+
+    def test_camera_imu_without_result_path_needs_run_output_context(self):
+        self.camera_imu_task()
+        del self.task["camera_calibration"]
+        validate_options(self.task)
+        with self.assertRaisesRegex(TaskError, "standalone validation.*output directory"):
+            load_cameras(self.task)
+
     def test_run_task_rejects_bad_image_before_solver_and_records_input_failure(self):
         (self.dataset / "cam0/images/1.png").write_bytes(b"not an encoded image")
+        self.task["output"] = {"save_diagnostics": True}
+        self.write_inputs()
         output = self.root / "bad_image_run"
         with mock.patch("kalibr_no_ros.task._run_legacy") as solver:
             with self.assertRaisesRegex(TaskError, "input validation failed"):
                 run_task(self.root / "unused_prefix", self.task_path, output, "camera_calibration")
             solver.assert_not_called()
-        validation = json.loads((output / "validation.json").read_text(encoding="utf-8"))
-        manifest = json.loads((output / "run_manifest.json").read_text(encoding="utf-8"))
+        diagnostics = output / "camera_calibration_cam0_failed"
+        validation = json.loads((diagnostics / "validation.json").read_text(encoding="utf-8"))
+        manifest = json.loads((diagnostics / "run_manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(validation["status"], "failed")
         self.assertEqual(manifest["status"], "input_failed")
-        self.assertTrue((output / "task_resolved.yaml").is_file())
-        self.assertFalse((output / "calibration.yaml").exists())
+        self.assertTrue((diagnostics / "task_resolved.yaml").is_file())
+        self.assertFalse((output / "camera_calibration_cam0.yaml").exists())
 
     def test_camera_reader_preserves_all_supported_models_and_native_optional_fields(self):
         self.camera_imu_task()
@@ -562,14 +616,17 @@ os.write(2, b'native stderr restored\\n')
         previous_arguments, previous_directory = sys.argv, Path.cwd()
         with artifacts.run_context("outer") as outer:
             outer.artifacts["events"].append({"owner": "outer"})
-            with mock.patch.object(reporting, "generate_report") as generate:
+            summary = {"metrics": {"cameras": {"cam0": {"reprojection": {
+                "status": "unavailable", "count": 0, "rms_px": None,
+            }}}}}
+            with mock.patch.object(reporting, "generate_report", return_value=summary) as generate:
                 for index in range(2):
                     output = self.root / "output{}".format(index)
                     run_task(prefix, self.task_path, output, "camera_calibration")
                     self.assertIs(artifacts.current_context(), outer)
                     self.assertIs(sys.argv, previous_arguments)
                     self.assertEqual(Path.cwd(), previous_directory)
-                    self.assertEqual(load_yaml(output / "calibration.yaml")["schema_version"], "1.0.0")
+                    self.assertEqual(load_yaml(output / "camera_calibration_cam0.yaml")["schema_version"], "1.0.0")
                 self.assertEqual(generate.call_count, 2)
             self.assertEqual(outer.artifacts["events"], [{"owner": "outer"}])
         self.assertIsNone(artifacts.current_context())

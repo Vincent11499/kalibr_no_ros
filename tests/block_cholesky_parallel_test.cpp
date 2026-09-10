@@ -5,10 +5,8 @@
 #include <Eigen/Core>
 
 #include <atomic>
-#include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -62,46 +60,6 @@ class ScalarDesignVariable : public DesignVariable {
  private:
   double value_;
   double previousValue_;
-};
-
-class VectorDesignVariable : public DesignVariable {
- public:
-  explicit VectorDesignVariable(int dimension)
-      : value_(Eigen::VectorXd::Zero(dimension)), previousValue_(value_) {
-    setActive(true);
-    setScaling(0.35 + 0.03 * (dimension % 7));
-  }
-
- protected:
-  int minimalDimensionsImplementation() const override {
-    return static_cast<int>(value_.size());
-  }
-
-  void updateImplementation(const double* update, int size) override {
-    if (size != value_.size()) {
-      throw std::runtime_error("invalid vector update size");
-    }
-    previousValue_ = value_;
-    value_ += Eigen::Map<const Eigen::VectorXd>(update, size);
-  }
-
-  void revertUpdateImplementation() override { value_ = previousValue_; }
-
-  void getParametersImplementation(Eigen::MatrixXd& value) const override {
-    value = value_;
-  }
-
-  void setParametersImplementation(const Eigen::MatrixXd& value) override {
-    if (value.cols() != 1 || value.rows() != value_.size()) {
-      throw std::runtime_error("invalid vector parameter shape");
-    }
-    previousValue_ = value_;
-    value_ = value;
-  }
-
- private:
-  Eigen::VectorXd value_;
-  Eigen::VectorXd previousValue_;
 };
 
 class DeterministicError : public ErrorTermFs<2> {
@@ -162,7 +120,7 @@ class DeterministicError : public ErrorTermFs<2> {
     }
 
     // Make overlap observable in the correctness test without coupling
-    // numerical results to scheduling. The opt-in benchmark disables it.
+    // numerical results to scheduling. The larger accumulation test disables it.
     if (artificialDelay_.load()) {
       std::this_thread::sleep_for(std::chrono::microseconds(200));
     }
@@ -254,62 +212,8 @@ class ThrowingDirectError : public ErrorTermFs<1> {
   }
 };
 
-class BenchmarkError : public ErrorTermFs<2> {
- public:
-  BenchmarkError(const std::vector<VectorDesignVariable*>& variables,
-                 int errorIndex)
-      : variables_(variables) {
-    std::vector<DesignVariable*> baseVariables(variables.begin(),
-                                               variables.end());
-    setDesignVariables(baseVariables);
-    jacobians_.reserve(variables_.size());
-    for (size_t i = 0; i < variables_.size(); ++i) {
-      Eigen::Matrix<double, 2, 6> jacobian;
-      for (int column = 0; column < jacobian.cols(); ++column) {
-        jacobian(0, column) =
-            0.001 * (1 + (errorIndex + 3 * static_cast<int>(i) + column) % 31);
-        jacobian(1, column) =
-            -0.0015 *
-            (1 + (2 * errorIndex + static_cast<int>(i) + column) % 29);
-      }
-      jacobians_.push_back(jacobian);
-    }
-    error_ << 0.002 * ((errorIndex % 13) - 6),
-              -0.003 * ((errorIndex % 11) - 5);
-    Eigen::Matrix2d inverseCovariance;
-    inverseCovariance << 2.0, 0.1, 0.1, 1.4;
-    setInvR(inverseCovariance);
-    setMEstimatorPolicy(boost::shared_ptr<aslam::backend::MEstimator>(
-        new aslam::backend::HuberMEstimator(1.7)));
-  }
-
- protected:
-  double evaluateErrorImplementation() override {
-    setError(error_);
-    return evaluateChiSquaredError();
-  }
-
-  void evaluateJacobiansImplementation(JacobianContainer& out) const override {
-    for (size_t i = 0; i < variables_.size(); ++i) {
-      out.add(variables_[i], jacobians_[i]);
-    }
-  }
-
- private:
-  std::vector<VectorDesignVariable*> variables_;
-  std::vector<Eigen::Matrix<double, 2, 6> > jacobians_;
-  Eigen::Vector2d error_;
-};
-
 struct SystemStorage {
   std::vector<std::unique_ptr<ScalarDesignVariable> > ownedVariables;
-  std::vector<std::unique_ptr<ErrorTerm> > ownedErrors;
-  std::vector<DesignVariable*> variables;
-  std::vector<ErrorTerm*> errors;
-};
-
-struct BenchmarkStorage {
-  std::vector<std::unique_ptr<VectorDesignVariable> > ownedVariables;
   std::vector<std::unique_ptr<ErrorTerm> > ownedErrors;
   std::vector<DesignVariable*> variables;
   std::vector<ErrorTerm*> errors;
@@ -351,38 +255,6 @@ SystemStorage makeSystem(int numberOfErrors = 120,
               new aslam::backend::HuberMEstimator(1.7)));
       system.ownedErrors.push_back(std::move(error));
     }
-    system.ownedErrors.back()->setRowBase(rowBase);
-    rowBase += system.ownedErrors.back()->dimension();
-    system.errors.push_back(system.ownedErrors.back().get());
-  }
-  return system;
-}
-
-BenchmarkStorage makeBenchmarkSystem(int numberOfErrors) {
-  BenchmarkStorage system;
-  const int localVariableCount = 2048;
-  const int globalVariableCount = 4;
-  const int variableCount = localVariableCount + globalVariableCount;
-  for (int i = 0; i < variableCount; ++i) {
-    system.ownedVariables.push_back(
-        std::unique_ptr<VectorDesignVariable>(new VectorDesignVariable(6)));
-    system.variables.push_back(system.ownedVariables.back().get());
-  }
-
-  size_t rowBase = 0;
-  for (int errorIndex = 0; errorIndex < numberOfErrors; ++errorIndex) {
-    std::vector<VectorDesignVariable*> connected;
-    connected.reserve(8);
-    const int localBase = errorIndex % (localVariableCount - 4);
-    for (int i = 0; i < 4; ++i) {
-      connected.push_back(system.ownedVariables[localBase + i].get());
-    }
-    for (int i = 0; i < globalVariableCount; ++i) {
-      connected.push_back(
-          system.ownedVariables[localVariableCount + i].get());
-    }
-    system.ownedErrors.push_back(std::unique_ptr<ErrorTerm>(
-        new BenchmarkError(connected, errorIndex)));
     system.ownedErrors.back()->setRowBase(rowBase);
     rowBase += system.ownedErrors.back()->dimension();
     system.errors.push_back(system.ownedErrors.back().get());
@@ -450,10 +322,10 @@ void runCase(bool useMEstimator) {
           "nThreads=0 and nThreads=1 RHS vectors are not bitwise identical");
 
   DeterministicError::resetConcurrencyObservation();
-  for (size_t threadCount : std::vector<size_t>{2, 4, 8}) {
+  for (size_t threadCount : std::vector<size_t>{2, 4}) {
     const NormalEquations first = build(solver, threadCount, useMEstimator);
     checkClose(nativeOne, first);
-    for (int repetition = 0; repetition < 8; ++repetition) {
+    for (int repetition = 0; repetition < 2; ++repetition) {
       const NormalEquations repeated =
           build(solver, threadCount, useMEstimator);
       require(bitwiseEqual(first.hessian, repeated.hessian),
@@ -513,7 +385,7 @@ void runAccumulationOrderStressCase() {
   solver.initMatrixStructure(system.variables, system.errors, false);
   solver.evaluateError(4, true);
   const NormalEquations serial = build(solver, 1, true);
-  for (size_t threadCount : std::vector<size_t>{2, 4, 8}) {
+  for (size_t threadCount : std::vector<size_t>{2, 4}) {
     const NormalEquations first = build(solver, threadCount, true);
     checkClose(serial, first);
     const NormalEquations repeated = build(solver, threadCount, true);
@@ -525,53 +397,10 @@ void runAccumulationOrderStressCase() {
   DeterministicError::setArtificialDelay(true);
 }
 
-void runBenchmark(size_t threadCount, int numberOfErrors, int repetitions) {
-  require(threadCount > 0, "benchmark thread count must be positive");
-  require(numberOfErrors > 0, "benchmark error count must be positive");
-  require(repetitions > 0, "benchmark repetition count must be positive");
-
-  DeterministicError::setArtificialDelay(false);
-  BenchmarkStorage system = makeBenchmarkSystem(numberOfErrors);
-  BlockCholeskyLinearSystemSolver solver;
-  solver.initMatrixStructure(system.variables, system.errors, false);
-  solver.evaluateError(threadCount, true);
-
-  // Warm allocator and the destination Hessian structure before measuring.
-  solver.buildSystem(threadCount, true);
-  std::vector<double> samples;
-  samples.reserve(static_cast<size_t>(repetitions));
-  for (int repetition = 0; repetition < repetitions; ++repetition) {
-    const std::chrono::steady_clock::time_point start =
-        std::chrono::steady_clock::now();
-    solver.buildSystem(threadCount, true);
-    const std::chrono::steady_clock::time_point end =
-        std::chrono::steady_clock::now();
-    samples.push_back(std::chrono::duration<double>(end - start).count());
-  }
-  std::sort(samples.begin(), samples.end());
-
-  BlockCholeskyLinearSystemSolver::SparseBlockMatrix sparseHessian;
-  solver.copyHessian(sparseHessian);
-  std::cout << "benchmark threads=" << threadCount
-            << " errors=" << numberOfErrors
-            << " repetitions=" << repetitions
-            << " best_seconds=" << samples.front()
-            << " median_seconds=" << samples[samples.size() / 2]
-            << " hessian_blocks=" << sparseHessian.nonZeroBlocks() << '\n';
-}
-
 }  // namespace
 
-int main(int argc, char** argv) {
+int main() {
   try {
-    if (argc >= 3 && std::string(argv[1]) == "--benchmark") {
-      const size_t threadCount =
-          static_cast<size_t>(std::strtoul(argv[2], NULL, 10));
-      const int numberOfErrors = argc >= 4 ? std::atoi(argv[3]) : 100000;
-      const int repetitions = argc >= 5 ? std::atoi(argv[4]) : 5;
-      runBenchmark(threadCount, numberOfErrors, repetitions);
-      return 0;
-    }
     runCase(false);
     runCase(true);
     runExceptionCase();

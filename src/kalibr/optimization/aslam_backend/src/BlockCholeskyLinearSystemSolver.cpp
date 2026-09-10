@@ -3,7 +3,7 @@
 #include <sparse_block_matrix/linear_solver_spqr.h>
 #include <aslam/backend/ErrorTerm.hpp>
 #include <sm/PropertyTree.hpp>
-#include <sm/timing/Timer.hpp>
+#include <aslam/backend/Profiling.hpp>
 #include <boost/thread.hpp>
 #include <algorithm>
 #include <exception>
@@ -107,7 +107,7 @@ namespace aslam {
 
   void BlockCholeskyLinearSystemSolver::buildSystem(size_t nThreads, bool useMEstimator)
     {
-      sm::timing::Timer timer("BlockCholesky: build Hessian");
+      ProfilingTimer timer("BlockCholesky: build Hessian");
       _H._M.clear(false);
       _rhs.setZero();
 
@@ -181,7 +181,7 @@ namespace aslam {
 
     bool BlockCholeskyLinearSystemSolver::solveSystem(Eigen::VectorXd& outDx)
     {
-      sm::timing::Timer timer("BlockCholesky: factorize and solve");
+      ProfilingTimer timer("BlockCholesky: factorize and solve");
       if (_useDiagonalConditioner) {
         Eigen::VectorXd d = _diagonalConditioner.cwiseProduct(_diagonalConditioner);
         // Augment the diagonal

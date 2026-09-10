@@ -15,17 +15,17 @@
 namespace aslam {
 namespace cameras {
 
-/// The zero-skew subset of OpenCV's cv::fisheye four-coefficient model:
+/// OpenCV's cv::fisheye four-coefficient distortion block:
 /// D = [k1, k2, k3, k4].
 ///
-/// Kalibr's PinholeProjection supplies the normalized point [x/z, y/z].  This
-/// class applies OpenCV's theta polynomial with alpha/skew fixed to zero:
+/// The projection supplies the normalized point [x/z, y/z]. This class
+/// applies OpenCV's theta polynomial before the projection applies alpha/skew:
 ///   theta_d = theta * (1 + k1 theta^2 + ... + k4 theta^8)
 ///   [x_d, y_d] = theta_d / r * [x, y], theta = atan(r).
 ///
-/// The formula is the same as Kalibr's native equidistant model.  It is kept
-/// as an opt-in, separately named type so OpenCV FileStorage round-trips do
-/// not silently change the declared model.
+/// The forward formula matches Kalibr's native equidistant model. This
+/// distortion block preserves OpenCV's inverse convergence and failure
+/// behavior for the nine-parameter OpenCV fisheye projection.
 class OpenCvFisheyeDistortion {
  public:
   enum { IntrinsicsDimension = 4 };

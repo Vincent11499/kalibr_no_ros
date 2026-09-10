@@ -1,4 +1,3 @@
-import importlib.util
 import sys
 import tempfile
 import unittest
@@ -10,19 +9,8 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = (
-    ROOT
-    / "src"
-    / "camera_models"
-    / "opencv_fisheye"
-    / "python"
-    / "kalibr_opencv_fisheye"
-    / "yaml_io.py"
-)
-SPEC = importlib.util.spec_from_file_location("kalibr_opencv_yaml_test_module", MODULE_PATH)
-opencv_yaml = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = opencv_yaml
-SPEC.loader.exec_module(opencv_yaml)
+sys.path.insert(0, str(ROOT / "src/python"))
+from kalibr_no_ros import opencv_io as opencv_yaml
 
 
 class OpenCvYamlRoundTripTest(unittest.TestCase):
@@ -193,7 +181,7 @@ class OpenCvYamlRoundTripTest(unittest.TestCase):
         for index in range(2):
             key = "cam{}".format(index)
             self.assertEqual(restored[key]["camera_model"], "pinhole")
-            self.assertEqual(restored[key]["distortion_model"], "opencv_fisheye")
+            self.assertEqual(restored[key]["distortion_model"], "equidistant")
             np.testing.assert_allclose(restored[key]["intrinsics"], chain[key]["intrinsics"])
             np.testing.assert_allclose(
                 restored[key]["distortion_coeffs"], chain[key]["distortion_coeffs"]

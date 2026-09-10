@@ -2,84 +2,39 @@
   "version": 3,
   "cmakeMinimumRequired": {
     "major": 3,
-    "minor": 16,
+    "minor": 21,
     "patch": 0
   },
   "configurePresets": [
     {
-      "name": "base",
-      "hidden": true,
+      "name": "release",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/install/${presetName}",
         "KALIBR_USE_PRIVATE_DEPS": "ON",
-        "KALIBR_ENABLE_SOURCE_AUDIT": "ON"
-      }
-    },
-    {
-      "name": "project-release",
-      "inherits": "base",
-      "cacheVariables": {
-        "KALIBR_SOURCE_VARIANT": "project",
-        "KALIBR_ENABLE_TESTING": "OFF",
-        "KALIBR_ENABLE_PROFILING": "OFF",
-        "KALIBR_ENABLE_DIAGNOSTIC_IO": "OFF"
-      }
-    },
-    {
-      "name": "project-test",
-      "inherits": "project-release",
-      "cacheVariables": {
-        "KALIBR_ENABLE_TESTING": "ON"
+        "KALIBR_ENABLE_PROFILING": "OFF"
       }
     },
     {
       "name": "project-profile",
-      "inherits": "project-release",
+      "inherits": "release",
       "cacheVariables": {
-        "KALIBR_ENABLE_PROFILING": "ON",
-        "KALIBR_ENABLE_DIAGNOSTIC_IO": "ON"
-      }
-    },
-    {
-      "name": "reference-release",
-      "inherits": "base",
-      "cacheVariables": {
-        "KALIBR_SOURCE_VARIANT": "reference",
-        "KALIBR_ENABLE_TESTING": "OFF",
-        "KALIBR_ENABLE_PROFILING": "OFF",
-        "KALIBR_ENABLE_DIAGNOSTIC_IO": "OFF"
-      }
-    },
-    {
-      "name": "reference-test",
-      "inherits": "reference-release",
-      "cacheVariables": {
-        "KALIBR_ENABLE_TESTING": "ON"
+        "KALIBR_ENABLE_PROFILING": "ON"
       }
     }
   ],
   "buildPresets": [
-    {"name": "project-release", "configurePreset": "project-release", "jobs": 4},
-    {"name": "project-test", "configurePreset": "project-test", "jobs": 4},
-    {"name": "project-profile", "configurePreset": "project-profile", "jobs": 4},
-    {"name": "reference-release", "configurePreset": "reference-release", "jobs": 4},
-    {"name": "reference-test", "configurePreset": "reference-test", "jobs": 4}
-  ],
-  "testPresets": [
     {
-      "name": "project-test",
-      "configurePreset": "project-test",
-      "output": {"outputOnFailure": true},
-      "execution": {"jobs": 4}
+      "name": "release",
+      "configurePreset": "release",
+      "jobs": 4
     },
     {
-      "name": "reference-test",
-      "configurePreset": "reference-test",
-      "output": {"outputOnFailure": true},
-      "execution": {"jobs": 4}
+      "name": "project-profile",
+      "configurePreset": "project-profile",
+      "jobs": 4
     }
   ]
 }

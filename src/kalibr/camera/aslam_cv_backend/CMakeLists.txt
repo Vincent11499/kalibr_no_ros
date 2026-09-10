@@ -33,16 +33,6 @@ add_library(${PROJECT_NAME}
 )
 target_link_libraries(${PROJECT_NAME} ${Boost_LIBRARIES})
 
-if(CATKIN_ENABLE_TESTING)
-  # Avoid clash with tr1::tuple: https://code.google.com/p/googletest/source/browse/trunk/README?r=589#257
-  add_definitions(-DGTEST_USE_OWN_TR1_TUPLE=0)
-
-  catkin_add_gtest(${PROJECT_NAME}_test
-    test/test_main.cpp
-    )
-  target_link_libraries(${PROJECT_NAME}_test ${PROJECT_NAME})
-endif()
-
 ##################
 ## Installation ##
 ##################

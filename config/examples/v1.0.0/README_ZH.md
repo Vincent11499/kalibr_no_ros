@@ -52,17 +52,16 @@ tagSpacing 0.3、tagStartId 80。使用前核对实体板。IMU 参数沿用同�
 ```bash
 kalibr-noros --version
 kalibr-noros validate --config mono_camera_calibration_task.yaml
-kalibr-noros calibrate cameras --config mono_camera_calibration_task.yaml --output-dir output/mono
+kalibr-noros calibrate cameras --config mono_camera_calibration_task.yaml --output-dir output
 kalibr-noros validate --config all_params/stereo_camera_calibration_task_full.yaml
-kalibr-noros calibrate cameras --config all_params/stereo_camera_calibration_task_full.yaml --output-dir output/stereo
-kalibr-noros validate --config all_params/camera_imu_calibration_task_full.yaml
-kalibr-noros calibrate imu-camera --config all_params/camera_imu_calibration_task_full.yaml --output-dir output/imu
+kalibr-noros calibrate cameras --config all_params/stereo_camera_calibration_task_full.yaml --output-dir output
+kalibr-noros calibrate imu-camera --config all_params/camera_imu_calibration_task_full.yaml --output-dir output
 ```
 
-双目任务输出目录固定示范为根目录下的 `output/stereo`。最简 IMU task 使用
-`camera_calibration.path: output/stereo/calibration.yaml`，完整版使用
-`../output/stereo/calibration.yaml`，均与上述命令一致。
-如果换了输出目录，必须同时修改这个引用。IMU 任务要求相机结果的模型、尺寸、
+三个任务可以使用同一输出目录 `output`，结果按任务与相机 ID 命名。
+IMU task 省略 `camera_calibration`，运行时从输出目录查找唯一匹配双目/多目结果。
+有多个结果时填写显式路径；单独运行 `validate` 时也需要该路径，因为该命令没有输出目录上下文。
+IMU 任务要求相机结果的模型、尺寸、
 相机顺序和话题与本次数据匹配。完整／最简 task 是可替换方案，不必重复标定；
 应使用新的输出目录保留已有运行记录。
 

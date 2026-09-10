@@ -85,7 +85,7 @@ def _load_sensors_source():
         package_name: package,
         package_name + ".IccCalibrator": calibrator,
         package_name + ".IccUtil": util,
-        "kalibr_native_optimizer": types.ModuleType("kalibr_native_optimizer"),
+        "kalibr_runtime": types.ModuleType("kalibr_runtime"),
         "sm": sm,
         "aslam_cv": types.ModuleType("aslam_cv"),
         "aslam_cameras_april": types.ModuleType("aslam_cameras_april"),

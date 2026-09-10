@@ -1,7 +1,6 @@
 #ifndef ASLAM_BACKEND_COMPRESSED_COLUMN_MATRIX_HPP
 #define ASLAM_BACKEND_COMPRESSED_COLUMN_MATRIX_HPP
 
-#include <cs.h>
 #include "Cholmod.hpp"
 #include <vector>
 #include <Eigen/Core>

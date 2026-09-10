@@ -10,7 +10,6 @@ catkin_package(
   DEPENDS Boost
 )
 
-
 include_directories(include ${Boost_INCLUDE_DIRS})
 
 add_library(${PROJECT_NAME}

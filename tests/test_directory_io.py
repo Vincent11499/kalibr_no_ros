@@ -20,6 +20,7 @@ from kalibr_bag_io import (
     open_dataset,
 )
 from kalibr_no_ros.datasets import BagImageDatasetReader, BagImuDatasetReader
+from kalibr_no_ros.validation import validate_task
 
 
 class FakeTime:
@@ -87,6 +88,64 @@ class DirectoryIoTest(unittest.TestCase):
             "3000000000,3,4,5,6,7,8,41.5\n",
             encoding="utf-8",
         )
+
+    def test_calibration_validation_does_not_depend_on_capture_meta(self):
+        self._write_images()
+        self._write_imu()
+        camera, imu = self._camera_stream(), self._imu_stream()
+        del camera["topic"], imu["topic"]
+        self._write_manifest([camera], [imu])
+        common = {
+            "schema_version": "1.0.0", "kind": "calibration_task",
+            "dataset": {"type": "directory", "path": str(self.root)},
+            "target": {"type": "aprilgrid", "parameters": {
+                "tagRows": 3, "tagCols": 3, "tagSize": 0.04, "tagSpacing": 0.3,
+            }},
+        }
+        tasks = {
+            "camera": {**common, "job": "camera_calibration",
+                       "cameras": [{"id": "cam0", "model": "pinhole-equi"}]},
+            "camera_imu": {**common, "job": "camera_imu_calibration",
+                           "camera_calibration": {"path": "calibration.yaml"},
+                           "imus": [{"id": "imu0", "path": "imu.yaml", "model": "calibrated"}]},
+        }
+        documents = {
+            "calibration.yaml": {
+                "schema_version": "1.0.0", "kind": "calibration_result",
+                "calibration_type": "cameras", "cameras": [{
+                    "id": "cam0", "rostopic": "cam0", "camera_model": "pinhole",
+                    "distortion_model": "equidistant", "intrinsics": [7., 7., 4., 3.],
+                    "distortion_coeffs": [0., 0., 0., 0.], "resolution": [8, 6],
+                }],
+            },
+            "imu.yaml": {
+                "schema_version": "1.0.0", "kind": "imu_configuration",
+                "update_rate": 1., "accelerometer_noise_density": 0.01,
+                "accelerometer_random_walk": 0.001, "gyroscope_noise_density": 0.001,
+                "gyroscope_random_walk": 0.0001,
+            },
+            **{name + ".yaml": task for name, task in tasks.items()},
+        }
+        for name, document in documents.items():
+            (self.root.parent / name).write_text(yaml.safe_dump(document), encoding="utf-8")
+
+        meta = self.root / "meta"
+        self.assertFalse(meta.exists())
+        expected = {}
+        for name in tasks:
+            expected[name] = validate_task(self.root.parent / (name + ".yaml"))
+            self.assertEqual(expected[name]["status"], "passed", expected[name])
+            self.assertEqual(expected[name]["cameras"][0]["images"], 3)
+        self.assertEqual(expected["camera_imu"]["imus"][0]["samples"], 2)
+
+        meta.mkdir()
+        for name in ("capture_dataset.yaml", "session.json", "pairs.csv", "imu_full.jsonl",
+                     "validation.json"):
+            (meta / name).write_bytes(b"\xff\xfe invalid capture metadata\x00")
+        for name in tasks:
+            with self.subTest(job=name, capture_meta="corrupt"):
+                actual = validate_task(self.root.parent / (name + ".yaml"))
+                self.assertEqual(actual, expected[name])
 
     def test_id_only_manifest_reads_identical_images_timestamps_and_imu_values(self):
         self._write_images()

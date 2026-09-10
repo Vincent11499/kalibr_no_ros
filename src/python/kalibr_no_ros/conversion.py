@@ -1,76 +1,19 @@
 """Versioned public camera conversion around the existing numerical adapters."""
 
-from contextlib import contextmanager
-from functools import lru_cache
-import importlib.machinery
-import importlib.util
 from pathlib import Path
-import sys
 import tempfile
-import types
 
 from .task import TaskError, dump_yaml, load_yaml, require_document_version
 from .version import SCHEMA_VERSION, VERSION
 
 
-def _package_directory(package):
-    # Finding the package does not execute its native-binding __init__.py.
-    specification = importlib.machinery.PathFinder.find_spec(package)
-    if specification and specification.submodule_search_locations:
-        return Path(next(iter(specification.submodule_search_locations)))
-    source = Path(__file__).resolve().parents[2] / "camera_models/opencv_fisheye/python" / package
-    if source.is_dir():
-        return source
-    raise TaskError("camera converter package is unavailable: {}".format(package))
-
-
-def _load_module(name, path):
-    specification = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(specification)
-    sys.modules[name] = module
-    try:
-        specification.loader.exec_module(module)
-    except BaseException:
-        sys.modules.pop(name, None)
-        raise
-    return module
-
-
-@contextmanager
-def _module_alias(name, module):
-    previous = sys.modules.get(name)
-    sys.modules[name] = module
-    try:
-        yield
-    finally:
-        if previous is None:
-            sys.modules.pop(name, None)
-        else:
-            sys.modules[name] = previous
-
-
-@lru_cache(maxsize=2)
 def converter_modules(full_fisheye=False):
-    """Load pure YAML helpers while leaving native package imports untouched."""
-    zero_path = _package_directory("kalibr_opencv_fisheye")
-    zero_name = "kalibr_no_ros._conversion_zero"
-    zero = sys.modules.get(zero_name) or _load_module(zero_name, zero_path / "yaml_io.py")
-    if not full_fisheye:
-        return zero, zero
-    full_path = _package_directory("kalibr_opencv_fisheye_full")
-    private_name = "kalibr_no_ros._conversion_full"
-    private_package = types.ModuleType(private_name)
-    private_package.__path__ = [str(full_path)]
-    sys.modules[private_name] = private_package
-    # The full helper imports the zero-skew helper via its public package.
-    # Provide that one dependency for module loading, then restore the caller's
-    # package object; subsequent calibration may need its actual C++ bindings.
-    zero_package = types.ModuleType("kalibr_opencv_fisheye")
-    zero_package.yaml_io = zero
-    with _module_alias("kalibr_opencv_fisheye", zero_package):
-        full = _load_module(private_name + ".yaml_io", full_path / "yaml_io.py")
-    parser_module = _load_module(private_name + ".__main__", full_path / "__main__.py")
-    return full, parser_module
+    """Select pure Python OpenCV I/O without importing calibration bindings."""
+    if full_fisheye:
+        from . import opencv_fisheye_io as adapter
+    else:
+        from . import opencv_io as adapter
+    return adapter, adapter
 
 
 def _result_from_camchain(camchain):
@@ -81,13 +24,10 @@ def _result_from_camchain(camchain):
         if not isinstance(entry, dict):
             raise TaskError("converted camera IDs must be contiguous cam0..camN")
         camera = dict(entry)
-        if camera.get("camera_model") == "pinhole" and camera.get("distortion_model") == "opencv_fisheye":
-            camera["distortion_model"] = "equidistant"
         cameras.append(dict(id=key, **camera))
     return {
         "schema_version": SCHEMA_VERSION, "kind": "calibration_result",
         "calibration_type": "cameras",
-        "transform_convention": "p_target = T_target_source * p_source",
         "cameras": cameras,
     }
 
@@ -100,9 +40,10 @@ def _camchain_from_result(document):
     result = {}
     for index, camera in enumerate(cameras):
         key = "cam{}".format(index)
-        if not isinstance(camera, dict) or camera.get("id") != key:
-            raise TaskError("camera result IDs must be contiguous cam0..camN")
-        result[key] = {name: value for name, value in camera.items() if name != "id"}
+        if not isinstance(camera, dict) or not isinstance(camera.get("id"), str):
+            raise TaskError("camera result requires sensor IDs")
+        result[key] = {name: value for name, value in camera.items()
+                       if name not in {"id", "rms", "alignment", "from_camera"}}
     return result
 
 

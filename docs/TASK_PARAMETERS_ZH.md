@@ -122,8 +122,8 @@ execution:
   profiling_memory_sample_interval_s: 0.25
 ```
 
-以上两份“全部字段”示例有意不默认启用 `initialization`：未配置时保持原生自动初始化
-基线。要启用时在 task 顶层增加第 2.2 节的块，或使用同节所述 CLI 覆盖。
+以上两份“全部字段”示例默认不启用 `initialization`：未配置时保持原生自动初始化。
+要启用时在 task 顶层增加第 2.2 节的块，或使用同节所述 CLI 覆盖。
 
 ## 2. 公共 task 字段
 
@@ -140,7 +140,9 @@ execution:
 | `output` | mapping，可省略 | 日志、显示、观测归档、结果导出和评估控制；完整字段见 [v1.0.0 接口](V1_INTERFACE_ZH.md) |
 | `execution` | mapping，可省略 | 进程、线程、队列和 profiling 配置 |
 
-相机任务额外要求 `cameras`；Camera–IMU 任务额外要求 `camera_calibration` 和
+相机任务额外要求 `cameras`；Camera–IMU 任务可以省略 `camera_calibration`，运行时先从
+`--output-dir` 查找唯一匹配的双目/多目结果；没有或存在多个候选时须显式填写路径。
+单独运行 `validate` 没有输出目录上下文，需要显式路径。Camera–IMU 还要求
 `imus`。顶层未知字段会被拒绝。
 
 ### 2.2 `initialization`
@@ -331,7 +333,7 @@ calibration:
   focal_initialization_min_visible_corner_ratio: 0.75
 ```
 
-- 字段省略或设为 `1.0`：直接调用冻结 ETHZ 的完整标定板实现，保持原生运算顺序和
+- 字段省略或设为 `1.0`：直接调用原生完整标定板实现，保持原生运算顺序和
   数值行为；
 - 小于 `1.0`：启用部分可见扩展，先按上述全局比例筛帧；
 - 全局比例只是第一道门槛。内部还固定要求足够的行内角点数、角点跨度、有效行数、
@@ -394,7 +396,7 @@ $$
 最终保留集合和浮点路径。
 
 - `true`：ETHZ 原生默认行为；不同运行可能产生不同插入顺序；
-- `false`：按数据库时间顺序处理，适合作为数值回归和 benchmark 基线。
+- `false`：按数据库时间顺序处理，便于复现视图选择。
 
 #### `remove_outliers`、`min_views_for_outlier_statistics` 与 `final_filtering`
 
@@ -429,8 +431,7 @@ $$
 使用二维误差，内部默认 `pCut=0.999`、`wCut=1e-6`；task 只暴露开关，不暴露这两个
 参数。它与上面的显式 $4\sigma$ 删除是两套独立机制，可以同时启用。
 
-该模式会改变目标函数权重，不能只视为性能选项。当前冻结数值基线使用
-`blake_zisserman: false`。
+该模式会改变目标函数权重，不能只视为性能选项。默认 `blake_zisserman: false`。
 
 #### `qr_tolerance` 的当前真实状态
 
@@ -686,7 +687,7 @@ helper group，不会出现在当前打印的标定 covariance 中。恢复过�
 |---|---:|---|---|
 | `verbose` | `false` | Debug 日志，并自动打开 extraction 显示 | 关闭多进程检测，需要 GUI，I/O 很多 |
 | `show_extraction` | `false` | 显示角点检测和重投影视图 | 关闭多进程检测 |
-| `extraction_stepping` | `false` | 每帧等待用户单步确认 | 关闭多进程检测，不适合 benchmark |
+| `extraction_stepping` | `false` | 每帧等待用户单步确认 | 关闭多进程检测，需人工操作 |
 | `export_poses` | `false` | 输出优化轨迹到 `poses.csv` | 只增加结果序列化 |
 | `interactive_report` | `false` | 标定后打开报告窗口 | `false` 仍生成 `report.pdf` |
 
@@ -704,8 +705,9 @@ helper group，不会出现在当前打印的标定 covariance 中。恢复过�
 | `profiling_memory_sample_interval_s` | `0.25` s | 有限正数 | 进程树 RSS/PSS 采样周期；只影响测量精度和少量开销 |
 
 普通 `calibrate` 不指定 detector/optimizer 时，不会自动注入 4/4，而是保留原生各阶段
-默认值。`benchmark run` 为了形成可比较归档，会把缺失值固定为标准执行配置 4/4、
-inflight 2、OpenCV 1、memory interval 0.25 s。
+默认值。需要固定预算时，建议显式设置 detector=4、optimizer=4。
+内存采样仅在 `project-profile` 且显式请求计时时启用；`release` 可读取相同任务，
+但不转发采样参数，也不暴露性能诊断 CLI 选项。
 
 ### 5.2 优先级
 
@@ -787,6 +789,7 @@ CLI 只覆盖易变的执行资源参数，并额外控制：
 | `--initialization-strategy` | 字段级覆盖 task 策略，只能为 `refine` 或 `direct` |
 | `--parallelism` 及组件并行参数 | 按第 5.2 节优先级覆盖 task `execution` |
 | `--timing-json` | 仅 `project-profile` 构建可用；输出结构化阶段计时 |
+| `--memory-sample-interval` | 仅 `project-profile` 构建可用；覆盖内存采样周期，单位 s |
 
 `kalibr-noros convert job` 只是从旧式参数快速生成 task 的迁移工具，它只暴露常用字段，
 不能用它的 help 判断 task 的完整能力。
@@ -837,7 +840,7 @@ task 当前没有暴露底层 `--profile-optimizer`，也没有暴露 spline 阶
 
 task 初值块和独立 seed YAML 还执行有限数、向量维数、齐次变换与模型门控校验。
 相机或 IMU 物理值是否足够接近真实设备，仍需要
-由最终 residual、`calibration.yaml` 与 seed 的人工差值，以及 `observability.yaml`
+由最终 residual、具名标定结果 YAML 与 seed 的人工差值，以及可选 `observability.yaml`
 判断；`initialization_report.yaml` 本身不直接计算物理参数变化量。
 
 因此现阶段应只使用本文列出的字段，并坚持：
@@ -845,14 +848,12 @@ task 初值块和独立 seed YAML 还执行有限数、向量维数、齐次变�
 - 布尔字段写 YAML 原生 `true`/`false`，不要写字符串 `"false"`；
 - 秒、像素 sigma、频率等物理量使用有限正数；
 - `max_iterations` 和所有并行数使用正整数；
-- benchmark 归档必须保存 effective task，避免把“省略默认值”和“显式固定值”混为
-  一组；
-- 修改任何会改变视图集合、残差权重或 active design variable 的字段后，都必须重新
-  做数值一致性比较。
+- 需要复现运行时，保留输出中的 `task_resolved.yaml` 与输入文件；
+- 修改视图集合、残差权重或活动参数后，重新检查指标、可观性与参数物理合理性。
 
-## 8. 哪些字段会直接破坏与冻结基线的可比性
+## 8. 会改变标定问题的字段
 
-下列字段改变数据、状态量、残差或增量加入路径，不能与原有结果只做耗时比较：
+下列字段改变数据、状态量、残差或增量加入路径，调整后应重新评估标定结果：
 
 ```text
 dataset.time_range_s
@@ -881,13 +882,13 @@ initialization.path 中的任一物理 seed
 initialization.strategy
 ```
 
-`recover_covariance` 不应改变最终最优点，但会增加后处理求解、耗时和内存；只比较
-solver 主结果时可以分开统计。`detector_processes` 和 `optimizer_threads` 保持数学
-问题不变，但不同并行归约顺序可能带来浮点末位差异，仍应使用既定 atol/rtol 验证。
+`recover_covariance` 不应改变最终最优点，但会增加后处理求解、耗时和内存。
+`detector_processes` 和 `optimizer_threads` 保持数学问题不变；不同并行归约顺序
+可能带来浮点末位差异。
 
 ## 9. 源码对应位置
 
-本报告的主要事实可从以下文件复核：
+本文的参数行为可从以下文件复核：
 
 - task 校验、字段到 CLI 的映射和执行优先级：
   `src/python/kalibr_no_ros/task.py`；
@@ -909,6 +910,6 @@ solver 主结果时可以分开统计。`detector_processes` 和 `optimizer_thre
   `src/kalibr/calibration/kalibr/python/kalibr_imu_camera_calibration/IccSensors.py`；
 - Camera–IMU 最终 LM 与 covariance 范围：
   `src/kalibr/calibration/kalibr/python/kalibr_imu_camera_calibration/IccCalibrator.py`；
-- 并行覆盖和 profiling：`src/python/kalibr_native_optimizer/runtime.py`；
+- 并行覆盖和 profiling：`src/python/kalibr_runtime/runtime.py`；
 - 多进程图像读取、解码、检测和有界队列：
   `src/kalibr/calibration/kalibr/python/kalibr_common/TargetExtractor.py`。

@@ -1,7 +1,7 @@
 """Configuration and input validation without detection or optimization."""
 
-from pathlib import Path
 import math
+import re
 
 from kalibr_bag_io import open_dataset, DirectoryReader
 from .version import SCHEMA_VERSION
@@ -34,6 +34,37 @@ def _input_path(block, label):
     if not isinstance(path, str) or not path.strip():
         raise TaskError("{}.path must be a non-empty string".format(label))
     return path
+
+
+def _camera_id(value, seen, label):
+    if (not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", value)
+            or value in seen):
+        raise TaskError("{} must be a unique safe camera ID (letters, digits, '_' or '-')".format(label))
+    seen.add(value)
+
+
+def _quality_summary(value, label, rms=False):
+    if value is None:
+        return
+    if type(value) in (int, float):
+        if not math.isfinite(value) or value < 0:
+            raise TaskError(label + ' must be a nonnegative finite pixel RMS or null')
+        return
+    numeric = {"value"} if rms else {"mean", "std", "min", "max", "median", "p95", "rms", "rms_px", "mean_abs_px"}
+    _fields(value, {"status", "count", "unit", "reason"} | numeric, label)
+    if value.get("status") not in ("available", "unavailable"):
+        raise TaskError("{}.status must be available or unavailable".format(label))
+    if "count" in value and (type(value["count"]) is not int or value["count"] < 0):
+        raise TaskError("{}.count must be a non-negative integer".format(label))
+    if "unit" in value and value["unit"] != "px":
+        raise TaskError("{}.unit must be px".format(label))
+    if "reason" in value and not isinstance(value["reason"], str):
+        raise TaskError("{}.reason must be a string".format(label))
+    for name in numeric & set(value):
+        if value[name] is not None:
+            _positive(value[name], label + "." + name, zero=True)
+    if rms and value["status"] == "available" and value.get("value") is None:
+        raise TaskError("{}.value is required when available".format(label))
 
 
 def validate_options(task):
@@ -89,10 +120,10 @@ def validate_options(task):
     resolve_execution(task.get("execution"))
     if task["job"] == "camera_calibration":
         topics = set()
+        camera_ids = set()
         for index, camera in enumerate(task["cameras"]):
             _fields(camera, {"id", "topic", "model"}, "cameras[{}]".format(index))
-            if camera.get("id", "cam{}".format(index)) != "cam{}".format(index):
-                raise TaskError("camera IDs must follow the task order cam0..camN")
+            _camera_id(camera.get("id", "cam{}".format(index)), camera_ids, "cameras[{}].id".format(index))
             topic = camera.get("topic")
             directory = dataset["type"] == "directory"
             if directory and "topic" not in camera and "id" not in camera:
@@ -103,7 +134,8 @@ def validate_options(task):
                 raise TaskError("unsupported camera model: {}".format(camera.get("model")))
             topics.add(topic)
     else:
-        _input_path(task.get("camera_calibration"), "camera_calibration")
+        if "camera_calibration" in task:
+            _input_path(task["camera_calibration"], "camera_calibration")
         for index, imu in enumerate(task["imus"]):
             _fields(imu, {"id", "path", "model"}, "imus")
             if imu.get("id", "imu{}".format(index)) != "imu{}".format(index):
@@ -193,7 +225,9 @@ def load_cameras(task):
             return [dict(camera, topic=reader.sensor_topic(camera.get("id", "cam{}".format(index)), "camera", camera.get("topic")))
                     for index, camera in enumerate(task["cameras"])]
         return task["cameras"]
-    path = _input_path(task.get("camera_calibration"), "camera_calibration")
+    if "camera_calibration" not in task:
+        raise TaskError("camera_calibration.path is required for standalone validation; calibrate imu-camera can discover a camera result in its output directory")
+    path = _input_path(task["camera_calibration"], "camera_calibration")
     value = load_yaml(resolve_task_path(task, path))
     require_document_version(value, "camera calibration", "calibration_result")
     _fields(value, {"schema_version", "kind", "calibration_type", "transform_convention", "cameras", "imus"}, "camera calibration result")
@@ -207,18 +241,21 @@ def load_cameras(task):
     if not isinstance(cameras, list) or not cameras:
         raise TaskError("camera calibration contains no cameras")
     topics = set()
+    camera_ids = set()
     for index, camera in enumerate(cameras):
         _fields(camera, {"id", "camera_model", "distortion_model", "intrinsics", "distortion_coeffs",
                          "resolution", "rostopic", "T_cn_cnm1", "T_cam_imu", "timeshift_cam_imu",
-                         "cam_overlaps", "line_delay"}, "camera result entry")
-        if camera.get("id") != "cam{}".format(index):
-            raise TaskError("camera result IDs must be contiguous cam0..camN")
+                         "cam_overlaps", "line_delay", "from_camera", "rms", "alignment"}, "camera result entry")
+        _camera_id(camera.get("id"), camera_ids, "camera result id")
+        for name in ("rms", "alignment"):
+            if name in camera:
+                _quality_summary(camera[name], "camera result " + name, rms=name == "rms")
         projection = camera.get("camera_model")
         distortion = camera.get("distortion_model")
         if not isinstance(projection, str) or not isinstance(distortion, str):
             raise TaskError("camera result camera_model and distortion_model must be strings")
         aliases = {"equidistant": "equi", "radtan": "radtan", "none": "none", "fov": "fov", "radtan5": "radtan5", "radtan8": "radtan8"}
-        if projection in {"pinhole_opencv_fisheye", "pinhole_opencv_fisheye_full"}:
+        if projection == "pinhole_opencv_fisheye":
             model = "pinhole-opencv-fisheye"
         else:
             model = "{}-{}".format(projection, aliases.get(distortion, distortion))
@@ -245,6 +282,9 @@ def load_cameras(task):
                 raise TaskError("camera result {} must be a finite number".format(field))
         if index > 0 and "T_cn_cnm1" not in camera:
             raise TaskError("camera result requires T_cn_cnm1 for {}".format(camera["id"]))
+        if "from_camera" in camera and (index == 0 or "T_cn_cnm1" not in camera
+                                        or camera["from_camera"] != cameras[index - 1]["id"]):
+            raise TaskError("camera result from_camera must identify the preceding camera of T_cn_cnm1")
         for field in ("T_cn_cnm1", "T_cam_imu"):
             if field in camera:
                 _transform(camera[field], field)

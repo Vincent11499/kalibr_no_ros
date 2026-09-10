@@ -15,7 +15,7 @@
 #include <iostream>
 
 #include <sm/logging.hpp>
-#include <sm/timing/Timer.hpp>
+#include <aslam/backend/Profiling.hpp>
 
 namespace aslam {
 namespace backend {
@@ -142,7 +142,7 @@ void marginalize(
 			  // MB: yes, bad things!
 
               // do QR decomposition
-			  sm::timing::Timer myTimer("QR Decomposition");
+			  ProfilingTimer myTimer("QR Decomposition");
               Eigen::HouseholderQR<Eigen::MatrixXd> qr(jacobian);
 			  Eigen::MatrixXd Q = qr.householderQ();
 			  Eigen::MatrixXd R = qr.matrixQR().triangularView<Eigen::Upper>();
@@ -151,7 +151,7 @@ void marginalize(
 
 			  if(numTopRowsInCov > 0)
 			  {
-				sm::timing::Timer myTimer("Covariance computation");
+				ProfilingTimer myTimer("Covariance computation");
 				Eigen::FullPivLU<Eigen::MatrixXd> lu_decomp(R);
 				Eigen::MatrixXd Rinv = lu_decomp.inverse();
 				Eigen::MatrixXd covariance = Rinv * Rinv.transpose();

@@ -19,12 +19,6 @@ file(GLOB SOURCE_FILES "src/*.cc")
 add_library(${PROJECT_NAME}  ${SOURCE_FILES})
 target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS} ${catkin_LIBRARIES})
 
-#demo
-if(NOT APPLE)
-  add_executable(apriltags_demo src/example/apriltags_demo.cpp src/example/Serial.cpp)
-  target_link_libraries(apriltags_demo ${PROJECT_NAME} v4l2)
-endif()
-
 ##################
 ## Installation ##
 ##################

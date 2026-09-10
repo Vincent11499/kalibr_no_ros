@@ -8,7 +8,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src" / "python"))
 
 from kalibr_no_ros.cli import build_parser, main
-from kalibr_no_ros.reference import verify_snapshot
 from kalibr_no_ros.task import (
     STANDARD_EXECUTION,
     TaskError,
@@ -65,12 +64,6 @@ class TaskCliTest(unittest.TestCase):
         self.assertTrue(arguments.converter_help)
         self.assertEqual(arguments.arguments, [])
 
-    def test_reference_snapshot_is_exact(self):
-        result = verify_snapshot(
-            ROOT / "ref" / "kalibr", ROOT / "ref" / "kalibr.sha256", 1630
-        )
-        self.assertTrue(result["valid"])
-
     def test_convert_camera_job_to_strict_task(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "camera-task.yaml"
@@ -119,16 +112,6 @@ class TaskCliTest(unittest.TestCase):
         self.assertEqual(effective["detector_processes"], 6)
         self.assertEqual(effective["optimizer_threads"], 7)
         self.assertEqual(effective["detector_inflight_per_worker"], 2)
-
-    def test_benchmark_command_contract(self):
-        arguments = build_parser().parse_args([
-            "benchmark", "run", "--config", "task.yaml",
-            "--archive-dir", "archive", "--name", "candidate",
-            "--repeat", "2", "--detector-processes", "4",
-        ])
-        self.assertEqual(arguments.benchmark_command, "run")
-        self.assertEqual(arguments.repeat, 2)
-        self.assertEqual(arguments.detector_processes, 4)
 
     def test_unknown_task_field_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

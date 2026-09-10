@@ -28,18 +28,6 @@ add_library(${PROJECT_NAME}
   src/marginal_covariance_cholesky.cpp
 )
 
-if(CATKIN_ENABLE_TESTING)
-  # Avoid clash with tr1::tuple: https://code.google.com/p/googletest/source/browse/trunk/README?r=589#257
-  add_definitions(-DGTEST_USE_OWN_TR1_TUPLE=0)
-
-  catkin_add_gtest( ${PROJECT_NAME}_tests
-    test/test_main.cpp
-    test/solver_tests.cpp
-    test/sparse_block_matrix_tests.cpp
-  )
-  target_link_libraries(${PROJECT_NAME}_tests ${PROJECT_NAME} ${TBB_LIBRARIES} ${SUITESPARSE_LIBRARIES})
-endif()
-
 # Install
 install(TARGETS ${PROJECT_NAME}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}

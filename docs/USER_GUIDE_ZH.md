@@ -2,8 +2,7 @@
 
 本文只说明日常使用需要修改的内容：任务 YAML、目录数据集、相机模型和运行命令。
 算法原理与源码调用链见
-[`SOURCE_CODE_DEEP_DIVE_ZH.md`](SOURCE_CODE_DEEP_DIVE_ZH.md)，固定基准测试见
-[`BENCHMARK_ZH.md`](BENCHMARK_ZH.md)。两类 task 的全部可配置字段、默认值、
+[`SOURCE_CODE_DEEP_DIVE_ZH.md`](SOURCE_CODE_DEEP_DIVE_ZH.md)。两类 task 的全部可配置字段、默认值、
 有效范围和内部算法影响见
 [`TASK_PARAMETERS_ZH.md`](TASK_PARAMETERS_ZH.md)。
 
@@ -14,11 +13,11 @@
 | `task.yaml` | 用户 | 是 | 选择任务、数据、target、模型和可选参数；接口版本为字符串 `"1.0.0"` |
 | `dataset.yaml` | 用户，仅目录数据集需要 | 很少 | 把图像/IMU 文件映射为逻辑数据流 |
 | `*_initialization.yaml` | 用户，仅显式初值需要 | 按硬件维护 | 保存相机或 Camera–IMU 的物理 seed；接口版本为 `"1.0.0"` |
-| `calibration.yaml` | 程序 | 否 | 保存标定结果；结果接口版本为字符串 `"1.0.0"` |
+| `<任务类型>_<传感器ID...>.yaml` | 程序 | 否 | 保存标定结果；结果接口版本为字符串 `"1.0.0"` |
 | `initialization_report.yaml` / `observability.yaml` | 程序，仅显式初值运行生成 | 否 | 记录初值应用情况和最终标定块可观性 |
 
-`config/` 提供三份可直接复制的简洁模板；字段合法性由 CLI 在运行前检查。详见
-[`../config/README_ZH.md`](../config/README_ZH.md)。
+`config/examples/v1.0.0/` 提供可复制的简洁模板与完整参数示例；字段由 CLI 在运行前检查。
+详见[配置示例](../config/examples/v1.0.0/README_ZH.md)。
 
 ## 2. 最简任务配置
 
@@ -30,12 +29,13 @@
 
 ```yaml
 schema_version: "1.0.0"
+kind: calibration_task
 job: camera_calibration
 dataset: {type: bag, path: /data/camera.bag}
 target: {path: aprilgrid.yaml}
 cameras:
-  - {topic: /cam0/image_raw, model: pinhole-radtan5}
-  - {topic: /cam1/image_raw, model: pinhole-radtan5}
+  - {id: cam0, topic: /cam0/image_raw, model: pinhole-equi}
+  - {id: cam1, topic: /cam1/image_raw, model: pinhole-equi}
 calibration: {shuffle: false}
 ```
 
@@ -43,16 +43,17 @@ calibration: {shuffle: false}
 
 ```yaml
 schema_version: "1.0.0"
+kind: calibration_task
 job: camera_imu_calibration
 dataset: {type: bag, path: /data/imu_camera_bag}
 target: {path: aprilgrid.yaml}
-camera_calibration: {path: camchain.yaml}
+camera_calibration: {path: output/camera_calibration_cam0_cam1.yaml}
 imus:
-  - {path: imu.yaml, model: scale-misalignment}
+  - {id: imu0, path: imu.yaml, model: calibrated}
 ```
 
-task 文件名只表达任务类型，例如 `camera_calibration_task_demo.yaml`、
-`camera_imu_calibration_task.yaml`；bag 和目录输入都使用同一命名方式，由
+task 文件名只表达任务类型，例如 `mono_camera_calibration_task.yaml`、
+`stereo_camera_calibration_task.yaml`、`camera_imu_calibration_task.yaml`；bag 和目录输入都使用同一命名方式，由
 `dataset.type` 区分。
 
 task 中的 `dataset.path`、`target.path`、`camera_calibration.path`、
@@ -68,7 +69,7 @@ kalibr-noros calibrate cameras --config task.yaml --output-dir output \
   --detector-processes 4 --optimizer-threads 4
 ```
 
-需要长期固定或用于 benchmark 时，才把执行参数写回 task：
+需要为设备长期固定执行预算时，可把执行参数写入 task：
 
 ```yaml
 execution:
@@ -76,8 +77,8 @@ execution:
   optimizer_threads: 4
 ```
 
-完整 benchmark 执行配置会额外记录检测队列、OpenCV 线程数和内存采样周期；这些
-字段有稳定默认值，不要求普通任务逐项重复。
+检测队列和 worker 内 OpenCV 线程数有稳定默认值，不要求普通任务逐项重复。
+`release` 不启用性能采样；需要计时或内存诊断时使用 `project-profile` 并显式请求。
 
 ### 2.1 可选的显式物理初值
 
@@ -108,14 +109,13 @@ kalibr-noros calibrate cameras --config task.yaml --output-dir output \
 - 显式初值任务会先输出 `initialization_report.yaml`；到达最终可观性分析后再输出
   `observability.yaml`。基于机器 epsilon 的 hard rank gate 不通过时任务失败，只保留这两份
   诊断，不会用 seed 填出一个假成功结果；更早失败时可能只有初值报告。
-  `epsSVD=1e-6` 只用于 operational 弱可观性警告，不会阻止 `calibration.yaml`
+  `epsSVD=1e-6` 只用于 operational 弱可观性警告，不会阻止标定结果 YAML
   输出。
 
 两类初始化 YAML 的全部字段、坐标变换方向、单位、相机模型向量长度、IMU 模型门控
 和分阶段行为见
 [`INITIALIZATION_ZH.md`](INITIALIZATION_ZH.md)。
-[`config/euroc/`](../config/euroc/README_ZH.md) 提供无初值配置；
-[`examples/v1.0.0/`](../examples/v1.0.0/README_ZH.md) 提供 `pinhole-equi` 的单目、
+[配置示例](../config/examples/v1.0.0/README_ZH.md)提供 `pinhole-equi` 的单目、
 双目和双目＋IMU 完整 task 及匹配初值模板。模板中的数值是教学占位值，默认未启用；
 先换成当前硬件的可信 seed，再启用完整 task 中已注释的 `initialization` 块。
 输入准备、验证和双目到 Camera–IMU 的运行顺序见初始化指南第 8 节。
@@ -141,9 +141,10 @@ thin-prism 的 $s_1\ldots s_4$ 或 tilted sensor 的 $\tau_x,\tau_y$。它比
 普通镜头应优先从 `radtan5` 开始；只有画面边缘有稳定系统残差、标定板覆盖中心到四角且
 姿态/距离变化充分时，才建议使用 `radtan8`。
 
-OpenCV fisheye 内部保留 zero-skew 和 full 两个 projection 类型：前者兼容旧四内参
-YAML，后者使用 `[fu,fv,cu,cv,alpha]` 并可无损保存非零 skew，满足
-`K[0,1] = fu * alpha`。两者共享同一个扩展模块、distortion 顺序和转换入口。
+鱼眼扩展只保留九参数 `pinhole-opencv-fisheye`：投影使用
+`[fu,fv,cu,cv,alpha]`，畸变使用四个系数，满足 `K[0,1] = fu * alpha`。
+不需要 alpha 的八参数模型使用原生 `pinhole-equi`。九参数 OpenCV 文件的无损转换
+通过 `kalibr-noros convert camera --full-fisheye ...` 调用，不依赖原生求解器。
 
 OpenCV stereo 导入支持 `K1/D1/K2/D2`、`R/T` 或 4×4 `RT`。平移单位必须显式
 给出，转换器不会猜测毫米或米。变换统一采用：

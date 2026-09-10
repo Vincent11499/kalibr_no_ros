@@ -1,5 +1,5 @@
 import sm
-import kalibr_native_optimizer as native_runtime
+import kalibr_runtime as native_runtime
 # kalibr-native-source-overlay
 import aslam_backend as aopt
 import aslam_cv as cv
@@ -386,4 +386,3 @@ def solveFullBatch(cameras, baseline_guesses, graph):
         baselines.append( sm.Transformation(baseline_dv.T()) )
     
     return success, baselines
-

@@ -4,17 +4,14 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 import copy
-import base64
 import csv
 import gzip
 import hashlib
-import html
 import io
 import json
 import os
 from pathlib import Path
 import tempfile
-import textwrap
 
 import numpy as np
 
@@ -22,7 +19,7 @@ from .version import SCHEMA_VERSION, VERSION
 from .evaluation import (
     ReportingError, assess_metrics, camera_geometry, compute_metrics,
     merged_cameras, paired_frames, stereo_geometry, validate_output_options,
-    vector, prepare_evaluation_artifacts,
+    vector, prepare_evaluation_artifacts, rectification_maps,
 )
 
 
@@ -284,9 +281,16 @@ def export_opencv(artifacts, calibration, output_dir, options=None):
     for camera in cameras:
         try:
             geometry = camera_geometry(camera)
+            metadata = {"kind": "opencv_camera", "model": geometry["model"],
+                        "image_width": geometry["size"][0], "image_height": geometry["size"][1],
+                        "distortion_order": "k1,k2,k3,k4" if geometry["family"] == "fisheye" else "opencv_radtan"}
+            if geometry["model"] == "pinhole-opencv-fisheye":
+                metadata.update(camera_model="fisheye", distortion_model="fisheye",
+                                kalibr_camera_model="pinhole_opencv_fisheye",
+                                kalibr_distortion_model="opencv_fisheye",
+                                alpha=geometry["alpha"], skew=float(geometry["K"][0, 1]))
             save("opencv/{}.yaml".format(camera["id"]), {"K": geometry["K"], "D": geometry["D"].reshape(-1, 1)},
-                 {"kind": "opencv_camera", "model": geometry["model"],
-                  "image_width": geometry["size"][0], "image_height": geometry["size"][1], "distortion_order": "k1,k2,k3,k4" if geometry["family"] == "fisheye" else "opencv_radtan"})
+                 metadata)
             status.append({"camera": camera["id"], "status": "written"})
         except (ReportingError, cv2.error) as error:
             status.append({"camera": camera["id"], "status": "unavailable", "reason": str(error)})
@@ -299,13 +303,26 @@ def export_opencv(artifacts, calibration, output_dir, options=None):
             for prefix, side in (("1", "left"), ("2", "right")):
                 matrices["K" + prefix] = geometry[side]["K"]
                 matrices["D" + prefix] = geometry[side]["D"].reshape(-1, 1)
-            save("opencv/{}.yaml".format(identifier), matrices,
-                 {"kind": "opencv_stereo", "left_camera": left["id"], "right_camera": right["id"],
-                  "model": geometry["left"]["model"], "translation_unit": "m",
-                  "transform_convention": "p_right = R * p_left + T",
-                  "rectified_width": geometry["size"][0], "rectified_height": geometry["size"][1],
-                  "balance": options["rectification"]["balance"], "fov_scale": options["rectification"]["fov_scale"],
-                  "zero_disparity": 1, "disparity_axis": geometry["disparity_axis"]})
+            metadata = {"kind": "opencv_stereo", "left_camera": left["id"], "right_camera": right["id"],
+                        "model": geometry["left"]["model"], "translation_unit": "m",
+                        "transform_convention": "p_right = R * p_left + T",
+                        "rectified_width": geometry["size"][0], "rectified_height": geometry["size"][1],
+                        "balance": options["rectification"]["balance"], "fov_scale": options["rectification"]["fov_scale"],
+                        "zero_disparity": 1, "disparity_axis": geometry["disparity_axis"]}
+            if any(geometry[side]["model"] == "pinhole-opencv-fisheye" for side in ("left", "right")):
+                metadata.update(camera_model="fisheye", distortion_model="fisheye",
+                                kalibr_camera_model="pinhole_opencv_fisheye",
+                                kalibr_distortion_model="opencv_fisheye",
+                                transform_direction="cam0-to-cam1",
+                                rectification_skew_handling="unskew_input_points_and_reskew_source_maps")
+                for side, number in (("left", "1"), ("right", "2")):
+                    source = geometry[side]
+                    metadata["alpha" + number] = source["alpha"]
+                    metadata["skew" + number] = float(source["K"][0, 1])
+                    metadata[side + "_image_width"] = source["size"][0]
+                    metadata[side + "_image_height"] = source["size"][1]
+                    matrices["K" + number + "_no_skew"] = source["K_no_skew"]
+            save("opencv/{}.yaml".format(identifier), matrices, metadata)
             status.append({"pair": identifier, "status": "written"})
         except (ReportingError, cv2.error) as error:
             status.append({"pair": identifier, "status": "unavailable", "reason": str(error)})
@@ -441,28 +458,27 @@ def create_images(artifacts, calibration, output_dir, options=None, input_dir=No
                 except (ReportingError, cv2.error) as error:
                     problems.append({"pair": left["id"] + "_" + right["id"], "reason": str(error)})
                     continue
-                maps = []
-                for side, number in (("left", "1"), ("right", "2")):
-                    camera = geometry[side]
-                    function = cv2.fisheye.initUndistortRectifyMap if camera["family"] == "fisheye" else cv2.initUndistortRectifyMap
-                    maps.append(function(camera["K"], camera["D"], geometry["R" + number],
-                                         geometry["P" + number], geometry["size"], cv2.CV_32FC1))
-                pairs = list(paired_frames(artifacts, left, right))
+                maps = [rectification_maps(geometry, side) for side in ("left", "right")]
+                pairs = sorted(paired_frames(artifacts, left, right),
+                               key=lambda pair: (pair[1]['source_index'], pair[2]['source_index']))
                 for index, (_, lf, rf) in enumerate(_uniform(pairs, visual["max_pairs"])):
                     originals = [read(images, left, lf), read(images, right, rf)]
                     if any(p is None for p in originals):
                         continue
                     originals = [cv2.cvtColor(p, cv2.COLOR_GRAY2BGR) if p.ndim == 2 else p for p in originals]
+                    height = max(p.shape[0] for p in originals)
+                    raw_pair = np.hstack([np.pad(p, ((0, height - p.shape[0]), (0, 0), (0, 0))) for p in originals])
+                    save("visualizations/{}_{}/original_{:04d}.jpg".format(left["id"], right["id"], index), raw_pair)
                     corrected = [cv2.remap(p, *mapping, interpolation=cv2.INTER_LINEAR) for p, mapping in zip(originals, maps)]
                     canvas = np.hstack(corrected)
                     if geometry["disparity_axis"] == "x":
                         for y in range(0, canvas.shape[0], max(1, canvas.shape[0] // 12)):
-                            cv2.line(canvas, (0, y), (canvas.shape[1] - 1, y), (0, 0, 220), 1)
+                            cv2.line(canvas, (0, y), (canvas.shape[1] - 1, y), (0, 255, 0), 3)
                     else:
                         width = geometry["size"][0]
                         for x in range(0, width, max(1, width // 12)):
                             for offset in (0, width):
-                                cv2.line(canvas, (x + offset, 0), (x + offset, canvas.shape[0] - 1), (0, 0, 220), 1)
+                                cv2.line(canvas, (x + offset, 0), (x + offset, canvas.shape[0] - 1), (0, 255, 0), 3)
                     save("visualizations/{}_{}/rectified_{:04d}.jpg".format(left["id"], right["id"], index), canvas)
     return files, problems
 
@@ -525,75 +541,16 @@ def _summary(metrics, assessment):
     return "\n".join(lines) + "\n"
 
 
-def _write_reports(metrics, assessment, output_dir, files, native_text=None):
+def _write_reports(metrics, assessment, output_dir, files, native_text=None, *,
+                   artifacts=None, calibration=None):
+    from .report_plots import render_reports
+
     summary = _summary(metrics, assessment)
     text = summary + ("\nNative solver results\n" + native_text if native_text else "")
     _atomic_bytes(_child(output_dir, "results.txt"), text.encode("utf-8"))
-    links = "\n".join('<li><a href="{0}">{1}</a></li>'.format(html.escape(path, quote=True), html.escape(path)) for path in files)
-    images = "\n".join('<figure><img loading="lazy" src="{0}" alt="{1}"><figcaption>{1}</figcaption></figure>'.format(html.escape(path, quote=True), html.escape(path))
-                       for path in files if path.startswith("visualizations/") and path.endswith((".jpg", ".png")))
-    document = ('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-                '<title>Calibration report</title><style>body{{font:16px system-ui;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#18212b}}'
-                'pre{{white-space:pre-wrap;line-height:1.5;background:#f4f6f8;padding:1.2rem}}img{{max-width:100%;height:auto}}a{{color:#165c96}}</style>'
-                '<h1>Calibration report v{}</h1><pre>{}</pre><h2>Artifacts</h2><ul>{}</ul>{}</html>').format(VERSION, html.escape(summary), links, images)
-    from matplotlib.backends.backend_pdf import PdfPages
-    from matplotlib.figure import Figure
-
-    buffer = io.BytesIO()
-    plots = []
-    with PdfPages(buffer) as pdf:
-        rows = []
-        for line in summary.splitlines():
-            rows.extend(textwrap.wrap(line, width=105, replace_whitespace=False) or [""])
-        for start in range(0, len(rows), 55):
-            figure = Figure(figsize=(8.27, 11.69))
-            figure.text(0.06, 0.96, "\n".join(rows[start:start + 55]), va="top", fontsize=9, family="monospace")
-            pdf.savefig(figure)
-        for name, camera in metrics.get("cameras", {}).items():
-            values = [row.get("rms_px") for row in camera.get("frames", [])]
-            values = [v for v in values if v is not None]
-            if not values:
-                continue
-            figure = Figure(figsize=(8.27, 6))
-            axes = figure.subplots(2, 1)
-            axes[0].plot(range(len(values)), values, ".", markersize=3)
-            axes[0].set(xlabel="Final used frame index", ylabel="2D RMS [px]", title=name)
-            axes[1].hist(values, bins=min(30, max(1, len(values))))
-            axes[1].set(xlabel="Per-frame 2D RMS [px]", ylabel="Frames")
-            figure.tight_layout()
-            pdf.savefig(figure)
-            raster = io.BytesIO()
-            figure.savefig(raster, format="png", dpi=110)
-            plots.append('<figure><img alt="{} reprojection distribution" src="data:image/png;base64,{}"></figure>'.format(
-                html.escape(name, quote=True), base64.b64encode(raster.getvalue()).decode("ascii")))
-        for imu_id, imu in metrics.get("imus", {}).items():
-            for kind, values in imu.items():
-                bias = values.get("bias_spline")
-                if not bias:
-                    continue
-                samples = [sample for sample in bias["time_series"] if sample["solver_timestamp_s"] is not None]
-                if not samples:
-                    continue
-                origin = min(sample["solver_timestamp_s"] for sample in samples)
-                times = [sample["solver_timestamp_s"] - origin for sample in samples]
-                trajectory = np.asarray([sample["value"] if sample["value"] is not None else [np.nan] * 3 for sample in samples])
-                figure = Figure(figsize=(8.27, 6))
-                axis = figure.subplots()
-                for index, name in enumerate(("x", "y", "z")):
-                    axis.plot(times, trajectory[:, index], label=name, linewidth=1.)
-                axis.set(xlabel="Solver time since {:.9f} [s]".format(origin),
-                         ylabel="Bias [{}]".format(bias["unit"]),
-                         title="{} {} time-varying bias spline".format(imu_id, kind))
-                axis.legend()
-                axis.grid(alpha=.25)
-                figure.tight_layout()
-                pdf.savefig(figure)
-                raster = io.BytesIO()
-                figure.savefig(raster, format="png", dpi=110)
-                plots.append('<figure><img alt="{} {} time-varying bias spline" src="data:image/png;base64,{}"></figure>'.format(
-                    html.escape(imu_id, quote=True), html.escape(kind, quote=True), base64.b64encode(raster.getvalue()).decode("ascii")))
-    _atomic_bytes(_child(output_dir, "report.pdf"), buffer.getvalue())
-    document = document.replace("</html>", "".join(plots) + "</html>")
+    document, pdf = render_reports(metrics, assessment, files,
+                                   artifacts=artifacts, calibration=calibration, output_dir=output_dir)
+    _atomic_bytes(_child(output_dir, "report.pdf"), pdf)
     _atomic_bytes(_child(output_dir, "report.html"), document.encode("utf-8"))
     return ["results.txt", "report.html", "report.pdf"]
 
@@ -632,11 +589,59 @@ def generate_report(artifacts, calibration, output_dir, options=None, *, input_d
     files.extend(["metrics.json", "assessment.json"])
     native_path = _child(output, "results.txt")
     native_text = native_path.read_text(encoding="utf-8") if native_path.is_file() else None
-    files.extend(_write_reports(metrics, assessment, output, files, native_text=native_text))
+    files.extend(_write_reports(metrics, assessment, output, files, native_text=native_text,
+                                artifacts=artifacts, calibration=calibration))
     return {"metrics": metrics, "assessment": assessment, "files": sorted(files)}
 
 
-def evaluate_run(input_dir, output_dir, options=None, dataset=None):
+def evaluate_run(input_dir, output_dir, options=None, dataset=None, force=False):
+    """Accept a named result YAML (or an unambiguous run directory)."""
+    import tempfile
+    import shutil
+    from .delivery import locate_result, publish, published_paths
+    from .task import load_yaml, require_document_version
+    if Path(input_dir).is_dir() and (Path(input_dir) / 'metrics.json').is_file() and not list(Path(input_dir).glob('*.yaml')):
+        source = Path(input_dir).resolve()
+        destination = Path(output_dir).resolve()
+        if source == destination or source in destination.parents or destination in source.parents:
+            raise ReportingError('evaluation output must be separate from the source run')
+        options = validate_output_options(options)
+        with tempfile.TemporaryDirectory(prefix='kalibr-evaluation-') as folder:
+            target = Path(folder) / 'evaluated'
+            result = _evaluate_staged(source, target, options, dataset=dataset)
+            name = options.get('name') or 'evaluation'
+            publish(target, destination, name, options, force=force)
+            result['files'] = published_paths(target, destination, name, options)
+            return result
+    source_result = locate_result(input_dir)
+    require_document_version(load_yaml(source_result), 'calibration', 'calibration_result')
+    options = validate_output_options(options)
+    source_root = source_result.parent
+    evidence = source_root if source_result.name == 'calibration.yaml' else source_root / source_result.stem
+    output = Path(output_dir).resolve()
+    if output == source_root or output in source_root.parents or source_root in output.parents:
+        raise ReportingError('evaluation output must be separate from the source run')
+    name = options.get('name') or (source_result.stem if source_result.name != 'calibration.yaml' else 'camera_calibration_' + '_'.join(c['id'] for c in load_yaml(source_result)['cameras']))
+    with tempfile.TemporaryDirectory(prefix='kalibr-evaluation-') as folder:
+        stage = Path(folder)
+        source, target = stage / 'source', stage / 'evaluated'
+        source.mkdir()
+        shutil.copy2(source_result, source / 'calibration.yaml')
+        for item in ('observations', 'metrics.json', 'opencv', 'images'):
+            path = evidence / item
+            if path.is_dir():
+                shutil.copytree(path, source / item)
+            elif path.is_file():
+                shutil.copy2(path, source / item)
+        if not (source / 'metrics.json').is_file() and not (source / 'observations/manifest.json').is_file():
+            raise ReportingError('offline evaluation requires saved evidence: enable output.archive_observations or output.save_metrics during calibration')
+        result = _evaluate_staged(source, target, options, dataset=dataset)
+        publish(target, output, name, options, force=force)
+        result['files'] = published_paths(target, output, name, options)
+        return result
+
+
+def _evaluate_staged(input_dir, output_dir, options=None, dataset=None):
     """Re-evaluate archived corners, or re-assess saved numeric summaries."""
     import yaml
 

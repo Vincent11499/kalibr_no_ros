@@ -1,13 +1,16 @@
 schema_version: "1.0.0" # 离线评价配置，与标定任务分开。
 kind: calibration_evaluation # 使用kalibr-noros evaluate，不调用优化器。
 output: # 只能改变后处理、可视化或判定，不改原运行目录。
-  archive_observations: true # 源运行必须已保存observations；新评价目录保留这些证据。
+  save_diagnostics: false # 默认false；按需另存判定、运行清单及可用诊断文件。
+  save_metrics: false # 默认false；按需另存metrics.json，供后续离线读取汇总指标。
+  export_text: false # 默认false；按需另存人可读results.txt。
+  archive_observations: true # 默认false；本例按需保留源运行已保存的observations，不能事后补造证据。
   archive_selection_history: true # 保留源运行已保存的历史，无法事后补造未采集事件。
   copy_used_images: false # 不复制原图；搬动数据后用--dataset指定新根。
-  export_opencv: true # 重新导出相机与双目校正参数，标定结果数值不变。
-  evaluation_pairing_tolerance_s: 0.0002 # 秒，>=0；Camera–IMU观测后处理配对，非优化参数。
+  export_opencv: false # 默认false；按需重新导出OpenCV相机与双目校正参数，标定结果数值不变。
+  evaluation_pairing_tolerance_s: 0.0001 # 秒，>=0；本例100µs，省略时默认200µs；仅Camera–IMU观测后处理配对，非优化参数。
   visualizations: # 重绘必须有归档观测及可读取原始图像。
-    enabled: true # 输出角点/残差及校正图。
+    enabled: true # 默认false；本例按需输出角点/残差及校正图。
     max_frames_per_camera: 30 # 每相机均匀采样上限，正整数。
     max_pairs: 30 # 双目图对均匀采样上限，正整数。
     sampling: uniform # 确定性采样，不影响总体指标。

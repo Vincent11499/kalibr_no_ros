@@ -15,7 +15,7 @@ import numpy as np
 import multiprocessing
 import pylab as pl
 import argparse
-import kalibr_native_optimizer as native_runtime
+import kalibr_runtime as native_runtime
 from kalibr_no_ros import artifacts as run_artifacts
 # kalibr-native-runtime-overlay
 import sys
@@ -28,8 +28,6 @@ import kalibr_radtan8 as kr8
 kr8.install()
 import kalibr_opencv_fisheye as kof
 kof.install()
-import kalibr_opencv_fisheye_full as koff
-koff.install()
 
 np.set_printoptions(suppress=True)
 
@@ -53,7 +51,7 @@ cameraModels = { 'pinhole-radtan': acvb.DistortedPinhole,
                  'ds-none':        acvb.DoubleSphere,
                  'pinhole-radtan5': kr5.PinholeRadtan5,
                  'pinhole-radtan8': kr8.PinholeRadtan8,
-                 'pinhole-opencv-fisheye': koff.PinholeOpenCvFisheyeFull}
+                 'pinhole-opencv-fisheye': kof.PinholeOpenCvFisheye}
 
 def signal_exit(signal, frame):
     sm.logWarn("Shutdown requested! (CTRL+C)")

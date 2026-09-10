@@ -5,9 +5,9 @@ import argparse
 import json
 import sys
 
-from .version import VERSION, SCHEMA_VERSION
+from .version import VERSION
 
-from .reference import verify_snapshot
+from kalibr_runtime import profiling_enabled
 from .task import (
     TASK_SCHEMA_VERSION,
     STANDARD_EXECUTION,
@@ -30,8 +30,9 @@ def _add_execution_arguments(parser):
     parser.add_argument("--optimizer-threads", type=_positive_integer)
     parser.add_argument("--detector-inflight-per-worker", type=_positive_integer)
     parser.add_argument("--detector-opencv-threads", type=_positive_integer)
-    parser.add_argument("--memory-sample-interval", type=float,
-                        dest="profiling_memory_sample_interval_s")
+    if profiling_enabled():
+        parser.add_argument("--memory-sample-interval", type=float,
+                            dest="profiling_memory_sample_interval_s")
 
 
 def _add_runtime_arguments(parser):
@@ -47,7 +48,8 @@ def _add_runtime_arguments(parser):
         help="use seeds as refinement starting points or direct initial values",
     )
     _add_execution_arguments(parser)
-    parser.add_argument("--timing-json", help="profile-build timing output")
+    if profiling_enabled():
+        parser.add_argument("--timing-json", help="profile-build timing output")
     parser.add_argument("--force", action="store_true")
 
 
@@ -75,25 +77,6 @@ def build_parser():
         "imu-camera", help="camera to IMU calibration"
     )
     _add_runtime_arguments(imu_camera)
-
-    benchmark = commands.add_parser(
-        "benchmark", help="run and compare immutable performance archives")
-    benchmark_commands = benchmark.add_subparsers(
-        dest="benchmark_command", required=True)
-    benchmark_run = benchmark_commands.add_parser(
-        "run", help="run only a new candidate and archive all measurements")
-    benchmark_run.add_argument("--config", required=True)
-    benchmark_run.add_argument("--archive-dir", required=True)
-    benchmark_run.add_argument("--name", required=True)
-    benchmark_run.add_argument("--repeat", type=_positive_integer, default=1)
-    _add_execution_arguments(benchmark_run)
-    benchmark_compare = benchmark_commands.add_parser(
-        "compare", help="compare a candidate archive without rerunning baseline")
-    benchmark_compare.add_argument("--registry", required=True)
-    benchmark_compare.add_argument("--baseline-id", required=True)
-    benchmark_compare.add_argument("--candidate", required=True)
-    benchmark_compare.add_argument("--atol", type=float, default=1e-8)
-    benchmark_compare.add_argument("--rtol", type=float, default=1e-8)
 
     convert = commands.add_parser("convert", help="convert configuration formats")
     conversion_commands = convert.add_subparsers(dest="conversion", required=True)
@@ -127,13 +110,6 @@ def build_parser():
     job.add_argument("--recompute-camera-chain-extrinsics", action="store_true")
     job.add_argument("--force", action="store_true")
 
-    reference = commands.add_parser("reference", help="reference snapshot tools")
-    reference_commands = reference.add_subparsers(dest="reference", required=True)
-    verify = reference_commands.add_parser("verify", help="verify the ETHZ snapshot")
-    verify.add_argument("--snapshot")
-    verify.add_argument("--manifest")
-    verify.add_argument("--expected-files", type=int)
-    verify.add_argument("--json")
     return parser
 
 
@@ -161,15 +137,6 @@ def _runtime_overrides(arguments, output_dir):
             getattr(arguments, "profiling_memory_sample_interval_s", None),
         "timing_json": timing,
     }
-
-
-def _default_reference_path(prefix, name):
-    candidates = (
-        Path(prefix) / "ref" / name,
-        Path(prefix).parent.parent / "ref" / name,
-        Path.cwd() / "ref" / name,
-    )
-    return next((path for path in candidates if path.exists()), candidates[0])
 
 
 def _convert_job(arguments):
@@ -272,9 +239,8 @@ def main(argv=None, prefix=None):
             destination = Path(arguments.output_dir).expanduser().resolve()
             if source == destination or source in destination.parents or destination in source.parents:
                 raise TaskError("evaluation output must be separate from the source run")
-            if not (source / "calibration.yaml").is_file():
-                raise TaskError("source run has no calibration.yaml")
-            require_document_version(load_yaml(source / "calibration.yaml"), "calibration", "calibration_result")
+            from .delivery import locate_result
+            require_document_version(load_yaml(locate_result(source)), "calibration", "calibration_result")
             if arguments.config:
                 config_path = Path(arguments.config).expanduser().resolve()
                 if destination == config_path or destination in config_path.parents:
@@ -283,37 +249,9 @@ def main(argv=None, prefix=None):
                 dataset_path = Path(arguments.dataset).expanduser().resolve()
                 if destination == dataset_path or destination in dataset_path.parents or dataset_path in destination.parents:
                     raise TaskError("evaluation output must be separate from the relocated dataset")
-            output = prepare_output_directory(destination, force=arguments.force)
-            try:
-                evaluate_run(source, output, options, dataset=arguments.dataset)
-                write_run_manifest(output, status="completed", source_run=source)
-            except Exception as error:
-                write_run_manifest(output, status="output_failed", source_run=source, failure=error)
-                raise
+            output = destination
+            evaluate_run(source, output, options, dataset=arguments.dataset, force=arguments.force)
             print(output)
-            return 0
-        if arguments.group == "benchmark":
-            from .benchmark import compare_benchmark, run_benchmark
-            if arguments.benchmark_command == "run":
-                output = run_benchmark(
-                    prefix,
-                    arguments.config,
-                    arguments.archive_dir,
-                    arguments.name,
-                    repeat=arguments.repeat,
-                    **_runtime_overrides(arguments, arguments.archive_dir)
-                )
-                print(output)
-                return 0
-            json_path, markdown_path = compare_benchmark(
-                arguments.registry,
-                arguments.baseline_id,
-                arguments.candidate,
-                arguments.atol,
-                arguments.rtol,
-            )
-            print(json_path)
-            print(markdown_path)
             return 0
         if arguments.group == "calibrate":
             job = (
@@ -339,20 +277,6 @@ def main(argv=None, prefix=None):
             if arguments.converter_help:
                 converter_arguments.insert(0, "--help")
             return converter(converter_arguments, full_fisheye=arguments.full_fisheye)
-        snapshot = arguments.snapshot or _default_reference_path(prefix, "kalibr")
-        manifest = arguments.manifest or _default_reference_path(prefix, "kalibr.sha256")
-        result = verify_snapshot(
-            snapshot,
-            manifest,
-            expected_files=arguments.expected_files,
-            json_path=arguments.json,
-        )
-        print(
-            "reference snapshot verified: {} files, {}".format(
-                result["actual_files"], result["actual_sha256"]
-            )
-        )
-        return 0
     except (TaskError, ValueError, RuntimeError, OSError, StopIteration) as error:
         print("kalibr-noros: error: {}".format(error), file=sys.stderr)
         return 2

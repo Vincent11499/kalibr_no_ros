@@ -1,5 +1,5 @@
 from __future__ import print_function #handle print in 2.x python
-import kalibr_native_optimizer as native_runtime
+import kalibr_runtime as native_runtime
 # kalibr-native-source-overlay
 import sm
 import aslam_cv as acv

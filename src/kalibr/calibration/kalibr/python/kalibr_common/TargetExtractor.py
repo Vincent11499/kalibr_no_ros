@@ -20,7 +20,7 @@ except ImportError:
     import Queue as queue  # python 2.x
 
 try:
-    import kalibr_native_optimizer as _native_runtime
+    import kalibr_runtime as _native_runtime
 except ImportError:
     # The overlay can still be imported in an upstream-only environment.  In
     # a native install the companion package is always staged next to Kalibr.
@@ -40,7 +40,7 @@ def _timingEnabled():
     query = getattr(_native_runtime, "timing_enabled", None)
     if query is not None:
         return bool(query())
-    runtimeModule = sys.modules.get("kalibr_native_optimizer.runtime")
+    runtimeModule = sys.modules.get("kalibr_runtime.runtime")
     return (
         runtimeModule is not None
         and getattr(runtimeModule, "_recorder", None) is not None

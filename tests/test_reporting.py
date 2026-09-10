@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 import cv2
@@ -16,8 +17,10 @@ sys.path.insert(0, str(ROOT / "src" / "python"))
 
 from kalibr_no_ros.evaluation import (
     ReportingError, assess_metrics, compute_metrics, prepare_evaluation_artifacts,
-    stereo_geometry, validate_output_options,
+    rectification_maps, rectified_points, stereo_geometry, validate_output_options,
 )
+from kalibr_no_ros.artifacts import RunContext
+from kalibr_no_ros import opencv_fisheye_io
 from kalibr_no_ros.reporting import (
     evaluate_run, export_opencv, generate_report, load_archive, write_archive,
 )
@@ -61,7 +64,146 @@ def synthetic_stereo():
     return artifacts, calibration
 
 
+def synthetic_nine_parameter_stereo(alphas=(0.17, -0.11)):
+    artifacts, calibration = synthetic_stereo()
+    rotation_vector = np.array([0.03, -0.02, 0.04])
+    transform = np.eye(4)
+    transform[:3, :3] = cv2.Rodrigues(rotation_vector)[0]
+    transform[:3, 3] = [-0.12, 0.006, 0.004]
+    for index, (camera, result, alpha) in enumerate(zip(artifacts["cameras"], calibration["cameras"], alphas)):
+        if alpha is not None:
+            result.update(camera_model="pinhole_opencv_fisheye", distortion_model="opencv_fisheye",
+                          intrinsics=result["intrinsics"] + [alpha])
+            camera["model"] = "pinhole-opencv-fisheye"
+        if index:
+            result["T_cn_cnm1"] = transform.tolist()
+        camera.update(result)
+        corners = camera["frames"][0]["corners"]
+        points = np.array([corner["target_xyz_m"] for corner in corners]).reshape(-1, 1, 3)
+        fx, fy, cx, cy = result["intrinsics"][:4]
+        matrix = np.array([[fx, 0., cx], [0., fy, cy], [0., 0., 1.]])
+        pixels, _ = cv2.fisheye.projectPoints(
+            points, rotation_vector if index else np.zeros(3),
+            transform[:3, 3] if index else np.zeros(3), matrix,
+            np.asarray(result["distortion_coeffs"]), alpha=alpha or 0.)
+        for corner, pixel in zip(corners, pixels.reshape(-1, 2)):
+            corner.update(measurement_px=pixel.tolist(), prediction_px=pixel.tolist())
+    return artifacts, calibration
+
+
 class ReportingTest(unittest.TestCase):
+    def test_rational_rectified_points_invert_strong_edge_distortion(self):
+        matrix = np.array([[2360., 0., 1920.], [0., 2360., 1080.], [0., 0., 1.]])
+        distortion = np.array([6.1, 1.9, 0.00001, -0.00008, -0.03, 6.55, 4.4, 0.2])
+        rays = np.array([[-1.1, -0.65, 1.], [1.1, 0.65, 1.],
+                         [-0.9, 0.6, 1.], [0.8, -0.5, 1.]])
+        pixels, _ = cv2.projectPoints(rays, np.zeros(3), np.zeros(3), matrix, distortion)
+        rotation = cv2.Rodrigues(np.array([0.02, 0.01, -0.01]))[0]
+        projection = np.array([[2000., 0., 1919.5], [0., 2000., 1079.5], [0., 0., 1.]])
+        geometry = {"left": {"K": matrix, "K_no_skew": matrix, "D": distortion,
+                             "alpha": 0., "family": "pinhole"},
+                    "R1": rotation, "P1": projection}
+        expected = (projection @ rotation @ rays.T).T
+        expected = expected[:, :2] / expected[:, 2:]
+        np.testing.assert_allclose(rectified_points(pixels, geometry, "left"),
+                                   expected, rtol=0., atol=1e-6)
+
+    def test_nine_parameter_metrics_use_source_skew_for_camera_and_camera_imu(self):
+        for kind in ("cameras", "camera_imu"):
+            for alphas in ((0.17, -0.11), (None, 0.08)):
+                with self.subTest(kind=kind, alphas=alphas):
+                    artifacts, calibration = synthetic_nine_parameter_stereo(alphas)
+                    artifacts["calibration_type"] = calibration["calibration_type"] = kind
+                    if kind == "camera_imu":
+                        artifacts["views"] = []
+                        for camera in artifacts["cameras"]:
+                            if len(camera["intrinsics"]) == 5:
+                                camera["model"] = "pinhole_opencv_fisheye-opencv_fisheye"
+                    pair = compute_metrics(artifacts, calibration)["stereo_pairs"]["cam0_cam1"]
+                    self.assertEqual(pair["status"], "available")
+                    self.assertEqual(pair["alignment"]["count"], 4)
+                    self.assertLess(pair["alignment"]["mean_abs_px"], 1e-9)
+
+    def test_nine_parameter_rectification_maps_match_opencv_forward_projection(self):
+        artifacts, _ = synthetic_nine_parameter_stereo()
+        geometry = stereo_geometry(*artifacts["cameras"], validate_output_options()["rectification"])
+        pixels = np.array([[290, 210], [350, 260], [320, 240]])
+        for side, number in (("left", "1"), ("right", "2")):
+            camera = geometry[side]
+            map_x, map_y = rectification_maps(geometry, side)
+            rays = np.linalg.solve(geometry["P" + number][:, :3],
+                                   np.c_[pixels, np.ones(len(pixels))].T)
+            rays = (geometry["R" + number].T @ rays).T.reshape(-1, 1, 3)
+            projected, _ = cv2.fisheye.projectPoints(
+                rays, np.zeros(3), np.zeros(3), camera["K_no_skew"], camera["D"],
+                alpha=camera["alpha"])
+            mapped = np.c_[map_x[pixels[:, 1], pixels[:, 0]], map_y[pixels[:, 1], pixels[:, 0]]]
+            np.testing.assert_allclose(mapped, projected.reshape(-1, 2), rtol=0., atol=6e-5)
+            np.testing.assert_allclose(rectified_points(mapped, geometry, side), pixels,
+                                       rtol=0., atol=8e-5)
+
+    def test_zero_alpha_preserves_native_equi_rectification(self):
+        artifacts, _ = synthetic_stereo()
+        original = stereo_geometry(*artifacts["cameras"], validate_output_options()["rectification"])
+        for camera in artifacts["cameras"]:
+            camera.update(model="pinhole-opencv-fisheye", camera_model="pinhole_opencv_fisheye",
+                          distortion_model="opencv_fisheye", intrinsics=camera["intrinsics"] + [0.])
+        extended = stereo_geometry(*artifacts["cameras"], validate_output_options()["rectification"])
+        for key in ("R1", "R2", "P1", "P2", "Q"):
+            np.testing.assert_array_equal(extended[key], original[key])
+        for side in ("left", "right"):
+            for actual, expected in zip(rectification_maps(extended, side), rectification_maps(original, side)):
+                np.testing.assert_array_equal(actual, expected)
+
+    def test_nine_parameter_managed_opencv_export_roundtrips_skew_and_stereo(self):
+        artifacts, calibration = synthetic_nine_parameter_stereo()
+        for evidence in (artifacts, {}):
+            with self.subTest(has_artifacts=bool(evidence)), tempfile.TemporaryDirectory() as temporary:
+                files, statuses = export_opencv(evidence, calibration, temporary)
+                self.assertEqual(len(files), 3)
+                self.assertTrue(all(row["status"] == "written" for row in statuses))
+                for index, result in enumerate(calibration["cameras"]):
+                    restored = opencv_fisheye_io.read_opencv_camera(
+                        Path(temporary) / "opencv/cam{}.yaml".format(index))
+                    np.testing.assert_array_equal(restored.intrinsics, result["intrinsics"])
+                    np.testing.assert_array_equal(restored.D, result["distortion_coeffs"])
+                    self.assertEqual(restored.K[0, 1], result["intrinsics"][0] * result["intrinsics"][4])
+                path = Path(temporary) / "opencv/cam0_cam1.yaml"
+                stereo = opencv_fisheye_io.read_opencv_stereo(path)
+                transform = np.asarray(calibration["cameras"][1]["T_cn_cnm1"])
+                np.testing.assert_array_equal(stereo.R, transform[:3, :3])
+                np.testing.assert_array_equal(stereo.T, transform[:3, 3])
+                self.assertEqual(stereo.left.alpha, 0.17)
+                self.assertEqual(stereo.right.alpha, -0.11)
+                storage = cv2.FileStorage(str(path), cv2.FILE_STORAGE_READ)
+                try:
+                    self.assertEqual(storage.getNode("K1_no_skew").mat()[0, 1], 0.)
+                    self.assertIn("unskew", storage.getNode("rectification_skew_handling").string())
+                finally:
+                    storage.release()
+
+    def test_camera_and_camera_imu_publish_same_nine_parameter_model_name(self):
+        intrinsics, distortion = [220., 225., 320., 240., 0.17], [0.02, -0.005, 0.001, -0.0001]
+        dataset = SimpleNamespace(topic="cam0", index=[], indices=[])
+        projection = SimpleNamespace(getParameters=lambda: intrinsics, ru=lambda: 640, rv=lambda: 480,
+                                     distortion=lambda: SimpleNamespace(getParameters=lambda: distortion))
+        native = SimpleNamespace(dataset=dataset, geometry=SimpleNamespace(projection=lambda: projection),
+                                 camConfig=SimpleNamespace(getIntrinsics=lambda: ("pinhole_opencv_fisheye", intrinsics),
+                                                           getDistortion=lambda: ("opencv_fisheye", distortion),
+                                                           getResolution=lambda: [640, 480]))
+        camera_context = RunContext("cameras")
+        camera_context.register_dataset(dataset)
+        camera_context.publish_camera(SimpleNamespace(cameras=[native], views=[]), ["pinhole-opencv-fisheye"])
+        imu_context = RunContext("camera_imu")
+        imu_context.register_dataset(dataset)
+        chain = SimpleNamespace(camList=[native],
+                                getResultTrafoImuToCam=lambda index: SimpleNamespace(T=lambda: np.eye(4)),
+                                getResultTimeShift=lambda index: 0.)
+        imu_context.publish_imu_camera(SimpleNamespace(CameraChain=chain, ImuList=[]))
+        for context in (camera_context, imu_context):
+            self.assertEqual(context.artifacts["cameras"][0]["model"], "pinhole-opencv-fisheye")
+            self.assertEqual(context.artifacts["cameras"][0]["intrinsics"], intrinsics)
+
     def test_time_varying_bias_statistics_and_full_series_are_preserved(self):
         artifacts, calibration = synthetic_stereo()
         stamp = artifacts["cameras"][0]["frames"][0]["source_timestamp_ns"]
@@ -298,6 +440,8 @@ class ReportingTest(unittest.TestCase):
             evaluated = evaluate_run(output, Path(temporary) / "evaluated", {"export_opencv": False})
             self.assertEqual(evaluated["metrics"]["cameras"], result["metrics"]["cameras"])
             self.assertEqual(evaluated["metrics"]["stereo_pairs"], result["metrics"]["stereo_pairs"])
+            self.assertTrue(all((Path(temporary) / "evaluated" / path).is_file() for path in evaluated['files']))
+            self.assertNotIn('assessment.json', evaluated['files'])
             self.assertFalse((output / "images").exists())
             self.assertFalse((output / "observations/selection_events.csv.gz").exists())
 
@@ -325,7 +469,7 @@ class ReportingTest(unittest.TestCase):
             self.assertEqual(result["metrics"]["cameras"]["cam0"]["reprojection"]["rms_px"], 0.)
             self.assertFalse(any(path.endswith(".jpg") for path in result["files"]))
 
-    def test_frozen_reference_without_hooks_has_unavailable_statistics(self):
+    def test_missing_observations_leave_residual_statistics_unavailable(self):
         _, calibration = synthetic_stereo()
         metrics = compute_metrics({"calibration_type": "cameras", "state": "completed"}, calibration)
         self.assertEqual(metrics["cameras"]["cam0"]["reprojection"]["status"], "unavailable")
@@ -351,11 +495,21 @@ class ReportingTest(unittest.TestCase):
                                       "visualizations": {"enabled": True}, "export_opencv": False})
             self.assertIn("images/cam0/7.png", result["files"])
             self.assertIn("visualizations/cam0_cam1/rectified_0000.jpg", result["files"])
+            original_pair = cv2.imread(str(original / 'visualizations/cam0_cam1/original_0000.jpg'))
+            self.assertEqual(original_pair.shape, (480, 1280, 3))
+            self.assertTrue(np.all(original_pair == 120))
+            aligned = cv2.imread(str(original / 'visualizations/cam0_cam1/rectified_0000.jpg'))
+            # Solid gray input isolates the rendered green guide; test image output,
+            # allowing JPEG quantization rather than mirroring drawing calls.
+            green = aligned[:, 100, 1].astype(int)
+            red = aligned[:, 100, 2].astype(int)
+            self.assertTrue(np.all(green[39:42] - red[39:42] > 100))
+            self.assertLess(abs(int(green[30] - red[30])), 20)
             self.assertNotIn("copied_image", artifacts["cameras"][0]["frames"][0])
             image.unlink()
             evaluated = evaluate_run(original, root / "evaluated",
                                      {"visualizations": {"enabled": True}, "export_opencv": False})
-            self.assertIn("visualizations/cam0/corners_7.jpg", evaluated["files"])
+            self.assertIn("camera_calibration_cam0_cam1/visualizations/cam0/corners_7.jpg", evaluated["files"])
             self.assertFalse(evaluated["metrics"]["output_diagnostics"])
 
     def test_offline_dataset_override_checks_exact_frame_timestamp(self):
@@ -388,7 +542,7 @@ class ReportingTest(unittest.TestCase):
             (dataset / "dataset.yaml").write_text(yaml.safe_dump(manifest))
             result = evaluate_run(original, root / "evaluated", {"export_opencv": False,
                                   "visualizations": {"enabled": True}}, dataset=dataset)
-            self.assertIn("visualizations/cam0/corners_7.jpg", result["files"])
+            self.assertIn("camera_calibration_cam0_cam1/visualizations/cam0/corners_7.jpg", result["files"])
             self.assertFalse(result["metrics"]["output_diagnostics"])
             manifest["dataset_id"] = "wrong_device_260909_1200"
             (dataset / "dataset.yaml").write_text(yaml.safe_dump(manifest))

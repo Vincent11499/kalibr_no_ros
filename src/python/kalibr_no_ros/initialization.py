@@ -35,7 +35,7 @@ CAMERA_MODEL_DIMENSIONS = {
 }
 
 _CAMERA_FIELDS = {
-    "intrinsics", "distortion_coeffs", "T_cam_from_previous",
+    "intrinsics", "distortion_coeffs", "T_cam_from_previous", "T_cn_cnm1",
 }
 _CAMERA_IMU_FIELDS = {
     "T_cam0_imu", "timeshift_cam_imu_s", "gravity_direction_target",
@@ -192,17 +192,57 @@ def _camera_models(task):
         if model not in CAMERA_MODEL_DIMENSIONS:
             raise InitializationError(
                 "unsupported camera model for initialization: {}".format(model))
-        result["cam{}".format(index)] = model
+        camera_id = camera.get("id", "cam{}".format(index))
+        if (not isinstance(camera_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", camera_id)
+                or camera_id in result):
+            raise InitializationError("{}.id must be a unique safe camera ID".format(field))
+        result[camera_id] = model
+    return result
+
+
+def _inverse_transform(transform):
+    rotation = [[transform[column][row] for column in range(3)] for row in range(3)]
+    translation = [-sum(rotation[row][column] * transform[column][3] for column in range(3))
+                   for row in range(3)]
+    return [row + [translation[index]] for index, row in enumerate(rotation)] + [[0., 0., 0., 1.]]
+
+
+def _camera_extrinsics(value, camera_ids):
+    if not isinstance(value, list):
+        raise InitializationError("extrinsics must be a list of {from, to, T} mappings")
+    indices = {camera_id: index for index, camera_id in enumerate(camera_ids)}
+    result = {}
+    for index, entry in enumerate(value):
+        field = "extrinsics[{}]".format(index)
+        entry = _mapping(entry, field)
+        _reject_unknown(entry, {"from", "to", "T"}, field)
+        missing = {"from", "to", "T"} - set(entry)
+        if missing:
+            raise InitializationError("{} requires {}".format(field, _field_list(missing)))
+        for key in ("from", "to"):
+            if not isinstance(entry[key], str) or entry[key] not in indices:
+                raise InitializationError("{}.{} must name a camera ID in task.cameras".format(field, key))
+        source, target = indices[entry["from"]], indices[entry["to"]]
+        if abs(source - target) != 1:
+            raise InitializationError("{} must connect two adjacent cameras in task.cameras order".format(field))
+        destination = camera_ids[max(source, target)]
+        if destination in result:
+            raise InitializationError("duplicate extrinsics for adjacent camera pair {} / {}".format(
+                camera_ids[min(source, target)], destination))
+        transform = _transform(entry["T"], field + ".T")
+        result[destination] = transform if source < target else _inverse_transform(transform)
     return result
 
 
 def _validate_camera_document(document, task, strategy):
-    _reject_unknown(document, {"schema_version", "kind", "cameras"},
+    _reject_unknown(document, {"schema_version", "kind", "cameras", "extrinsics"},
                     "camera initialization")
-    if "cameras" not in document:
-        raise InitializationError("camera initialization requires cameras")
-    cameras = _mapping(document["cameras"], "cameras")
+    if "cameras" not in document and "extrinsics" not in document:
+        raise InitializationError("camera initialization requires cameras or extrinsics")
+    cameras = _mapping(document.get("cameras", {}), "cameras")
     models = _camera_models(task)
+    camera_ids = list(models)
+    extrinsics = _camera_extrinsics(document.get("extrinsics", []), camera_ids)
     unknown = set(cameras) - set(models)
     if unknown:
         raise InitializationError(
@@ -210,17 +250,21 @@ def _validate_camera_document(document, task, strategy):
                 _field_list(unknown)))
 
     result = {}
-    for camera_id in models:
-        if camera_id not in cameras:
+    for index, camera_id in enumerate(camera_ids):
+        if camera_id not in cameras and camera_id not in extrinsics:
             if strategy == "direct":
                 raise InitializationError(
                     "direct initialization requires {}".format(camera_id))
             continue
-        block = _mapping(cameras[camera_id], "cameras.{}".format(camera_id))
+        block = dict(_mapping(cameras.get(camera_id, {}), "cameras.{}".format(camera_id)))
         _reject_unknown(block, _CAMERA_FIELDS, "cameras.{}".format(camera_id))
-        if camera_id == "cam0" and "T_cam_from_previous" in block:
+        if 'T_cn_cnm1' in block:
+            if 'T_cam_from_previous' in block:
+                raise InitializationError('conflicting T_cn_cnm1 and T_cam_from_previous for ' + camera_id)
+            block['T_cam_from_previous'] = block.pop('T_cn_cnm1')
+        if index == 0 and "T_cam_from_previous" in block:
             raise InitializationError(
-                "cameras.cam0 cannot contain T_cam_from_previous")
+                "cameras.{} cannot contain T_cam_from_previous: first task camera has no predecessor".format(camera_id))
         intrinsic_count, distortion_count = CAMERA_MODEL_DIMENSIONS[models[camera_id]]
         validated = {}
         if "intrinsics" in block:
@@ -232,20 +276,25 @@ def _validate_camera_document(document, task, strategy):
                 block["distortion_coeffs"], distortion_count,
                 "cameras.{}.distortion_coeffs".format(camera_id))
         if "T_cam_from_previous" in block:
+            if camera_id in extrinsics:
+                raise InitializationError(
+                    "conflicting extrinsics and cameras.{}.T_cam_from_previous".format(camera_id))
             validated["T_cam_from_previous"] = _transform(
                 block["T_cam_from_previous"],
                 "cameras.{}.T_cam_from_previous".format(camera_id))
+        elif camera_id in extrinsics:
+            validated["T_cam_from_previous"] = extrinsics[camera_id]
         if strategy == "direct":
             for field in ("intrinsics", "distortion_coeffs"):
                 if field not in validated:
                     raise InitializationError(
                         "direct initialization requires cameras.{}.{}".format(
                             camera_id, field))
-            if camera_id != "cam0" and "T_cam_from_previous" not in validated:
+            if index > 0 and "T_cam_from_previous" not in validated:
                 raise InitializationError(
-                    "direct initialization requires cameras.{}.T_cam_from_previous".format(
-                        camera_id))
-        result[camera_id] = validated
+                    "direct initialization requires extrinsics between {} and {}".format(
+                        camera_ids[index - 1], camera_id))
+        result["cam{}".format(index)] = validated
     return {"cameras": result}
 
 
@@ -282,10 +331,10 @@ def _validate_camera_imu_block(value, camera_ids):
                 "unknown camera time shifts: {}".format(_field_list(invalid)))
         ordered_ids = camera_ids if camera_ids is not None else sorted(shifts)
         result["timeshift_cam_imu_s"] = {
-            camera_id: _finite_number(
+            ("cam{}".format(index) if camera_ids is not None else camera_id): _finite_number(
                 shifts[camera_id],
                 "camera_imu.timeshift_cam_imu_s.{}".format(camera_id))
-            for camera_id in ordered_ids if camera_id in shifts
+            for index, camera_id in enumerate(ordered_ids) if camera_id in shifts
         }
     if "gravity_direction_target" in value:
         gravity = _vector(
@@ -469,9 +518,10 @@ def initialization_stage_decisions(document, strategy, task, camera_ids=None):
         freeze_intrinsics = (task.get("calibration") or {}).get(
             "freeze_intrinsics", False) is True
         cameras = document.get("cameras", {})
-        for index, _camera in enumerate(task["cameras"]):
-            camera_id = "cam{}".format(index)
-            fields = sorted(cameras.get(camera_id, {}))
+        for index, camera in enumerate(task["cameras"]):
+            native_id = "cam{}".format(index)
+            camera_id = camera.get("id", native_id)
+            fields = sorted(cameras.get(native_id, {}))
             decisions.append({
                 "stage": "single_camera_intrinsics.{}".format(camera_id),
                 "supplied_fields": [
@@ -492,7 +542,7 @@ def initialization_stage_decisions(document, strategy, task, camera_ids=None):
             })
         if len(task["cameras"]) > 1:
             supplied = [
-                "cam{}".format(index)
+                task["cameras"][index].get("id", "cam{}".format(index))
                 for index in range(1, len(task["cameras"]))
                 if "T_cam_from_previous" in cameras.get(
                     "cam{}".format(index), {})
@@ -517,8 +567,8 @@ def initialization_stage_decisions(document, strategy, task, camera_ids=None):
     shifts = camera_imu.get("timeshift_cam_imu_s", {})
     time_calibration = (task.get("calibration") or {}).get(
         "calibrate_time_offset", True) is not False
-    for camera_id in camera_ids:
-        supplied = camera_id in shifts
+    for index, camera_id in enumerate(camera_ids):
+        supplied = "cam{}".format(index) in shifts
         if not time_calibration:
             correlation = "disabled"
         elif supplied and strategy == "direct":
@@ -616,7 +666,7 @@ def build_initialization_report(document, strategy, task, *, source_path,
         and (task.get("calibration") or {}).get(
             "freeze_intrinsics", False) is True
     )
-    return {
+    result = {
         "schema_version": SCHEMA_VERSION,
         "kind": "calibration_initialization_report",
         "job": task["job"],
@@ -649,3 +699,9 @@ def build_initialization_report(document, strategy, task, *, source_path,
         "stage_decisions": initialization_stage_decisions(
             document, strategy, task, camera_ids=camera_ids),
     }
+    source_ids = list(_camera_models(task)) if task["job"] == "camera_calibration" else list(camera_ids or ())
+    if source_ids:
+        result["camera_id_mapping"] = {
+            camera_id: "cam{}".format(index) for index, camera_id in enumerate(source_ids)
+        }
+    return result

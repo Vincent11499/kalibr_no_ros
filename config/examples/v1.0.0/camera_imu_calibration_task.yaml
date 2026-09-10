@@ -6,8 +6,6 @@ dataset:
   path: data/stereo_imu_YYMMDD_hhmm
 target:
   path: aprilgrid.yaml
-camera_calibration:
-  path: output/stereo/calibration.yaml
 imus:
   - id: imu0
     path: imu.yaml

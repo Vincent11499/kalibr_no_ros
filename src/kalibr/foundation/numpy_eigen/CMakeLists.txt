@@ -42,34 +42,9 @@ add_python_export_library(${PROJECT_NAME}
 target_link_libraries(${PROJECT_NAME} 
                       ${catkin_LIBRARIES} ${Boost_LIBRARIES})
                       
-INCLUDE(src/autogen_test_files.cmake)
-add_python_export_library(${PROJECT_NAME}_test 
-      ${PROJECT_SOURCE_DIR}/python/${PROJECT_NAME} ${AUTOGEN_TEST_FILES}
-  )
-
-#############
-## Testing ##
-#############
-if(CATKIN_ENABLE_TESTING)
-  ## Add nosetest based cpp test target.
-  catkin_add_nosetests(test/numpy_eigen_tests.py)
-endif()
-
-install(TARGETS ${PROJECT_NAME}
-  ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-)
-
 ##################
 ## Installation ##
 ##################
-
-install(TARGETS ${PROJECT_NAME}
-  ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-)
 
 ## Mark cpp header files for installation
 install(DIRECTORY include/${PROJECT_NAME}/

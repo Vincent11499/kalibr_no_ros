@@ -42,13 +42,18 @@ def validate_output_options(options=None):
     """Validate public output/evaluation settings without importing native code."""
     bool_defaults = {
         "archive_observations": False, "archive_selection_history": False,
-        "copy_used_images": False, "export_opencv": True,
+        "copy_used_images": False, "export_opencv": False,
+        "save_diagnostics": False, "save_metrics": False, "export_text": False,
         "export_poses": False, "interactive_report": False, "verbose": False,
         "show_extraction": False, "extraction_stepping": False,
     }
     options = {} if options is None else options
-    _mapping(options, "output", set(bool_defaults) | {"visualizations", "rectification", "assessment", "evaluation_pairing_tolerance_s"})
+    _mapping(options, "output", set(bool_defaults) | {"name", "visualizations", "rectification", "assessment", "evaluation_pairing_tolerance_s"})
     result = {}
+    name = options.get("name")
+    if name is not None and (not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,159}", name)):
+        raise ReportingError("output.name must be a safe filename stem (letters, digits, underscores, hyphens; max 160)")
+    result["name"] = name
     for key, default in bool_defaults.items():
         value = options.get(key, default)
         if type(value) is not bool:
@@ -236,12 +241,17 @@ def merged_cameras(artifacts, calibration):
 
 
 def camera_geometry(camera):
-    intrinsics = vector(camera.get("intrinsics"), 4)
-    if intrinsics is None or np.any(intrinsics[:2] <= 0):
-        raise ReportingError("{} requires four finite pinhole intrinsics".format(camera["id"]))
     model = camera.get("model")
-    if not model:
+    if (camera.get("camera_model") == "pinhole_opencv_fisheye"
+            or model == "pinhole_opencv_fisheye-opencv_fisheye"):
+        model = "pinhole-opencv-fisheye"
+    elif not model:
         model = "{}-{}".format(camera.get("camera_model"), camera.get("distortion_model"))
+    intrinsic_count = 5 if model == "pinhole-opencv-fisheye" else 4
+    intrinsics = vector(camera.get("intrinsics"), intrinsic_count)
+    if intrinsics is None or np.any(intrinsics[:2] <= 0):
+        raise ReportingError("{} requires {} finite pinhole intrinsics".format(
+            camera["id"], intrinsic_count))
     if model in ("pinhole-equi", "pinhole-equidistant", "pinhole-opencv-fisheye"):
         family, length = "fisheye", 4
     elif model in ("pinhole-radtan", "pinhole-radtan5", "pinhole-radtan8"):
@@ -255,8 +265,13 @@ def camera_geometry(camera):
     size = camera.get("resolution")
     if not isinstance(size, (list, tuple)) or len(size) != 2 or any(type(v) is not int or v <= 0 for v in size):
         raise ReportingError("invalid camera resolution")
-    fx, fy, cx, cy = intrinsics
-    return {"K": np.array([[fx, 0., cx], [0., fy, cy], [0., 0., 1.]]),
+    fx, fy, cx, cy = intrinsics[:4]
+    alpha = float(intrinsics[4]) if intrinsic_count == 5 else 0.0
+    matrix = np.array([[fx, fx * alpha, cx], [0., fy, cy], [0., 0., 1.]])
+    no_skew = matrix.copy() if alpha else matrix
+    if alpha:
+        no_skew[0, 1] = 0.0
+    return {"K": matrix, "K_no_skew": no_skew, "alpha": alpha,
             "D": distortion, "size": tuple(size), "family": family, "model": model}
 
 
@@ -277,7 +292,7 @@ def stereo_geometry(left, right, rectification):
             or np.linalg.norm(translation) <= 1e-12):
         raise ReportingError("invalid or zero-baseline stereo transform")
     size = tuple(rectification.get("size") or first["size"])
-    arguments = (first["K"], first["D"], second["K"], second["D"], first["size"], rotation, translation)
+    arguments = (first["K_no_skew"], first["D"], second["K_no_skew"], second["D"], first["size"], rotation, translation)
     if first["family"] == "fisheye":
         R1, R2, P1, P2, Q = cv2.fisheye.stereoRectify(
             *arguments, flags=cv2.CALIB_ZERO_DISPARITY, newImageSize=size,
@@ -301,9 +316,40 @@ def rectified_points(points, geometry, side):
     camera = geometry[side]
     number = "1" if side == "left" else "2"
     points = np.asarray(points, dtype=np.float64).reshape(-1, 1, 2)
-    function = cv2.fisheye.undistortPoints if camera["family"] == "fisheye" else cv2.undistortPoints
-    return function(points, camera["K"], camera["D"], R=geometry["R" + number],
-                    P=geometry["P" + number]).reshape(-1, 2)
+    if camera["alpha"]:
+        # OpenCV fisheye undistortPoints ignores K[0,1]. Convert measured
+        # pixels to the corresponding zero-skew sensor coordinates first.
+        points = points.copy()
+        points[..., 0] -= (camera["K"][0, 1] / camera["K"][1, 1]) * (
+            points[..., 1] - camera["K"][1, 2])
+    if camera["family"] == "fisheye":
+        return cv2.fisheye.undistortPoints(
+            points, camera["K_no_skew"], camera["D"],
+            R=geometry["R" + number], P=geometry["P" + number]).reshape(-1, 2)
+    # The five iterations used by undistortPoints can leave large inverse
+    # errors near image edges for rational distortion. These errors must not
+    # be counted as calibration/epipolar residuals. Only evaluation changes;
+    # native calibration and forward image-remap models remain untouched.
+    return cv2.undistortPointsIter(
+        points, camera["K_no_skew"], camera["D"],
+        geometry["R" + number], geometry["P" + number],
+        (cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS, 100, 1e-12),
+    ).reshape(-1, 2)
+
+
+def rectification_maps(geometry, side):
+    """Map rectified pixels back to the original, potentially skewed sensor."""
+    import cv2
+
+    camera = geometry[side]
+    number = "1" if side == "left" else "2"
+    function = cv2.fisheye.initUndistortRectifyMap if camera["family"] == "fisheye" else cv2.initUndistortRectifyMap
+    map_x, map_y = function(camera["K_no_skew"], camera["D"], geometry["R" + number],
+                            geometry["P" + number], geometry["size"], cv2.CV_32FC1)
+    if camera["alpha"]:
+        map_x += (camera["K"][0, 1] / camera["K"][1, 1]) * (
+            map_y - camera["K"][1, 2])
+    return map_x, map_y
 
 
 def paired_frames(artifacts, left, right):

@@ -119,16 +119,20 @@ cameras:
   cam1:
     intrinsics: [459.65, 458.16, 382.79, 253.97]
     distortion_coeffs: [-0.312, 0.130, -0.00003, -0.00073, -0.0290]
-    T_cam_from_previous:
+    T_cn_cnm1:
       - [0.999995, 0.002444, -0.001775, -0.110214]
       - [-0.002419, 0.999902, 0.013785, 0.000581]
       - [0.001808, -0.013780, 0.999903, -0.000902]
       - [0.0, 0.0, 0.0, 1.0]
 ```
 
-`cam0`、`cam1` 等编号严格对应 task 中 `cameras[]` 的列表顺序。task 可省略 `id`，
-显式提供时必须与该顺序编号一致；初始化不通过 topic 重排相机。对于第 $k$ 个相机，
-`T_cam_from_previous` 表示：
+`cameras` 的键使用 task 中的实际相机 `id`。例如只标定
+`id: cam1` 时，内参写在 `cameras.cam1`；使用 `left`、`right` 时也采用这两个 ID。
+ID 必须唯一，由字母、数字、下划线或连字符组成，首字符为字母或数字。bag task
+未填写 ID 时，按列表顺序默认 `cam0`、`cam1`；目录 task 应明确写出 ID。
+
+`T_cn_cnm1` 放在当前相机条目下，将 task 列表中前一相机的点变换到当前相机。
+上述 `cameras.cam1.T_cn_cnm1` 表示 cam0 → cam1：
 
 $$
 {}^{C_k}_{C_{k-1}}\mathbf T,
@@ -138,7 +142,12 @@ $$
 {}^{C_k}_{C_{k-1}}\mathbf T\,{}^{C_{k-1}}\mathbf p.
 $$
 
-`cam0` 没有前一相机，因此禁止出现该字段。多目链连续复合为：
+程序保持 task `cameras[]` 的顺序，不按 ID 名称、初始化映射顺序或 topic 重排。
+每条外参连接列表中相邻两台相机。三目列表 `[left, right, rear]` 中，
+`right.T_cn_cnm1` 表示 left → right，`rear.T_cn_cnm1` 表示 right → rear。
+第一台相机不得填写此字段。输入方向相反时，应先对矩阵求逆。
+
+多目链连续复合为：
 
 $$
 {}^{C_k}_{C_0}\mathbf T
@@ -149,6 +158,13 @@ $$
 $$
 
 平移单位是米。不要把 OpenCV stereo 中方向相反的 $\mathbf R,\mathbf t$ 未取逆就写入。
+方向不能根据相机 ID 的数字大小推断，始终以 task 列表顺序为准。
+
+内部仍按 task 顺序使用 `cam0`、`cam1` 和 `T_cam_from_previous`，这是输入适配后的
+原生格式，不改变求解问题。旧版 `cameras.<id>.T_cam_from_previous` 仍可读取，含义
+是 task 列表前一相机到当前相机；列表中的第一台相机禁止填写。对于同一条边，旧字段
+与 `T_cn_cnm1` 不能同时出现，即使矩阵数值相同也会报冲突。
+旧顶层 `extrinsics` 仅兼容读取，新示例不再使用它。
 
 ### 3.2 内参与畸变向量长度
 
@@ -174,7 +190,8 @@ $$
 
 ### 3.3 `refine` 的实际阶段
 
-`refine` 允许只提供部分相机或部分参数。各阶段行为为：
+`refine` 允许只提供部分相机、部分参数或部分相邻外参；只有 `extrinsics` 时可省略
+`cameras`。各阶段行为为：
 
 1. 若给出某相机 `intrinsics`，跳过会覆盖它的解析式内参估计；若未给则保留原生
    自动内参估计；
@@ -194,7 +211,7 @@ $$
 
 - 每个相机的 `intrinsics`；
 - 每个相机的 `distortion_coeffs`，无畸变模型写空列表；
-- `cam1` 及之后每个相机的 `T_cam_from_previous`。
+- 覆盖 task 相机列表全部相邻边的 `extrinsics`，共 $N-1$ 条；单目不需要外参。
 
 完整 seed 会跳过单相机内参 LM、相机对 baseline LM 和 full-batch 初值优化，但仍会：
 
@@ -375,12 +392,16 @@ IMU 的关系；`imus.imu0`、`imus.imu1` 按 task 的 `imus[]` 顺序匹配。
 
 | 字段 | 形状和单位 | 含义 |
 |---|---|---|
-| `T_cam0_imu` | $4\times4$，平移 m | ${}^{C_0}_{I_0}\mathbf T$，把参考 IMU 坐标变到 cam0 |
-| `timeshift_cam_imu_s` | `camN: float` mapping，s | 每个相机的 $t_{I_0}=t_{C_k}+\Delta t_k$ |
+| `T_cam0_imu` | $4\times4$，平移 m | ${}^{C_0}_{I_0}\mathbf T$，把参考 IMU 坐标变到相机结果列表中的第一台相机 |
+| `timeshift_cam_imu_s` | `camera_id: float` mapping，s | 每个相机的 $t_{I_0}=t_{C_k}+\Delta t_k$ |
 | `gravity_direction_target` | 非零三向量 | 标定板/世界坐标系中的重力方向，长度会归一化到 $9.80655\ \mathrm{m/s^2}$ |
 
 时间偏移必须按相机写成 mapping，单个 scalar 会被拒绝。这样多相机任务不会把“只给
-cam0”静默解释为“所有相机相同”。相机键还必须存在于输入 camchain。
+cam0”静默解释为“所有相机相同”。相机键必须使用输入相机结果中的真实 ID，例如
+`front`、`rear`。程序按该结果的列表顺序映射到原生 `cam0`、`cam1`。
+
+`initialization_report.yaml` 的 `camera_id_mapping` 记录真实 ID 到原生编号的对应关系。
+报告中的 `configured` 是完成映射后的求解器初值，源文件保持不变。
 
 Camera–IMU task 输入的 camchain 仍负责相机内参、畸变和相邻 baseline。该初始化文件
 不重复这些字段；是否在最终联合优化中放开相邻 baseline 仍由
@@ -482,7 +503,7 @@ size-effect 模型进一步给各 accelerometer sensitive axis 使用不同 leve
 | 厂商参数、上次标定或粗略手工测量，误差仍可能明显 | `refine` | 保留原生前置 LM/相关估计来修正初值 |
 | 同一硬件的高质量历史标定，目标是缩短重复标定前置阶段 | `direct` | 避免重复运行脆弱或昂贵的初值优化 |
 | 数据运动弱、自动相机内参或外参初始化失败 | 先 `refine` | 好 seed 可让优化进入正确吸引域，但仍接受前置修正 |
-| 要复现无 seed 的冻结 benchmark | 不配置初始化 | 两条代码路径和阶段耗时不可直接混为同一基线 |
+| 没有可信物理 seed | 不配置初始化 | 使用原生自动初始化，检查运动与标定板覆盖 |
 
 若 seed 的旋转方向写反、平移单位误用毫米、焦距超出图像尺度或时间偏移符号错误，
 `direct` 更容易把问题带到错误吸引域。它不会自动回退到原生初始化；失败应由用户修正
@@ -701,7 +722,7 @@ target pose、bias spline 和重力等随时间或规范相关状态作为 nuisa
 | [`all_params/stereo_camera_calibration_task_full.yaml`](../config/examples/v1.0.0/all_params/stereo_camera_calibration_task_full.yaml) | [`initialization_stereo.yaml`](../config/examples/v1.0.0/initialization_stereo.yaml) | 双目 `pinhole-equi` |
 | [`all_params/camera_imu_calibration_task_full.yaml`](../config/examples/v1.0.0/all_params/camera_imu_calibration_task_full.yaml) | [`initialization_imu.yaml`](../config/examples/v1.0.0/initialization_imu.yaml) | 读取双目结果；IMU 为 `calibrated` |
 
-先把整个示例目录复制到可写运行目录，保留 task 和 `` 的相对位置，并将
+先把整个示例目录复制到可写运行目录，保留 task 和辅助 YAML 的相对位置，并将
 `kalibr-noros` 加入 PATH。按示例 README 将 task 的
 `data/stereo_imu_YYMMDD_hhmm` 占位路径替换为真实新格式数据目录，核对 AprilGrid、
 IMU 噪声参数和话题。
@@ -716,19 +737,18 @@ Camera–IMU 变换和零 bias 是教学占位值。先替换为本次硬件的�
 
 ```bash
 kalibr-noros validate --config all_params/mono_camera_calibration_task_full.yaml
-kalibr-noros calibrate cameras --config all_params/mono_camera_calibration_task_full.yaml --output-dir output/mono
+kalibr-noros calibrate cameras --config all_params/mono_camera_calibration_task_full.yaml --output-dir output
 
 kalibr-noros validate --config all_params/stereo_camera_calibration_task_full.yaml
-kalibr-noros calibrate cameras --config all_params/stereo_camera_calibration_task_full.yaml --output-dir output/stereo
+kalibr-noros calibrate cameras --config all_params/stereo_camera_calibration_task_full.yaml --output-dir output
 
-kalibr-noros validate --config all_params/camera_imu_calibration_task_full.yaml
-kalibr-noros calibrate imu-camera --config all_params/camera_imu_calibration_task_full.yaml --output-dir output/imu
+kalibr-noros calibrate imu-camera --config all_params/camera_imu_calibration_task_full.yaml --output-dir output
 ```
 
-`all_params/camera_imu_calibration_task_full.yaml` 已引用 `../output/stereo/calibration.yaml`，与上面双目输出目录一致；
-更换输出目录时须同步修改该引用。每次运行使用新的输出目录保留既有记录。
+`all_params/camera_imu_calibration_task_full.yaml` 默认省略相机结果路径；两个任务使用同一个输出目录时自动查找唯一匹配双目/多目结果；
+有多个候选或独立运行 validate 时请显式填写 camera_calibration.path。相同任务再次运行请使用新输出名称或目录保留既有记录。
 同一示例的 task 与 seed 使用一致的模型和相机顺序；这些等距畸变 seed 不能直接用于
-`config/euroc/` 的 `pinhole-radtan5` 相机任务。
+采用 `pinhole-radtan` 或其他畸变模型的相机任务。
 
 也可以保留 task 中初始化块的注释，通过第 1.2 节的 CLI 参数一次性启用初值。
 task 内的相对初始化路径以 task YAML 所在目录为基准；CLI 相对路径以当前目录为基准。

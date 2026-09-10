@@ -3,6 +3,7 @@
 /.deps/
 /Testing/
 /validation-runs/
+/result/
 /.pytest_cache/
 __pycache__/
 *.py[cod]

@@ -7,15 +7,14 @@
 
 BOOST_PYTHON_MODULE(libkalibr_opencv_fisheye_backend_python) {
   using aslam::cameras::OpenCvFisheyeDistortion;
-  using aslam::cameras::OpenCvFisheyePinholeCameraGeometry;
-  using aslam::cameras::OpenCvFisheyePinholeProjection;
+  using aslam::cameras::OpenCvFisheyeCameraGeometry;
+  using aslam::cameras::OpenCvFisheyeProjection;
   aslam::python::exportGenericProjectionDesignVariable<
       OpenCvFisheyeDistortion>("OpenCvFisheyeDistortion");
   aslam::python::exportGenericProjectionDesignVariable<
-      OpenCvFisheyePinholeProjection>("OpenCvFisheyePinholeProjection");
-  aslam::python::exportReprojectionErrors<
-      OpenCvFisheyePinholeCameraGeometry>("OpenCvFisheyePinhole");
-  aslam::python::exportCameraDesignVariables<
-      OpenCvFisheyePinholeCameraGeometry>(
-      "OpenCvFisheyePinholeCameraGeometry");
+      OpenCvFisheyeProjection>("OpenCvFisheyeProjection");
+  aslam::python::exportReprojectionErrors<OpenCvFisheyeCameraGeometry>(
+      "OpenCvFisheye");
+  aslam::python::exportCameraDesignVariables<OpenCvFisheyeCameraGeometry>(
+      "OpenCvFisheyeCameraGeometry");
 }

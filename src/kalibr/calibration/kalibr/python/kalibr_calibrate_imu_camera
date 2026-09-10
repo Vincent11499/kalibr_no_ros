@@ -6,7 +6,7 @@ from kalibr_imu_camera_calibration import *
 
 import numpy as np
 import argparse
-import kalibr_native_optimizer as native_runtime
+import kalibr_runtime as native_runtime
 from kalibr_no_ros import artifacts as run_artifacts
 # kalibr-native-runtime-overlay
 import signal
@@ -21,8 +21,6 @@ import kalibr_radtan8 as kr8
 kr8.install()
 import kalibr_opencv_fisheye as kof
 kof.install()
-import kalibr_opencv_fisheye_full as koff
-koff.install()
 
 np.set_printoptions(suppress=True)
 
@@ -109,7 +107,9 @@ def parseArgs():
     groupOpt.add_argument('--no-time-calibration', action='store_true', dest='no_time', help='Disable the temporal calibration', required=False)      
     groupOpt.add_argument('--max-iter', type=int, default=30, dest='max_iter', help='Max. iterations (default: %(default)s)', required=False)
     groupOpt.add_argument('--recover-covariance', action='store_true', dest='recover_cov', help='Recover the covariance of the design variables.', required=False)
-    groupOpt.add_argument('--profile-optimizer', action='store_true', dest='profile_optimizer', help='Print per-phase optimizer timing statistics.', required=False)
+    parser.set_defaults(profile_optimizer=False)
+    if native_runtime.profiling_enabled():
+        groupOpt.add_argument('--profile-optimizer', action='store_true', dest='profile_optimizer', help='Print per-phase optimizer timing statistics.', required=False)
     groupOpt.add_argument('--timeoffset-padding', type=float, default=30.e-3, dest='timeoffset_padding', help='Maximum range in which the timeoffset may change during estimation [s] (default: %(default)s)', required=False)
     groupOpt.add_argument('--initialization-config', dest='initialization_config', metavar='PATH', action=Once, help=argparse.SUPPRESS)
 

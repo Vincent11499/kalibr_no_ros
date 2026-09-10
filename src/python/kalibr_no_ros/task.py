@@ -205,7 +205,7 @@ def load_task(path, expected_job=None):
             raise TaskError("cameras must be a non-empty list")
     else:
         camera_calibration = task.get("camera_calibration")
-        if not (
+        if camera_calibration is not None and not (
             isinstance(camera_calibration, str) and camera_calibration
             or isinstance(camera_calibration, dict)
             and camera_calibration.get("path")
@@ -295,7 +295,7 @@ def _camera_calibration_ids(task):
     cameras = data.get("cameras")
     if not isinstance(cameras, list) or not cameras:
         raise TaskError("camera calibration contains no cameras")
-    return ["cam{}".format(index) for index in range(len(cameras))]
+    return [camera["id"] for camera in cameras]
 
 
 def resolve_initialization(task, expected_job=None, initialization=None,
@@ -581,20 +581,26 @@ def _append_common_dataset(arguments, task):
 
 
 def _append_execution(arguments, task, overrides):
+    from kalibr_runtime import profiling_enabled
+
     execution = resolve_execution(task.get("execution"), overrides)
     for key, option in (
         ("detector_processes", "--detector-processes"),
         ("optimizer_threads", "--optimizer-threads"),
         ("detector_inflight_per_worker", "--detector-inflight-per-worker"),
         ("detector_opencv_threads", "--detector-opencv-threads"),
-        ("profiling_memory_sample_interval_s", "--memory-sample-interval"),
     ):
         value = execution.get(key)
         if value is not None:
             arguments.extend([option, str(value)])
     timing_json = overrides.get("timing_json")
     if timing_json:
+        if not profiling_enabled():
+            raise TaskError("timing output requires the project-profile build")
         arguments.extend(["--timing-json", str(timing_json)])
+        interval = execution.get("profiling_memory_sample_interval_s")
+        if interval is not None:
+            arguments.extend(["--memory-sample-interval", str(interval)])
 
 
 def resolve_execution(configured=None, overrides=None, standard_defaults=False):
@@ -757,6 +763,8 @@ def _legacy_camchain(task, temporary):
     for index, camera in enumerate(cameras):
         item = dict(camera)
         item.pop("id", None)
+        for field in ("rms", "alignment", "from_camera"):
+            item.pop(field, None)
         item["rostopic"] = item.pop("topic")
         legacy["cam{}".format(index)] = item
     path = temporary / "camchain.yaml"
@@ -872,7 +880,7 @@ def _capture_solver_logs(output):
             os.close(original)
 
 
-def _legacy_cameras_to_v2(data, calibration_type, imus=None):
+def _native_cameras_to_result(data, calibration_type, imus=None):
     cameras = []
     for key in sorted((key for key in data if key.startswith("cam")), key=lambda value: int(value[3:])):
         camera = {"id": key}
@@ -882,7 +890,6 @@ def _legacy_cameras_to_v2(data, calibration_type, imus=None):
         "schema_version": CALIBRATION_RESULT_VERSION,
         "kind": "calibration_result",
         "calibration_type": calibration_type,
-        "transform_convention": "p_target = T_target_source * p_source",
         "cameras": cameras,
     }
     if imus is not None:
@@ -894,13 +901,13 @@ def _collect_outputs(work, output, job, export_poses):
     if job == "camera_calibration":
         camchain = next(work.glob("*-camchain.yaml"))
         result_text = next(work.glob("*-results-cam.txt"))
-        result = _legacy_cameras_to_v2(load_yaml(camchain), "cameras")
+        result = _native_cameras_to_result(load_yaml(camchain), "cameras")
         pose_pattern = "*-poses-cam0.csv"
     else:
         camchain = next(work.glob("*-camchain-imucam.yaml"))
         imu_yaml = next(work.glob("*-imu.yaml"))
         result_text = next(work.glob("*-results-imucam.txt"))
-        result = _legacy_cameras_to_v2(
+        result = _native_cameras_to_result(
             load_yaml(camchain), "camera_imu", load_yaml(imu_yaml)
         )
         pose_pattern = "*-poses-imucam-imu0.csv"
@@ -967,11 +974,11 @@ def _preserve_diagnostic_sidecars(work, output):
             shutil.move(str(source), str(destination))
 
 
-def run_task(prefix, config, output_dir, expected_job, force=False, **overrides):
+def _run_task_staged(prefix, config, output_dir, expected_job, force=False, _task=None, **overrides):
     from .artifacts import run_context
     from .reporting import generate_report
 
-    task = load_task(config, expected_job=expected_job)
+    task = _task if _task is not None else load_task(config, expected_job=expected_job)
     initialization = resolve_initialization(
         task,
         expected_job,
@@ -1040,7 +1047,7 @@ def run_task(prefix, config, output_dir, expected_job, force=False, **overrides)
                 with _capture_solver_logs(output):
                     _run_legacy(prefix, command, arguments, temporary)
             artifacts = context.artifacts
-            if artifacts.get("state") != "completed" and SOURCE_VARIANT != "reference":
+            if artifacts.get("state") != "completed":
                 raise TaskError("native calibration did not publish a completed result")
             artifacts["dataset"] = dict(resolved_task["dataset"])
             if initialization is not None:
@@ -1061,12 +1068,6 @@ def run_task(prefix, config, output_dir, expected_job, force=False, **overrides)
                 (task.get("output") or {}).get("export_poses"))
             result = _collect_outputs(temporary, output, expected_job, export_poses)
             solver_completed = True
-            if SOURCE_VARIANT == "reference":
-                # Frozen native scripts deliberately have no evidence hooks.
-                # Keep comparison execution operational, report metrics as
-                # unavailable, and never invent observations for Reference.
-                artifacts.update(state="completed", cameras=[], views=[], imu_residuals=[],
-                                 evidence_unavailable="frozen_reference_has_no_observation_hooks")
             if initialization_report is not None:
                 _finish_initialization_report(
                     output / "initialization_report.yaml",
@@ -1074,7 +1075,11 @@ def run_task(prefix, config, output_dir, expected_job, force=False, **overrides)
                     observability_path=output / "observability.yaml",
                     calibration_path=output / "calibration.yaml",
                 )
-            generate_report(artifacts, result, output, task["output"])
+            from .delivery import apply_camera_ids, enrich_result
+            apply_camera_ids(task, artifacts, result)
+            report = generate_report(artifacts, result, output, task["output"])
+            enrich_result(result, report["metrics"])
+            dump_yaml(result, output / "calibration.yaml")
             write_run_manifest(output, status="completed", task=task)
         except Exception as error:
             if initialization_report is not None:
@@ -1101,3 +1106,9 @@ def run_task(prefix, config, output_dir, expected_job, force=False, **overrides)
             write_run_manifest(output, status=status, task=task, failure=error)
             raise
     return output
+
+
+def run_task(prefix, config, output_dir, expected_job, force=False, **overrides):
+    """Solve in a private workspace, then publish one named delivery atomically per file."""
+    from .delivery import run_delivery
+    return run_delivery(prefix, config, output_dir, expected_job, force, overrides)

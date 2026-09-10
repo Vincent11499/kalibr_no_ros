@@ -1,6 +1,6 @@
 # 相机模型与优化参数
 
-本文说明当前 Project 版本在相机 task 中可直接填写的全部相机模型、每个模型的参数
+本文说明当前版本在相机 task 中可直接填写的全部相机模型、每个模型的参数
 顺序，以及这些参数在 `camera_calibration` 和 `camera_imu_calibration` 中是否参与优化。
 模型注册表以
 [`kalibr_calibrate_cameras`](../src/kalibr/calibration/kalibr/python/kalibr_calibrate_cameras)
@@ -35,9 +35,9 @@ baseline 初始化 LM 是一个原生例外：该阶段投影参数 active、畸
 最容易混淆的两点是：
 
 - `pinhole-radtan` 是 4 个畸变参数，不是 `radtan5` 的别名；
-- task 公开的是 `pinhole-opencv-fisheye`。源码中为兼容和实现复用保留的零 skew
-  类型不是另一个 task 模型，不能在 `cameras[].model` 中写成
-  `opencv_fisheye` 或 `opencv_fisheye_full`。
+- 鱼眼扩展只提供九参数 `pinhole-opencv-fisheye`，唯一 Python 包为
+  `kalibr_opencv_fisheye`；八参数等距鱼眼使用原生 `pinhole-equi`。
+  task 中填写表内完整模型名，结果字段中的 `opencv_fisheye` 不直接作为 task 模型。
 
 ## 2. 参数含义和投影公式
 
@@ -149,6 +149,11 @@ $$
 
 当 $\alpha=0$ 时，两者的主要投影公式相同；完整 OpenCV 模型的区别是将 alpha/skew
 作为第五个投影设计变量，并提供相应的 OpenCV YAML 双向转换。
+
+九参数模型同样支持正式 OpenCV 导出、双目极线指标和校正图。导出的 K 保留
+`K[0,1] = fu * alpha`；非零 alpha 的角点在调用 OpenCV fisheye 校正前去除 skew，
+图像 remap 再恢复源像素的 skew，避免将带 skew 的原图当作零 skew 图像。
+`alpha=0`、原生 `pinhole-equi` 与 radtan 的既有校正路径保持不变。
 
 ### 2.4 `pinhole-fov`
 

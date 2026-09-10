@@ -1,8 +1,8 @@
 # v1.0.0 输入、求解与输出契约
 
 本版本统一软件包、CLI、配置和项目结构化输出为字符串版本 `1.0.0`，并将输入验证、
-原生求解和结果评价分开。新任务不兼容旧整数 schema，也不迁移、改名或覆盖历史
-数据、冻结 Reference 或 benchmark。第三方 ROS bag、ROS 消息、OpenCV FileStorage
+原生求解和结果评价分开。新任务不兼容旧整数 schema，运行时不改写输入数据。
+第三方 ROS bag、ROS 消息、OpenCV FileStorage
 编码规则和 SDK ABI 不属于项目 schema 版本，保留其标准。
 
 ## 1. 公共文件与路径
@@ -16,7 +16,7 @@
 | 相机初值 | kind: camera_calibration_initialization | 单目或双目内参、畸变、baseline 初值 |
 | Camera–IMU 初值 | kind: camera_imu_calibration_initialization | 安装外参、时间偏移、bias 等物理初值 |
 | 离线评价 | kind: calibration_evaluation | 只改变报告、校正和判定规则 |
-| calibration.yaml | kind: calibration_result | 最终物理参数，是下游权威输入 |
+| <任务类型>_<传感器ID...>.yaml | kind: calibration_result | 最终物理参数，是下游权威输入 |
 | metrics.json／assessment.json | calibration_metrics／calibration_assessment | 指标证据与单独判定 |
 
 表内文档同时声明 `schema_version: "1.0.0"`。公共 task、模型、输入与输出选项拒绝
@@ -72,7 +72,7 @@ bag 标定仍需填写话题。文件依赖和输出含义见 [数据与输出�
 
 ## 3. 求解边界与可选观测记录
 
-camera 与 Camera–IMU 继续分别调用冻结原生算法的生产迁移路径，保持阶段顺序、残差、
+camera 与 Camera–IMU 分别调用原生标定入口，保持阶段顺序、残差、
 active 参数、优化器、超参数、停止与异常点逻辑。相机初始化、最终观测选择和残差评价
 不是同一步骤；新增保存钩子只读取原生状态，不重新检测、替换图像或改变 view 顺序。
 
@@ -128,6 +128,8 @@ rad/s，accel bias 单位为 m/s²。`axes.x/y/z` 给出采样值的均值、标
 
 双目极线指标只使用最终图对的共同全局角点 ID，基于模型一致的 OpenCV 校正计算。
 `pinhole-equi` 使用 fisheye 校正，不能对带畸变原像素直接套普通 pinhole F 矩阵。
+九参数 `pinhole-opencv-fisheye` 的导出 K 保留 alpha/skew；非零 alpha 在角点
+校正和图像映射中显式处理，不会丢弃第五个内参。
 报告给出校正后 y 差的均值、RMS、分布及有效样本数，域外或不可用点明确记录。
 
 | output 参数 | 默认／范围 | 作用及比较边界 |
@@ -135,7 +137,11 @@ rad/s，accel bias 单位为 m/s²。`axes.x/y/z` 给出采样值的均值、标
 | archive_observations | false，布尔 | 保存可重算的最终观测；增加归档 I/O |
 | archive_selection_history | false，布尔 | 保存选择历史，必须同时开观测归档 |
 | copy_used_images | false，布尔 | 可选复制最终使用原图；数据量可很大 |
-| export_opencv | true，布尔 | 导出相机／双目 OpenCV 参数，附模型与方向 |
+| export_opencv | false，布尔 | 显式导出相机／双目 OpenCV 参数，附模型与方向 |
+| name | 自动，字符串 | 任务与传感器 ID 组成的文件名；可用安全名称区分不同模型 |
+| save_diagnostics | false，布尔 | 保存日志、校验、可观性、初值报告、判定及追溯文件 |
+| save_metrics | false，布尔 | 保存 metrics.json，支持离线摘要评价 |
+| export_text | false，布尔 | 额外交付具名 results.txt |
 | evaluation_pairing_tolerance_s | 0.0002 s，有限且 >=0 | 仅 Camera–IMU 最终观测后处理最近一对一配对，稳定来源索引打破平局 |
 | visualizations.enabled | false，布尔 | 生成角点、残差与校正图 |
 | visualizations.max_frames_per_camera | 30，正整数 | 每相机展示上限，不裁剪指标总体 |
@@ -163,18 +169,21 @@ rad/s，accel bias 单位为 m/s²。`axes.x/y/z` 给出采样值的均值、标
 
 ## 5. 生成文件和离线重评
 
-运行主要生成 `calibration.yaml`、`results.txt`、`report.pdf`、`report.html`、
-`metrics.json`、`assessment.json`、`run_manifest.json`、`task_resolved.yaml`、
-`validation.json`、`stdout.log`、`stderr.log`。按条件另有 initialization_report、
-observability、poses.csv，以及 profile 构建显式请求的 timing.json。
+默认交付 `<名称>.yaml`、`<名称>.report.pdf` 和 `<名称>.report.html`，名称由任务类型及
+传感器 ID 组成，也可通过 `output.name` 指定。每目附标量 `rms`，相邻外参附
+标量 `alignment`；两个数值均为 px 单位的 RMS，缺证据时为 null，不输出重复的 from_camera 字段。
+结果不再写 transform_convention 文本。
+诊断文件由 `output.save_diagnostics` 开启，指标 JSON 由 `output.save_metrics` 开启，
+均默认 false；保存到 `<名称>/`，不会覆盖同目录其他任务。详细规范见
+[输出说明](DATASET_WORKFLOW_ZH.md#4-命名与精简交付)。
 
-标定命令完成任务解析、建立运行目录后，在调用求解器前自动运行输入验证，并将证据写到
-该运行目录的 `validation.json`；不需要先手工执行一次 `validate`。输入验证失败会阻止
+标定命令在调用求解器前自动运行输入验证，启用诊断保存后才交付 `validation.json`；
+不需要先手工执行一次 `validate`。输入验证失败会阻止
 进入求解，不能把其结构检查通过状态当成 `assessment.json` 的质量判定。
 
 进入内部求解阶段后，Python、原生 C++ 和检测 worker 的标准输出／错误输出分别写到
-运行目录根下的 `stdout.log`、`stderr.log`，不依赖用户额外做 shell 重定向。求解异常时
-保留日志及异常信息；尚未进入求解的输入失败可能没有这两个日志。CLI 自身和后续报告
+临时工作目录中的 `stdout.log`、`stderr.log`，启用诊断后保留到任务证据子目录。
+求解异常时仅在诊断配置开启时保留日志；尚未进入求解的输入失败可能没有这两个日志。CLI 自身和后续报告
 生成阶段的终端消息不属于这两个内部求解日志的完整采集范围。
 
 OpenCV 导出放在 `opencv/`。观测归档包含 `observations/manifest.json` 和压缩 CSV

@@ -347,7 +347,8 @@ class RunContext:
             camera = self._datasets[id(native.dataset)][1]
             camera_model, intrinsics = native.camConfig.getIntrinsics()
             distortion_model, distortion = native.camConfig.getDistortion()
-            model = "{}-{}".format(camera_model, "equi" if distortion_model == "equidistant" else distortion_model)
+            model = ("pinhole-opencv-fisheye" if camera_model == "pinhole_opencv_fisheye"
+                     else "{}-{}".format(camera_model, "equi" if distortion_model == "equidistant" else distortion_model))
             camera.update({
                 "model": model, "intrinsics": _vector(intrinsics),
                 "distortion_coeffs": _vector(distortion),

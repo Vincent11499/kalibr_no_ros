@@ -10,7 +10,7 @@
 #include <aslam/backend/backend.hpp>
 #include <aslam/backend/OptimizationProblemBase.hpp>
 #include <aslam/Exceptions.hpp>
-#include <sm/timing/Timer.hpp>
+#include <aslam/backend/Profiling.hpp>
 #include <boost/thread.hpp>
 #include <sparse_block_matrix/linear_solver.h>
 #include <aslam/backend/TrustRegionPolicy.hpp>
@@ -50,8 +50,8 @@ namespace aslam {
      */
     class Optimizer2 {
     public:
-      /// Phase timing is collected only by the optimized overlay build.
-      typedef sm::timing::Timer Timer;
+      /// Phase timing is collected only by a profiling build.
+      typedef ProfilingTimer Timer;
       typedef sparse_block_matrix::SparseBlockMatrix<Eigen::MatrixXd> SparseBlockMatrix;
 
       SM_DEFINE_EXCEPTION(Exception, aslam::Exception);

@@ -346,7 +346,9 @@ namespace aslam {
 
             void Optimizer2::printTiming() const
             {
+#ifdef KALIBR_NATIVE_ENABLE_PROFILING
                 sm::timing::Timing::print(std::cout);
+#endif
             }
 
 

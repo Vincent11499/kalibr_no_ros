@@ -1,9 +1,13 @@
-"""Register the opt-in OpenCV fisheye type with Kalibr's Python layer."""
+"""Register the nine-parameter OpenCV fisheye model in Kalibr's Python API."""
 
+import sys
 from pathlib import Path
+
+import numpy as np
 
 
 _INSTALLED = False
+CAMERA_MODEL = "pinhole_opencv_fisheye"
 
 
 def _write_camchain(calibrator, result_file, graph, fisheye_model):
@@ -19,7 +23,7 @@ def _write_camchain(calibrator, result_file, graph, fisheye_model):
         cvb.DistortedOmni: "omni",
         cvb.ExtendedUnified: "eucm",
         cvb.DoubleSphere: "ds",
-        fisheye_model: "pinhole",
+        fisheye_model: CAMERA_MODEL,
     }
     distortion_models = {
         cvb.DistortedPinhole: "radtan",
@@ -32,8 +36,6 @@ def _write_camchain(calibrator, result_file, graph, fisheye_model):
         fisheye_model: "opencv_fisheye",
     }
 
-    # The independent radtan5 extension may be installed in the same process.
-    # Register it dynamically so a mixed pinhole chain remains writable.
     try:
         from kalibr_radtan5 import PinholeRadtan5
     except ImportError:
@@ -51,20 +53,28 @@ def _write_camchain(calibrator, result_file, graph, fisheye_model):
         distortion_models[PinholeRadtan8] = "radtan8"
 
     chain = cr.CameraChainParameters(result_file, createYaml=True)
-    for camera_id, camera in enumerate(calibrator.cameras):
+    for camera in calibrator.cameras:
         try:
             camera_model = camera_models[camera.model]
             distortion_model = distortion_models[camera.model]
         except KeyError:
             raise RuntimeError(
-                "OpenCV fisheye integration cannot serialize camera model {}".format(
+                "OpenCV fisheye integration cannot serialize {}".format(
                     camera.model
                 )
             )
         parameters = cr.CameraParameters(result_file, createYaml=True)
         parameters.setRosTopic(camera.dataset.topic)
         projection = camera.geometry.projection()
-        if camera_model == "omni":
+        if camera_model == CAMERA_MODEL:
+            intrinsics = [
+                projection.fu(),
+                projection.fv(),
+                projection.cu(),
+                projection.cv(),
+                projection.alpha(),
+            ]
+        elif camera_model == "omni":
             intrinsics = [
                 projection.xi(),
                 projection.fu(),
@@ -126,16 +136,23 @@ def install():
     from kalibr_camera_calibration import CameraUtils
     from kalibr_common import ConfigReader as cr
 
-    from . import (
-        OpenCvFisheyeDistortion,
-        OpenCvFisheyePinholeCameraGeometry,
-        OpenCvFisheyePinholeFrame,
-        OpenCvFisheyePinholeProjection,
-        OpenCvFisheyePinholeReprojectionErrorSimple,
-        PinholeOpenCvFisheye,
+    package = sys.modules[__package__]
+    required = (
+        "OpenCvFisheyeProjection",
+        "OpenCvFisheyeCameraGeometry",
+        "OpenCvFisheyeFrame",
+        "OpenCvFisheyeReprojectionErrorSimple",
+        "PinholeOpenCvFisheye",
     )
-    from .yaml_io import export_kalibr_camchain
+    missing = [name for name in required if not hasattr(package, name)]
+    if missing:
+        raise ImportError(
+            "OpenCV fisheye native bindings are unavailable: {}".format(
+                ", ".join(missing)
+            )
+        )
 
+    fisheye_model = package.PinholeOpenCvFisheye
     original_check_distortion = cr.CameraParameters.checkDistortion
 
     def check_distortion(self, model, coefficients):
@@ -150,16 +167,31 @@ def install():
         return original_check_distortion(self, model, coefficients)
 
     cr.CameraParameters.checkDistortion = check_distortion
+    original_check_intrinsics = cr.CameraParameters.checkIntrinsics
+
+    def check_intrinsics(self, model, intrinsics):
+        if model != CAMERA_MODEL:
+            return original_check_intrinsics(self, model, intrinsics)
+        values = np.asarray(intrinsics, dtype=np.float64).reshape(-1)
+        if values.size != 5:
+            self.raiseError(
+                "{} intrinsics must be [fu,fv,cu,cv,alpha]".format(
+                    CAMERA_MODEL
+                )
+            )
+        if not np.all(np.isfinite(values)):
+            self.raiseError("OpenCV fisheye intrinsics must be finite")
+        if values[0] <= 0.0 or values[1] <= 0.0:
+            self.raiseError("OpenCV fisheye focal lengths must be positive")
+
+    cr.CameraParameters.checkIntrinsics = check_intrinsics
 
     original_aslam_camera_init = cr.AslamCamera.__init__
 
     def aslam_camera_init(
         self, camera_model, intrinsics, distortion_model, coefficients, resolution
     ):
-        if camera_model != "pinhole" or distortion_model not in (
-            "opencv_fisheye",
-            "fisheye",
-        ):
+        if camera_model != CAMERA_MODEL:
             return original_aslam_camera_init(
                 self,
                 camera_model,
@@ -168,36 +200,54 @@ def install():
                 coefficients,
                 resolution,
             )
-        distortion = OpenCvFisheyeDistortion(*coefficients)
-        projection = OpenCvFisheyePinholeProjection(
+        if distortion_model not in ("opencv_fisheye", "fisheye"):
+            raise RuntimeError(
+                "{} requires opencv_fisheye distortion".format(CAMERA_MODEL)
+            )
+        distortion = package.OpenCvFisheyeDistortion(*coefficients)
+        projection = package.OpenCvFisheyeProjection(
             intrinsics[0],
             intrinsics[1],
             intrinsics[2],
             intrinsics[3],
+            intrinsics[4],
             resolution[0],
             resolution[1],
             distortion,
         )
-        self.geometry = OpenCvFisheyePinholeCameraGeometry(projection)
-        self.frameType = OpenCvFisheyePinholeFrame
+        self.geometry = package.OpenCvFisheyeCameraGeometry(projection)
+        self.frameType = package.OpenCvFisheyeFrame
         self.keypointType = cv.Keypoint2
-        self.reprojectionErrorType = OpenCvFisheyePinholeReprojectionErrorSimple
+        self.reprojectionErrorType = package.OpenCvFisheyeReprojectionErrorSimple
         self.undistorterType = None
 
     cr.AslamCamera.__init__ = aslam_camera_init
 
-    original_save_chain_parameters_yaml = CameraUtils.saveChainParametersYaml
+    original_print_details = cr.CameraParameters.printDetails
+
+    def print_details(self, dest=sys.stdout):
+        camera_model, intrinsics = self.getIntrinsics()
+        if camera_model != CAMERA_MODEL:
+            return original_print_details(self, dest)
+        distortion_model, coefficients = self.getDistortion()
+        print("  Camera model: {}".format(camera_model), file=dest)
+        print("  Focal length: {}".format(intrinsics[0:2]), file=dest)
+        print("  Principal point: {}".format(intrinsics[2:4]), file=dest)
+        print("  OpenCV fisheye alpha: {}".format(intrinsics[4]), file=dest)
+        print("  Distortion model: {}".format(distortion_model), file=dest)
+        print("  Distortion coefficients: {}".format(coefficients), file=dest)
+
+    cr.CameraParameters.printDetails = print_details
+
+    original_save = CameraUtils.saveChainParametersYaml
 
     def save_chain_parameters_yaml(calibrator, result_file, graph):
-        if not any(
-            camera.model is PinholeOpenCvFisheye for camera in calibrator.cameras
-        ):
-            return original_save_chain_parameters_yaml(calibrator, result_file, graph)
+        if not any(camera.model is fisheye_model for camera in calibrator.cameras):
+            return original_save(calibrator, result_file, graph)
+        _write_camchain(calibrator, result_file, graph, fisheye_model)
 
-        _write_camchain(calibrator, result_file, graph, PinholeOpenCvFisheye)
+        from kalibr_no_ros.opencv_fisheye_io import export_kalibr_camchain
 
-        # The output prefix mirrors Kalibr's existing <bag>-camchain.yaml
-        # convention and matches the radtan5 extension's filenames.
         result_path = Path(result_file)
         suffix = "-camchain.yaml"
         result_text = str(result_path)
@@ -209,9 +259,6 @@ def install():
         try:
             outputs = export_kalibr_camchain(result_file, prefix)
         except ValueError as error:
-            # Kalibr supports mixed chains containing non-OpenCV central
-            # models.  The Kalibr camchain remains valid; only the optional
-            # OpenCV sidecar cannot represent that chain.
             print("  Skipping OpenCV sidecar export: {}".format(error))
         else:
             for output in outputs:

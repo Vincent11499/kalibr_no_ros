@@ -22,38 +22,41 @@ cameras: # 列表顺序固定相机身份；cam0左目、cam1右目。
 
 calibration: # 仅求解和观测选择参数；保存与显示选项放output。
   freeze_intrinsics: false # 默认false；true只适用于至少双目且每台提供完整seed。
-  window_half_size_px: 2 # 像素，正整数；实际亚像素窗口为5×5，原生默认。
-  max_displacement_px: 1.224744871391589 # 像素，>0；内部平方为原生1.5阈值。
+  window_half_size_px: 7 # 像素，正整数；本例实际亚像素窗口15×15，省略时默认2（5×5）。
+  max_displacement_px: 1.0 # 像素，>0；本例内部平方阈值1.0，省略时默认sqrt(1.5)像素。
   focal_initialization_min_visible_corner_ratio: 1.0 # 无seed时的完整帧比例，(0,1]；1保留原生路径。
-  synchronization_tolerance_s: 0.0002 # 秒，>=0；对齐采集200µs。改变配对，原生省略值为0.02s。
+  synchronization_tolerance_s: 0.0001 # 秒，>=0；本例100µs，省略时默认0.02s；改变多相机配对。
   qr_tolerance: 0.02 # 无量纲有限数；保留原生CLI参数，当前不作用于线性求解器。
   information_gain_tolerance: 0.2 # 信息增益阈值；>=0或-1，改变增量view选择。
   min_views_for_outlier_statistics: 20 # view数量，正整数；开始建立异常点统计的门槛。
-  shuffle: false # 固定观测顺序，保证候选与基线可比较。
+  shuffle: false # 固定观测顺序，便于重复运行。
   remove_outliers: true # 原生异常角点过滤；更改会改变求解数据。
   final_filtering: true # 保留原生最终过滤阶段。
   blake_zisserman: false # 原生默认；true改变残差的鲁棒代价。
 
 execution: # 固定可重复线程预算，不改动数据选择或算法超参数。
-  detector_processes: 4 # 检测工作进程数，正整数；参考和候选比较时保持一致。
+  detector_processes: 8 # 检测工作进程数，正整数；本例8进程，省略时保留原生检测执行方式。
   optimizer_threads: 4 # 已接入的原生优化阶段线程数，正整数。
   detector_inflight_per_worker: 2 # 每worker允许在途帧数，正整数。
   detector_opencv_threads: 1 # 每个检测worker的OpenCV线程数，防止超配。
   profiling_memory_sample_interval_s: 0.25 # 秒，>0；仅profile构建且显式启用时采样。
 
 output: # 后处理与证据保存，不反馈修改求解问题或最终观测。
-  archive_observations: true # 保存最终实际使用帧、view、角点与残差，供离线重新评价。
+  save_diagnostics: false # 默认false；按需保存日志、输入校验、可观性、判定、运行清单及任务/初始化诊断。
+  save_metrics: false # 默认false；按需另存metrics.json，供没有观测归档时离线读取汇总指标。
+  export_text: false # 默认false；按需另存人可读results.txt，结果YAML与HTML/PDF仍正常生成。
+  archive_observations: true # 默认false；本例按需开启最终帧、view、角点与残差归档，供离线重新评价。
   archive_selection_history: true # 保存可用的选择/过滤事件；依赖archive_observations=true。
   copy_used_images: false # 不复制原图；重新可视化时需要可访问的源数据。
-  export_opencv: true # 导出pinhole-equi对应fisheye参数及双目校正矩阵。
+  export_opencv: false # 默认false；按需另存OpenCV相机参数及可用双目校正矩阵。
   export_poses: false # 可选poses.csv；启用后增加序列化。
   verbose: false # 关闭原生详细打印。
   show_extraction: false # 默认不显示检测窗口，启用会影响运行方式与耗时。
   extraction_stepping: false # 默认不逐帧交互检测。
   interactive_report: false # 生成报告但不弹出交互图窗。
-  evaluation_pairing_tolerance_s: 0.0002 # 秒，>=0；仅Camera–IMU最终观测后处理配对，不改变原生求解。
+  evaluation_pairing_tolerance_s: 0.0001 # 秒，>=0；本例100µs，省略时默认200µs；仅Camera–IMU观测后处理配对，不影响本相机任务。
   visualizations: # 从最终使用帧按稳定时间顺序均匀抽样。
-    enabled: true # 输出角点/残差覆盖图及双目校正示意。
+    enabled: true # 默认false；本例按需开启角点/残差覆盖图及可用双目校正示意。
     max_frames_per_camera: 30 # 每相机最大可视化帧数，正整数；不影响统计总体。
     max_pairs: 30 # 最大双目可视化对数，正整数；统计仍用全部最终共同角点。
     sampling: uniform # 当前唯一支持的确定性均匀抽样方法。
