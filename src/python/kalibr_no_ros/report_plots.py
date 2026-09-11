@@ -340,6 +340,14 @@ def _summary_sections(metrics, assessment, calibration):
         rows.append([name, camera.get("used_frames"), camera.get("selected_frames"), error.get("count"),
                      error.get("rms_px"), error.get("p95"), error.get("max")])
     yield "Calibration overview", ["Camera", "Used frames", "Selected", "Corners", "RMS [px]", "P95 [px]", "Max [px]"], rows
+    if metrics.get("observability"):
+        observability = metrics["observability"]
+        yield "Local observability", ["Parameter", "Value"], [
+            ["Quality", observability.get("quality")],
+            ["Native numerical rank", "{} / {}".format(observability.get("rank"), observability.get("columns"))],
+            ["Operational rank", "{} / {}".format(observability.get("operational_rank"), observability.get("columns"))],
+            ["Interpretation", "Full numerical rank can still have weakly constrained directions. This is not a hardware accuracy guarantee."],
+        ]
     if metrics.get("stereo_pairs"):
         rows = []
         for name, pair in metrics["stereo_pairs"].items():
@@ -366,6 +374,17 @@ def _summary_sections(metrics, assessment, calibration):
         if "timeshift_cam_imu_s" in camera:
             rows.append(["Camera/IMU time shift [s]", camera["timeshift_cam_imu_s"]])
         yield name + " · Camera parameters", ["Parameter", "Value"], rows
+        shutter = camera.get("shutter")
+        if shutter:
+            rows = [["Shutter model", shutter["type"]],
+                         ["Signed line delay [s/row]", shutter["line_delay_s"]],
+                         ["Reference row [px]", shutter["reference_row_px"]],
+                         ["First-to-last row span [s]", shutter["first_to_last_row_span_s"]],
+                         ["Line delay estimated", shutter["estimated"]],
+                         ["Frame time shift reference", "Effective sample at reference row"]]
+            if "line_delay_std_s" in shutter:
+                rows.append(["Local line-delay std [s/row]", shutter["line_delay_std_s"]])
+            yield name + " · Rolling shutter timing", ["Parameter", "Value"], rows
         for field, source in (("T_cn_cnm1", "previous camera"), ("T_cam_imu", "IMU")):
             transform = _matrix(final.get(field))
             if transform is not None:
@@ -450,6 +469,8 @@ def render_reports(metrics, assessment, files, *, artifacts=None, calibration=No
     status = assessment.get("status", "unavailable")
     grade = assessment.get("reference_grading", {}).get("status", "unavailable")
     subtitle = "Final used observations; 2D corner RMS in pixels. Missing evidence is unavailable."
+    if any(c.get("shutter") for c in metrics.get("cameras", {}).values()):
+        subtitle += " Rolling shutter: reprojection uses per-corner times; alignment and images use optical rectification without row-time compensation."
     document = ['<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">',
                 '<title>Calibration report</title><style>' + _STYLE + '</style></head><body><main>',
                 '<header><div class="eyebrow">KALIBR NO-ROS · V{}</div><h1>Calibration report</h1><div class="badges">'.format(VERSION),

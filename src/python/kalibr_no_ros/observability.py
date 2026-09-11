@@ -161,6 +161,11 @@ def camera_imu_parameter_blocks(calibrator):
                 camera.cameraTimeToImuTimeDv, "seconds",
                 "t_imu = t_cam + timeshift_cam_imu_s"),
         ])
+        if hasattr(camera, "lineDelayDv"):
+            blocks.append(_parameter_block(
+                "camera_imu.cam{}.line_delay_latent".format(index),
+                camera.lineDelayDv, "dimensionless",
+                "line_delay_s = max_abs_line_delay_s * tanh(latent)"))
 
     for index, imu in enumerate(calibrator.ImuList):
         if index:

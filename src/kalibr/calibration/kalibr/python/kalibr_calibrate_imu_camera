@@ -87,6 +87,7 @@ def parseArgs():
     #configuration files
     groupCam = parser.add_argument_group('Camera system configuration')
     groupCam.add_argument('--cams', dest='chain_yaml', help='Camera system configuration as yaml file', action=Once)
+    groupCam.add_argument('--rolling-shutter-config', dest='rolling_shutter_config', help=argparse.SUPPRESS)
     groupCam.add_argument('--recompute-camera-chain-extrinsics',  action='store_true', dest='recompute_chain_extrinsics', \
                           help='Recompute the camera chain extrinsics. This option is exclusively recommended for debugging purposes in order to identify problems with the camera chain extrinsics.')
     groupCam.add_argument('--reprojection-sigma', type=float, default=1.0, dest='reprojection_sigma', help='Standard deviation of the distribution of reprojected corner points [px]. (default: %(default)s)', required=False)
@@ -249,7 +250,11 @@ def main():
     print("Initializing camera chain:")
     chain = kc.CameraChainParameters(parsed.chain_yaml)      
     chain.printDetails()   
-    camChain = sens.IccCameraChain(chain, targetConfig, parsed)
+    if parsed.rolling_shutter_config:
+        from kalibr_imu_camera_calibration.IccRollingShutter import IccRollingShutterChain, IccRollingShutterCalibrator
+        camChain = IccRollingShutterChain(chain, targetConfig, parsed)
+    else:
+        camChain = sens.IccCameraChain(chain, targetConfig, parsed)
     if (initializationConfig is not None and
             'camera_imu' in initializationConfig):
         try:
@@ -261,7 +266,7 @@ def main():
             sys.exit(2)
 
     #create a calibrator instance
-    iCal = IccCalibrator()
+    iCal = IccRollingShutterCalibrator() if parsed.rolling_shutter_config else IccCalibrator()
 
     #register sensors with calibrator
     iCal.registerCamChain(camChain)
@@ -302,18 +307,20 @@ def main():
     iCal.optimize(maxIterations=parsed.max_iter, recoverCov=parsed.recover_cov, profileOptimizer=parsed.profile_optimizer)
     run_artifacts.publish_imu_camera(iCal)
 
-    if initializationConfig is not None:
+    if initializationConfig is not None or parsed.rolling_shutter_config:
         from kalibr_no_ros import observability as calibration_observability
+        observability_job = ('camera_imu_rolling_shutter_calibration'
+                             if parsed.rolling_shutter_config else 'camera_imu_calibration')
         observability_threads = native_runtime.optimizer_threads_or(
             max(1, multiprocessing.cpu_count() - 1))
         native_runtime.timed_call(
             "observability_analysis", "reporting",
-            {"job": "camera_imu_calibration",
+            {"job": observability_job,
              "optimizer_threads": observability_threads},
             calibration_observability.analyze_write_require,
             iCal.problem,
             calibration_observability.camera_imu_parameter_blocks(iCal),
-            job="camera_imu_calibration",
+            job=observability_job,
             path="observability.yaml",
             num_threads=observability_threads)
 

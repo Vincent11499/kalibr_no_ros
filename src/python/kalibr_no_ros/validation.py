@@ -68,6 +68,9 @@ def _quality_summary(value, label, rms=False):
 
 
 def validate_options(task):
+    from .rolling_shutter import JOB, validate_shutters
+    if task["job"] == JOB:
+        validate_shutters(task.get("rolling_shutter"))
     dataset = task["dataset"]
     _fields(dataset, {"type", "path", "time_range_s", "frequency_hz"}, "dataset")
     if not isinstance(dataset["path"], str) or not dataset["path"].strip():
@@ -245,7 +248,7 @@ def load_cameras(task):
     for index, camera in enumerate(cameras):
         _fields(camera, {"id", "camera_model", "distortion_model", "intrinsics", "distortion_coeffs",
                          "resolution", "rostopic", "T_cn_cnm1", "T_cam_imu", "timeshift_cam_imu",
-                         "cam_overlaps", "line_delay", "from_camera", "rms", "alignment"}, "camera result entry")
+                         "cam_overlaps", "line_delay", "from_camera", "rms", "alignment", "shutter"}, "camera result entry")
         _camera_id(camera.get("id"), camera_ids, "camera result id")
         for name in ("rms", "alignment"):
             if name in camera:
@@ -269,6 +272,16 @@ def load_cameras(task):
         resolution = camera.get("resolution")
         if not isinstance(resolution, list) or len(resolution) != 2 or any(type(v) is not int or v <= 0 for v in resolution):
             raise TaskError("camera result resolution must be [positive width, positive height]")
+        if "shutter" in camera:
+            from .rolling_shutter import JOB
+            if task["job"] != JOB:
+                raise TaskError("a rolling-shutter result requires the rolling-shutter job")
+            shutter = camera["shutter"]
+            if not isinstance(shutter, dict) or shutter.get("type") != "rolling_shutter":
+                raise TaskError("invalid camera shutter result")
+            for field in ("line_delay_s", "reference_row_px", "first_to_last_row_span_s"):
+                if type(shutter.get(field)) not in (int, float) or not math.isfinite(shutter[field]):
+                    raise TaskError("invalid shutter." + field)
         topic = camera.get("rostopic")
         if not isinstance(topic, str) or not topic.strip() or topic in topics:
             raise TaskError("camera result rostopic must be non-empty and unique")
@@ -302,6 +315,9 @@ def validate_task(config, *, decode_images=True):
         validate_options(task)
         load_target(task)
         cameras = load_cameras(task)
+        from .rolling_shutter import JOB, validate_shutters
+        if task["job"] == JOB:
+            validate_shutters(task["rolling_shutter"], [camera["id"] for camera in cameras])
         imu_configs = [load_imu(task, block) for block in task.get("imus", [])]
         resolve_initialization(task)
         reader = open_dataset(resolve_task_path(task, task["dataset"]["path"]))

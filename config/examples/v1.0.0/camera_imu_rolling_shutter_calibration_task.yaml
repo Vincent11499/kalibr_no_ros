@@ -1,0 +1,22 @@
+schema_version: "1.0.0"
+kind: calibration_task
+job: camera_imu_rolling_shutter_calibration
+dataset:
+  type: directory
+  path: data/stereo_imu_YYMMDD_hhmm
+target:
+  path: aprilgrid.yaml
+imus:
+  - id: imu0
+    path: imu.yaml
+    model: calibrated
+rolling_shutter:
+  cam0:
+    max_abs_line_delay_s: 0.00002
+  cam1:
+    max_abs_line_delay_s: 0.00002
+execution:
+  detector_processes: 4
+  optimizer_threads: 4
+output:
+  archive_observations: false

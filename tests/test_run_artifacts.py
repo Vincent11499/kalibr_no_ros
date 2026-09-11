@@ -293,6 +293,40 @@ class NativeRunArtifactsTest(unittest.TestCase):
             self.assertIn("unavailable_reason", missing_bias)
             json.dumps(context.artifacts, allow_nan=False)
 
+    def test_rolling_shutter_archive_keeps_final_corner_times_and_poses(self):
+        import tempfile
+        from kalibr_no_ros.reporting import write_archive, load_archive
+        observation = self.observation(0)
+        shutter = {"type": "rolling_shutter", "line_delay_s": 8e-6,
+                   "reference_row_px": 39.5, "first_to_last_row_span_s": 79*8e-6,
+                   "estimated": True}
+        camera = SimpleNamespace(dataset=self.dataset, getShutterResult=lambda: shutter,
+            camConfig=SimpleNamespace(getIntrinsics=lambda: ("pinhole", [70.,72.,50.,40.]),
+                getDistortion=lambda: ("equidistant", [0.,0.,0.,0.]), getResolution=lambda: [100,80]))
+        chain = SimpleNamespace(camList=[camera],
+            getResultTrafoImuToCam=lambda _: sm.Transformation(), getResultTimeShift=lambda _: 0.)
+        time_dv = aopt.Scalar(2.0)
+        with artifacts.run_context("camera_imu_rolling_shutter_calibration") as context:
+            context.record_detection(self.dataset, 0, observation)
+            errors = [self.error(observation, index, simple=True) for index in observation.getCornersIdx()]
+            poses = [np.eye(4), np.eye(4)]; poses[1][0,3] = .01
+            context.record_camera_terms(camera, observation, errors,
+                aopt.TransformationExpression(np.eye(4)), time_dv.toExpression(),
+                corner_times=[time_dv.toExpression()-.001, time_dv.toExpression()+.002],
+                corner_transforms=[aopt.TransformationExpression(pose) for pose in poses])
+            time_dv.update(np.array([.5]))
+            context.publish_imu_camera(SimpleNamespace(CameraChain=chain, ImuList=[]))
+            with tempfile.TemporaryDirectory() as directory:
+                write_archive(context.artifacts, directory)
+                restored = load_archive(directory)
+            self.assertEqual(restored["cameras"][0]["shutter"], shutter)
+            frame = restored["cameras"][0]["frames"][0]
+            self.assertEqual(frame["pose_time_reference"], "shutter_reference_row")
+            for corner, expected_time, pose in zip(frame["corners"], [2.499,2.502], poses):
+                self.assertAlmostEqual(corner["solver_timestamp_s"], expected_time)
+                self.assertAlmostEqual(corner["row_time_offset_s"], expected_time-2.5)
+                np.testing.assert_array_equal(corner["T_camera_target"], pose)
+
     def test_optimizer2_summary_reads_actual_native_return_fields(self):
         result = aopt.SolutionReturnValue()
         result.iterations, result.failedIterations = 9, 2

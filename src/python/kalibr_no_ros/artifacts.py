@@ -134,6 +134,7 @@ class RunContext:
         calibration_type = {
             "camera_calibration": "cameras",
             "camera_imu_calibration": "camera_imu",
+            "camera_imu_rolling_shutter_calibration": "camera_imu",
         }.get(calibration_type, calibration_type)
         self.pid = os.getpid()
         self.capture_history = bool(capture_history)
@@ -153,6 +154,7 @@ class RunContext:
         self._observations = {}
         self._view_keys = {}
         self._camera_terms = []
+        self._corner_time_terms = {}
         self._imu_sources = {}
         self._imu_terms = []
         self._solver_summary = None
@@ -251,10 +253,15 @@ class RunContext:
                 "axis_thresholds_px": _vector(thresholds),
             })
 
-    def record_camera_terms(self, camera, observation, errors, transform, time_expression):
+    def record_camera_terms(self, camera, observation, errors, transform, time_expression,
+                            corner_times=None, corner_transforms=None):
         self._camera_terms.append((camera, observation, list(errors), transform,
                                    time_expression,
                                    [int(i) for i in observation.getCornersIdx()]))
+        if corner_times is not None:
+            if len(corner_times) != len(errors) or len(corner_transforms) != len(errors):
+                raise ValueError("rolling-shutter corner timing length mismatch")
+            self._corner_time_terms[id(observation)] = (corner_times, corner_transforms)
 
     def record_camera_skipped(self, observation, reason):
         frame = self.frame(observation)
@@ -358,6 +365,8 @@ class RunContext:
             })
             if camera_id:
                 camera["T_cn_cnm1"] = _array(chain.getResultBaseline(camera_id - 1, camera_id)[0].T())
+            if hasattr(native, "getShutterResult"):
+                camera["shutter"] = native.getShutterResult()
         for camera, observation, errors, transform, time_expression, corner_ids in self._camera_terms:
             if len(corner_ids) != len(errors):
                 raise RuntimeError("camera corner IDs and native residual counts differ")
@@ -365,6 +374,16 @@ class RunContext:
             frame.update({"used": bool(errors), "solver_timestamp_s": float(time_expression.toScalar()),
                           "T_camera_target": _array(transform.toTransformationMatrix())})
             self._final_corners(frame, observation, zip(corner_ids, errors), simple=True)
+            if id(observation) in self._corner_time_terms:
+                times, transforms = self._corner_time_terms[id(observation)]
+                indexed = {c["corner_id"]: c for c in frame["corners"]}
+                frame["pose_time_reference"] = "shutter_reference_row"
+                for corner_id, time, pose in zip(corner_ids, times, transforms):
+                    indexed[corner_id].update({
+                        "solver_timestamp_s": float(time.toScalar()),
+                        "row_time_offset_s": float(time.toScalar() - time_expression.toScalar()),
+                        "T_camera_target": _array(pose.toTransformationMatrix()),
+                    })
         imu_ids = {id(imu): "imu{}".format(index) for index, imu in enumerate(calibrator.ImuList)}
         bias_series = {}
         for imu in calibrator.ImuList:

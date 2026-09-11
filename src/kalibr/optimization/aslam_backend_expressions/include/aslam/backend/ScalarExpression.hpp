@@ -36,6 +36,8 @@ namespace aslam {
       ScalarExpression operator-(double s);
       ScalarExpression operator*(double s);
       ScalarExpression operator/(double s);
+      /// Smooth bounded parameterization, with analytic chain-rule Jacobians.
+      ScalarExpression tanh() const;
 
 
     private:

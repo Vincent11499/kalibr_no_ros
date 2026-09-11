@@ -1,8 +1,28 @@
 #include <aslam/backend/ScalarExpressionNode.hpp>
 #include <sm/kinematics/rotations.hpp>
+#include <cmath>
 
 namespace aslam {
     namespace backend {
+
+        double ScalarExpressionNodeTanh::toScalarImplementation() const {
+            return std::tanh(_operand->toScalar());
+        }
+
+        void ScalarExpressionNodeTanh::evaluateJacobiansImplementation(JacobianContainer & out) const {
+            evaluateJacobiansImplementation(out, Eigen::MatrixXd::Identity(1, 1));
+        }
+
+        void ScalarExpressionNodeTanh::evaluateJacobiansImplementation(
+            JacobianContainer & out, const Eigen::MatrixXd & chain) const {
+            const double value = toScalarImplementation();
+            _operand->evaluateJacobians(out, chain * (1.0 - value * value));
+        }
+
+        void ScalarExpressionNodeTanh::getDesignVariablesImplementation(
+            DesignVariable::set_t & variables) const {
+            _operand->getDesignVariables(variables);
+        }
     
         ScalarExpressionNode::ScalarExpressionNode()
         {

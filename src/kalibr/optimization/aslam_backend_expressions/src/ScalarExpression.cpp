@@ -27,6 +27,11 @@ ScalarExpression::~ScalarExpression() {
 
 }
 
+ScalarExpression ScalarExpression::tanh() const {
+  return ScalarExpression(boost::shared_ptr<ScalarExpressionNode>(
+      new ScalarExpressionNodeTanh(_root)));
+}
+
 double ScalarExpression::toScalar() const {
   return _root->toScalar();
 }

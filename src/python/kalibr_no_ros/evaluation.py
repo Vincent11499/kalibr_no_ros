@@ -431,6 +431,8 @@ def compute_metrics(artifacts, calibration, options=None):
                "evaluation_options": {"rectification": options["rectification"],
                                       "evaluation_pairing_tolerance_s": options["evaluation_pairing_tolerance_s"]},
                "cameras": {}, "stereo_pairs": {}, "imus": {}}
+    if artifacts.get("observability"):
+        metrics["observability"] = dict(artifacts["observability"])
     for camera in cameras:
         frames = camera.get("frames", [])
         used = [f for f in frames if f.get("used")]
@@ -466,6 +468,8 @@ def compute_metrics(artifacts, calibration, options=None):
         entry["normalized_reprojection"], entry["robust_objective"] = normalized_statistics(final_corners, 2)
         entry["intrinsics"] = camera.get("intrinsics")
         entry["distortion_coeffs"] = camera.get("distortion_coeffs")
+        if camera.get("shutter"):
+            entry["shutter"] = dict(camera["shutter"])
         shift = camera.get("timeshift_cam_imu_s", camera.get("timeshift_cam_imu"))
         if shift is not None:
             entry["timeshift_cam_imu_s"] = shift
@@ -491,6 +495,8 @@ def compute_metrics(artifacts, calibration, options=None):
             pair["pairing_timebase"] = "source_timestamp_ns"
             pair["interpretation"] = "Spatial alignment diagnostic on time-separated observations; motion can contribute. Not an independent or strictly simultaneous validation."
         metrics["stereo_pairs"][identifier] = pair
+        if left.get("shutter") or right.get("shutter"):
+            pair["interpretation"] = "Optical rectification of the original rolling-shutter measurements, without row-time compensation. Motion and row sampling times can contribute; this is not the joint reprojection residual."
         try:
             geometry = stereo_geometry(left, right, options["rectification"])
         except (ReportingError, ValueError, RuntimeError, cv2.error) as error:

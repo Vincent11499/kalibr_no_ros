@@ -21,6 +21,7 @@ import yaml
 from kalibr_bag_io import detect_dataset_format
 
 from .version import VERSION, SCHEMA_VERSION
+from .rolling_shutter import JOB as ROLLING_SHUTTER_JOB, CAMERA_IMU_JOBS
 try:
     from ._build_info import GIT_COMMIT, SOURCE_VARIANT
 except ImportError:
@@ -71,6 +72,7 @@ _COMMON_TASK_KEYS = {
 _JOB_TASK_KEYS = {
     "camera_calibration": {"cameras"},
     "camera_imu_calibration": {"camera_calibration", "imus"},
+    ROLLING_SHUTTER_JOB: {"camera_calibration", "imus", "rolling_shutter"},
 }
 
 
@@ -176,8 +178,8 @@ def load_task(path, expected_job=None):
     job = task.get("job")
     if task.get("kind", "calibration_task") != "calibration_task":
         raise TaskError("task kind must be calibration_task")
-    if job not in {"camera_calibration", "camera_imu_calibration"}:
-        raise TaskError("job must be camera_calibration or camera_imu_calibration")
+    if job not in _JOB_TASK_KEYS:
+        raise TaskError("unsupported calibration job: {}".format(job))
     if expected_job is not None and job != expected_job:
         raise TaskError("expected job {}, got {}".format(expected_job, job))
     allowed = _COMMON_TASK_KEYS | _JOB_TASK_KEYS[job]
@@ -338,7 +340,7 @@ def resolve_initialization(task, expected_job=None, initialization=None,
         strategy_origin = "default"
 
     camera_ids = None
-    if expected_job == "camera_imu_calibration":
+    if expected_job in CAMERA_IMU_JOBS:
         camera_ids = _camera_calibration_ids(task)
     try:
         document = load_initialization(
@@ -763,7 +765,7 @@ def _legacy_camchain(task, temporary):
     for index, camera in enumerate(cameras):
         item = dict(camera)
         item.pop("id", None)
-        for field in ("rms", "alignment", "from_camera"):
+        for field in ("rms", "alignment", "from_camera", "shutter"):
             item.pop(field, None)
         item["rostopic"] = item.pop("topic")
         legacy["cam{}".format(index)] = item
@@ -798,6 +800,14 @@ def _imu_arguments(task, bag, target, temporary, overrides,
     _append_common_dataset(arguments, task)
     calibration = task.get("calibration") or {}
     _append_corner_refinement(arguments, calibration)
+    if task["job"] == ROLLING_SHUTTER_JOB:
+        from .rolling_shutter import validate_shutters
+        ids = _camera_calibration_ids(task)
+        shutters = validate_shutters(task["rolling_shutter"], ids)
+        path = temporary / "rolling_shutter.yaml"
+        dump_yaml({"schema_version": SCHEMA_VERSION, "kind": "rolling_shutter_config",
+                   "cameras": {"cam{}".format(i): shutters[key] for i, key in enumerate(ids)}}, path)
+        arguments.extend(["--rolling-shutter-config", str(path)])
     for key, option in (
         ("max_iterations", "--max-iter"),
         ("time_offset_padding_s", "--timeoffset-padding"),
@@ -1050,12 +1060,12 @@ def _run_task_staged(prefix, config, output_dir, expected_job, force=False, _tas
             if artifacts.get("state") != "completed":
                 raise TaskError("native calibration did not publish a completed result")
             artifacts["dataset"] = dict(resolved_task["dataset"])
-            if initialization is not None:
+            if initialization is not None or expected_job == ROLLING_SHUTTER_JOB:
                 observability_path = temporary / "observability.yaml"
                 observability = _read_observability(observability_path)
                 if observability is None:
                     raise TaskError(
-                        "seeded calibration did not produce observability.yaml")
+                        "calibration did not produce observability.yaml")
                 if observability.get("status") != "full_rank":
                     raise TaskError(
                         "seeded calibration is rank deficient: rank {}/{} "
@@ -1064,6 +1074,8 @@ def _run_task_staged(prefix, config, output_dir, expected_job, force=False, _tas
                             observability.get("columns"),
                             observability.get("deficiency"),
                         ))
+                if expected_job == ROLLING_SHUTTER_JOB:
+                    artifacts["observability"] = observability
             export_poses = bool(
                 (task.get("output") or {}).get("export_poses"))
             result = _collect_outputs(temporary, output, expected_job, export_poses)
@@ -1101,7 +1113,7 @@ def _run_task_staged(prefix, config, output_dir, expected_job, force=False, _tas
                 _finish_initialization_report(
                     report_path, status, error=error,
                     observability_path=observability_path)
-                _preserve_diagnostic_sidecars(temporary, output)
+            _preserve_diagnostic_sidecars(temporary, output)
             status = "output_failed" if solver_completed else "failed" if input_validated else "input_failed"
             write_run_manifest(output, status=status, task=task, failure=error)
             raise

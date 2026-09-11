@@ -11,6 +11,7 @@ import yaml
 
 
 from .version import SCHEMA_VERSION
+from .rolling_shutter import JOB as ROLLING_SHUTTER_JOB, CAMERA_IMU_JOBS
 
 INITIALIZATION_SCHEMA_VERSION = SCHEMA_VERSION
 INITIALIZATION_STRATEGIES = frozenset(("refine", "direct"))
@@ -18,6 +19,7 @@ INITIALIZATION_STRATEGIES = frozenset(("refine", "direct"))
 _JOB_KINDS = {
     "camera_calibration": "camera_calibration_initialization",
     "camera_imu_calibration": "camera_imu_calibration_initialization",
+    ROLLING_SHUTTER_JOB: "camera_imu_calibration_initialization",
 }
 
 # Public task model -> (intrinsic parameter count, distortion parameter count).
@@ -429,7 +431,7 @@ def _validate_camera_imu_document(document, task, camera_ids):
 
 
 def _validate_strategy_requirements(body, task, strategy):
-    if task.get("job") != "camera_imu_calibration" or strategy != "refine":
+    if task.get("job") not in CAMERA_IMU_JOBS or strategy != "refine":
         return
     calibration = task.get("calibration") or {}
     camera_shifts = (body.get("camera_imu") or {}).get(

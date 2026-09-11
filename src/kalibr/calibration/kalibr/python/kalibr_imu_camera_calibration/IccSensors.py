@@ -756,6 +756,9 @@ class IccCamera():
 #
 #imu is need to initialize an orientation prior between imu and camera chain
 class IccCameraChain():
+    def _make_camera(self, camera_index, *args, **kwargs):
+        return IccCamera(*args, **kwargs)
+
     def __init__(self, chainConfig, targetConfig, parsed):
 
         #create all camera in the chain
@@ -767,7 +770,7 @@ class IccCameraChain():
                                            parsed.bag_from_to, parsed.bag_freq, parsed.perform_synchronization)
             
             #create the camera
-            self.camList.append( IccCamera( camConfig, 
+            self.camList.append( self._make_camera( camNr, camConfig,
                                             targetConfig, 
                                             dataset, 
                                             #Ultimately, this should come from the camera yaml.

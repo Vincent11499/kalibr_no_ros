@@ -1,6 +1,6 @@
 # v1.0.0 标定配置示例
 
-本目录独立提供三类任务的最简版与完整注释版。相机模型统一为 `pinhole-equi`，
+本目录独立提供各类任务的最简版与完整注释版。相机模型统一为 `pinhole-equi`，
 cam0 表示左目、cam1 表示右目；单目示例只使用 cam0。
 根目录所有 YAML 配置均不带注释；`all_params/` 提供带注释的完整任务和配套配置。
 
@@ -12,6 +12,7 @@ cam0 表示左目、cam1 表示右目；单目示例只使用 cam0。
 | 单目内参 | mono_camera_calibration_task.yaml | all_params/mono_camera_calibration_task_full.yaml | cam0 内参、四项等距畸变 |
 | 双目内外参 | stereo_camera_calibration_task.yaml | all_params/stereo_camera_calibration_task_full.yaml | 两目内参、畸变、相邻外参 |
 | 双目＋IMU 外参 | camera_imu_calibration_task.yaml | all_params/camera_imu_calibration_task_full.yaml | 相机–IMU 外参、时间偏移与 IMU 参数 |
+| 滚动快门双目＋IMU | camera_imu_rolling_shutter_calibration_task.yaml | all_params/camera_imu_rolling_shutter_calibration_task_full.yaml | 每目行时间、相机–IMU 外参、整体时间偏移与 IMU 参数 |
 
 根目录还提供以下无注释配置：
 
@@ -30,7 +31,7 @@ cam0 表示左目、cam1 表示右目；单目示例只使用 cam0。
 ## 准备输入
 
 将本目录复制到自己的可写运行目录，保持根目录与 `all_params/` 的相对位置。完整任务所需的板、IMU 和评价配置也保存在 `all_params/`。
-六个 task 的 `dataset.path` 都指向根目录下的占位数据目录
+task 的 `dataset.path` 都指向根目录下的占位数据目录
 `data/stereo_imu_YYMMDD_hhmm`（完整版使用 `../data/…`），必须替换为本次采集的真实新格式目录。
 可以把实际数据放到本目录下的 `data/`，也可以填写相对 task 文件的其他路径。
 不要用旧整数 schema 数据改版本号假装新数据。

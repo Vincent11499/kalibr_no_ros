@@ -6,6 +6,7 @@ import json
 import sys
 
 from .version import VERSION
+from .rolling_shutter import JOB as ROLLING_SHUTTER_JOB
 
 from kalibr_runtime import profiling_enabled
 from .task import (
@@ -77,6 +78,9 @@ def build_parser():
         "imu-camera", help="camera to IMU calibration"
     )
     _add_runtime_arguments(imu_camera)
+    rolling = calibration_commands.add_parser(
+        "imu-camera-rs", help="rolling-shutter cameras and IMU joint calibration")
+    _add_runtime_arguments(rolling)
 
     convert = commands.add_parser("convert", help="convert configuration formats")
     conversion_commands = convert.add_subparsers(dest="conversion", required=True)
@@ -259,6 +263,8 @@ def main(argv=None, prefix=None):
                 if arguments.calibration == "cameras"
                 else "camera_imu_calibration"
             )
+            if arguments.calibration == "imu-camera-rs":
+                job = ROLLING_SHUTTER_JOB
             output = run_task(
                 prefix,
                 arguments.config,

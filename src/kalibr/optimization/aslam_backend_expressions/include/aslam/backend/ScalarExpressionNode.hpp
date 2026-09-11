@@ -41,6 +41,20 @@ namespace aslam {
     };
 
 
+      class ScalarExpressionNodeTanh : public ScalarExpressionNode
+      {
+      public:
+          explicit ScalarExpressionNodeTanh(boost::shared_ptr<ScalarExpressionNode> operand)
+            : _operand(operand) {}
+      protected:
+          virtual double toScalarImplementation() const;
+          virtual void evaluateJacobiansImplementation(JacobianContainer & out) const;
+          virtual void evaluateJacobiansImplementation(JacobianContainer & out,
+              const Eigen::MatrixXd & chain) const;
+          virtual void getDesignVariablesImplementation(DesignVariable::set_t & variables) const;
+          boost::shared_ptr<ScalarExpressionNode> _operand;
+      };
+
       class ScalarExpressionNodeMultiply : public ScalarExpressionNode
       {
       public:

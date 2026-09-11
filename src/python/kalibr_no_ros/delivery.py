@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import tempfile
+from .rolling_shutter import CAMERA_IMU_JOBS
 
 
 def _ids(task):
@@ -22,7 +23,7 @@ def result_name(task):
     name = task['output'].get('name')
     if not name:
         ids = _ids(task)
-        if task['job'] == 'camera_imu_calibration':
+        if task['job'] in CAMERA_IMU_JOBS:
             ids += [c.get('id', 'imu{}'.format(i)) for i, c in enumerate(task['imus'])]
         name = task['job'] + '_' + '_'.join(ids)
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,159}', name):
@@ -33,7 +34,7 @@ def result_name(task):
 def discover_camera_result(task, output):
     """Never guess between multiple models/runs or silently replace an explicit input."""
     from .task import TaskError, load_yaml, resolve_task_path
-    if task['job'] != 'camera_imu_calibration' or task.get('camera_calibration'):
+    if task['job'] not in CAMERA_IMU_JOBS or task.get('camera_calibration'):
         return
     expected = None
     if task['dataset']['type'] == 'directory':

@@ -1,0 +1,54 @@
+schema_version: "1.0.0" # 软件、任务和结果统一字符串版本。
+kind: calibration_task # 独立的滚动快门 Camera–IMU 联合任务。
+job: camera_imu_rolling_shutter_calibration # 普通任务仍使用 camera_imu_calibration。
+dataset: # 相对路径以本 task 所在目录为基准。
+  type: directory # directory 或 bag；目录通过 dataset.yaml 映射 ID。
+  path: ../data/stereo_imu_YYMMDD_hhmm # 替换为实际动态数据目录。
+target: # 使用与采集一致的实体板参数。
+  path: aprilgrid.yaml # 同目录标定板配置。
+# camera_calibration: # 省略时在输出根目录查找唯一匹配的相机标定结果。
+#   path: ../output/camera_calibration_cam0_cam1.yaml # 双目内外参结果，非初始化文件。
+imus: # 复用原 Camera–IMU 的 IMU 输入契约。
+  - id: imu0 # 与数据集 ID 一致。
+    path: imu.yaml # 噪声、随机游走与采样率。
+    model: calibrated # 已校正六轴模型。
+rolling_shutter: # 必填；键集合必须与上一阶段相机结果的 ID 完全一致。
+  cam0: # 各相机独立配置，不强制相同行时间。
+    line_delay_s: 0.0 # 默认0；单位秒/行；正值随图像y增大时刻变晚，负值反向。
+    estimate: true # 默认true；false固定所给行时间，包括0代表整帧同一时刻。
+    max_abs_line_delay_s: 0.00002 # estimate=true时必填，无程序默认；>abs(seed)且>0。本例20μs/行，需按硬件模式修改。
+  cam1: # 参考行为(H-1)/2，从原始图像高度计算，不可写死1080。
+    line_delay_s: 0.0 # 默认0秒/行，支持正负初值。
+    estimate: true # 默认true，独立加入一个有界优化变量。
+    max_abs_line_delay_s: 0.00002 # 秒/行；不得由数据集降采样频率推算传感器读出范围。
+calibration: # 内参/畸变固定，保留原生初始化、IMU残差及联合LM。
+  window_half_size_px: 7 # 正整数px；本例7，省略为原生2。
+  max_displacement_px: 1.0 # >0px；本例1，省略为原生sqrt(1.5)。
+  max_iterations: 30 # 正整数；原生最终联合LM默认30。
+  time_offset_padding_s: 0.03 # >0秒；原帧时移支持范围，行时移支持范围在新路径独立追加。
+  reprojection_sigma_px: 1.0 # >0px；默认1，沿用原生像素协方差，不启用自适应快门协方差。
+  calibrate_time_offset: true # 默认true；时移解释为参考行有效采样时刻到IMU时基的偏移。
+  recompute_camera_chain_extrinsics: false # 默认false固定双目外参；true只放开baseline，不优化内参。
+  synchronize_clocks: false # 默认false，保留采集时间戳。
+  estimate_multi_imu_delay: false # 默认false，多IMU时显式启用。
+  recover_covariance: false # 默认false；true额外估计局部协方差和行时间标准差，非硬件精度保证。
+execution: # 运行预算与编译job限制是不同接口。
+  detector_processes: 8 # 正整数；本例8，省略保留原生阶段方式。
+  optimizer_threads: 4 # 正整数；已接入原生优化路径的线程预算。
+  detector_inflight_per_worker: 2 # 正整数；每worker在途帧数。
+  detector_opencv_threads: 1 # 正整数；每worker内OpenCV线程数。
+output: # 默认交付按新job及传感器ID命名的结果YAML与HTML/PDF。
+  save_diagnostics: false # 默认false；true保留输入校验、日志和可观性等诊断。
+  save_metrics: false # 默认false；true独立保存metrics.json。
+  archive_observations: true # 默认false；本例保存逐角点时间、位姿、预测与残差，用于只读重评估。
+  archive_selection_history: false # 默认false；启用时需要archive_observations。
+  export_opencv: false # 默认false；仅导出光学参数，OpenCV普通校正不补偿逐行运动。
+  evaluation_pairing_tolerance_s: 0.0001 # >=0秒；本例100μs，仅用于输出配对，不改变优化。
+  visualizations: # 图片为原图的光学校正，不能标为消除滚动快门后的图像。
+    enabled: false # 默认false；按需开启。
+    max_frames_per_camera: 30 # 正整数；可视化上限，不限制统计总体。
+    max_pairs: 30 # 正整数；双目可视化上限。
+    sampling: uniform # 确定性均匀抽样。
+  assessment: # 参考评级与业务判定分开。
+    reference_grading: true # 显示参考评级；alignment仍为未补偿行运动的一维光学诊断。
+    rules: [] # 空表示未配置生产验收规则。
