@@ -11,13 +11,19 @@ import yaml
 
 
 from .version import SCHEMA_VERSION
-from .rolling_shutter import JOB as ROLLING_SHUTTER_JOB, CAMERA_IMU_JOBS
+from .rolling_shutter import (
+    JOB as ROLLING_SHUTTER_JOB,
+    CAMERA_RS_JOB,
+    CAMERA_IMU_JOBS,
+    CAMERA_CALIBRATION_JOBS,
+)
 
 INITIALIZATION_SCHEMA_VERSION = SCHEMA_VERSION
 INITIALIZATION_STRATEGIES = frozenset(("refine", "direct"))
 
 _JOB_KINDS = {
     "camera_calibration": "camera_calibration_initialization",
+    CAMERA_RS_JOB: "camera_calibration_initialization",
     "camera_imu_calibration": "camera_imu_calibration_initialization",
     ROLLING_SHUTTER_JOB: "camera_imu_calibration_initialization",
 }
@@ -465,7 +471,7 @@ def validate_initialization(document, expected_job, task, strategy="refine",
     if strategy not in INITIALIZATION_STRATEGIES:
         raise InitializationError("initialization strategy must be refine or direct")
     kind = _validate_header(document, expected_job)
-    if expected_job == "camera_calibration":
+    if expected_job in CAMERA_CALIBRATION_JOBS:
         body = _validate_camera_document(document, task, strategy)
     else:
         body = _validate_camera_imu_document(document, task, camera_ids)
@@ -507,7 +513,118 @@ def canonical_initialization(document, strategy):
     return result
 
 
-def initialization_stage_decisions(document, strategy, task, camera_ids=None):
+def _rolling_shutter_camera_stage_decisions(
+        document, strategy, task, solver_backend):
+    """Describe only stages that the selected pure-visual RS solver owns."""
+    if solver_backend not in {"system", "native"}:
+        raise InitializationError(
+            "camera rolling-shutter initialization report requires "
+            "solver_backend system or native")
+
+    calibration = task.get("calibration") or {}
+    freeze_intrinsics = calibration.get("freeze_intrinsics", False) is True
+    cameras = document.get("cameras", {})
+    task_cameras = task["cameras"]
+    line_delay_states = {}
+    configured_shutters = task.get("rolling_shutter") or {}
+    for index, camera in enumerate(task_cameras):
+        camera_id = camera.get("id", "cam{}".format(index))
+        shutter = configured_shutters.get(camera_id, {})
+        line_delay_states[camera_id] = (
+            "active" if shutter.get("estimate", True) is not False
+            else "fixed")
+
+    decisions = []
+    for index, camera in enumerate(task_cameras):
+        native_id = "cam{}".format(index)
+        camera_id = camera.get("id", native_id)
+        fields = sorted(
+            field for field in cameras.get(native_id, {})
+            if field in {"intrinsics", "distortion_coeffs"})
+        if solver_backend == "system":
+            if strategy == "direct" or freeze_intrinsics:
+                geometry_initialization = "complete_seed"
+            elif fields:
+                geometry_initialization = "observations_with_seed"
+            else:
+                geometry_initialization = "observations"
+            decisions.append({
+                "stage": "rs_system_camera_geometry.{}".format(camera_id),
+                "supplied_fields": fields,
+                "geometry_initialization": geometry_initialization,
+                "projection_distortion_joint_state": (
+                    "fixed" if freeze_intrinsics else "active"),
+            })
+        else:
+            if "intrinsics" in fields:
+                geometry_initialization = (
+                    "observation_metadata_bootstrap_then_seed")
+            elif fields:
+                geometry_initialization = (
+                    "native_observation_initialization_then_seed")
+            else:
+                geometry_initialization = "native_observation_initialization"
+            decisions.append({
+                "stage": "rs_native_camera_geometry.{}".format(camera_id),
+                "supplied_fields": fields,
+                "geometry_initialization": geometry_initialization,
+                "per_observation_pnp": "scheduled",
+                "projection_distortion_joint_state": (
+                    "fixed" if freeze_intrinsics else "active"),
+            })
+
+    if solver_backend == "system":
+        if len(task_cameras) > 1:
+            supplied = [
+                task_cameras[index].get("id", "cam{}".format(index))
+                for index in range(1, len(task_cameras))
+                if "T_cam_from_previous" in cameras.get(
+                    "cam{}".format(index), {})
+            ]
+            if strategy == "direct":
+                baseline_initialization = "complete_seed"
+            elif supplied:
+                baseline_initialization = "view_graph_with_seed_overrides"
+            else:
+                baseline_initialization = "view_graph"
+            decisions.append({
+                "stage": "rs_system_camera_chain_geometry",
+                "supplied_transforms": supplied,
+                "baseline_initialization": baseline_initialization,
+                "adjacent_transforms_joint_state": "active",
+            })
+        decisions.append({
+            "stage": "rs_system_shared_trajectory_joint_batch",
+            "camera_count": len(task_cameras),
+            "projection_distortion_state": (
+                "fixed" if freeze_intrinsics else "active"),
+            "adjacent_transforms_state": (
+                "active" if len(task_cameras) > 1 else "not_applicable"),
+            "line_delay_states": line_delay_states,
+            "shared_target_pose_spline_state": "active",
+            "joint_optimizer": "scheduled",
+            "final_filtering_reoptimization": (
+                "conditional_on_removed_corners"
+                if calibration.get("remove_outliers", True) is not False
+                and calibration.get("final_filtering", True) is not False
+                else "disabled"),
+        })
+    else:
+        decisions.append({
+            "stage": "rs_native_adaptive_trajectory_joint_batch",
+            "camera_count": len(task_cameras),
+            "projection_distortion_state": (
+                "fixed" if freeze_intrinsics else "active"),
+            "line_delay_states": line_delay_states,
+            "target_pose_spline_state": "active",
+            "joint_optimizer": "scheduled",
+            "adaptive_knot_refinement": "enabled",
+        })
+    return decisions
+
+
+def initialization_stage_decisions(
+        document, strategy, task, camera_ids=None, solver_backend=None):
     """Describe how supplied blocks alter initialization, not final activity.
 
     The report is deliberately derived from the validated canonical document.
@@ -516,6 +633,9 @@ def initialization_stage_decisions(document, strategy, task, camera_ids=None):
     """
     job = task["job"]
     decisions = []
+    if job == CAMERA_RS_JOB:
+        return _rolling_shutter_camera_stage_decisions(
+            document, strategy, task, solver_backend)
     if job == "camera_calibration":
         freeze_intrinsics = (task.get("calibration") or {}).get(
             "freeze_intrinsics", False) is True
@@ -661,13 +781,43 @@ def initialization_stage_decisions(document, strategy, task, camera_ids=None):
 
 def build_initialization_report(document, strategy, task, *, source_path,
                                 source_sha256, path_origin,
-                                strategy_origin, camera_ids=None):
+                                strategy_origin, camera_ids=None,
+                                solver_backend=None):
     """Build the stable provenance report written before native execution."""
+    job = task.get("job")
     freeze_intrinsics = (
-        task.get("job") == "camera_calibration"
+        job in CAMERA_CALIBRATION_JOBS
         and (task.get("calibration") or {}).get(
             "freeze_intrinsics", False) is True
     )
+    if job == CAMERA_RS_JOB:
+        if solver_backend == "system":
+            fixed_parameter_meaning = (
+                "camera projection and distortion remain fixed; adjacent "
+                "camera transforms and the shared target trajectory remain "
+                "active; each line delay follows its task estimate policy"
+                if freeze_intrinsics else
+                "the seed adds no prior or fixed state; the system joint "
+                "K/D, adjacent-transform, line-delay and shared-trajectory "
+                "activity still applies")
+        elif solver_backend == "native":
+            fixed_parameter_meaning = (
+                "camera projection and distortion remain fixed; native "
+                "line-delay and target-trajectory activity still follows "
+                "the task and solver policy"
+                if freeze_intrinsics else
+                "the seed adds no prior or fixed state; native joint K/D, "
+                "line-delay and target-trajectory activity still applies")
+        else:
+            raise InitializationError(
+                "camera rolling-shutter initialization report requires "
+                "solver_backend system or native")
+    else:
+        fixed_parameter_meaning = (
+            "camera projection and distortion remain fixed; camera-chain "
+            "baselines and target poses remain active"
+            if freeze_intrinsics else
+            "the seed adds no fixed state; native task activity still applies")
     result = {
         "schema_version": SCHEMA_VERSION,
         "kind": "calibration_initialization_report",
@@ -686,12 +836,7 @@ def build_initialization_report(document, strategy, task, *, source_path,
                 if freeze_intrinsics else "initial_value_only"
             ),
             "fixed_parameter": freeze_intrinsics,
-            "fixed_parameter_meaning": (
-                "camera projection and distortion remain fixed; camera-chain "
-                "baselines and target poses remain active"
-                if freeze_intrinsics else
-                "the seed adds no fixed state; native task activity still applies"
-            ),
+            "fixed_parameter_meaning": fixed_parameter_meaning,
             "prior_error_term_added": False,
             "final_optimizer_activity_unchanged": not freeze_intrinsics,
             "transform_convention": "p_target = T_target_source * p_source",
@@ -699,9 +844,16 @@ def build_initialization_report(document, strategy, task, *, source_path,
         },
         "configured": copy.deepcopy(document),
         "stage_decisions": initialization_stage_decisions(
-            document, strategy, task, camera_ids=camera_ids),
+            document, strategy, task, camera_ids=camera_ids,
+            solver_backend=solver_backend),
     }
-    source_ids = list(_camera_models(task)) if task["job"] == "camera_calibration" else list(camera_ids or ())
+    if task["job"] == CAMERA_RS_JOB:
+        result["solver_backend"] = solver_backend
+    source_ids = (
+        list(_camera_models(task))
+        if task["job"] in CAMERA_CALIBRATION_JOBS
+        else list(camera_ids or ())
+    )
     if source_ids:
         result["camera_id_mapping"] = {
             camera_id: "cam{}".format(index) for index, camera_id in enumerate(source_ids)

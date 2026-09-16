@@ -1,0 +1,83 @@
+schema_version: "1.0.0" # 软件、task、初始化和结果统一字符串版本。
+kind: calibration_task # 本文件是相机 Rolling Shutter 标定任务。
+job: camera_rolling_shutter_calibration # cameras-rs 与临时 native-rs-cameras 共用此 job。
+
+dataset: # 相对路径以当前 task YAML 所在目录为基准。
+  type: directory # directory 通过 dataset.yaml 映射 ID；bag 输入仍需 topic。
+  path: ../data/stereo_YYMMDD_hhmm # 应使用含运动且覆盖充分的数据。
+#   time_range_s: [0.0, 30.0] # 可选秒区间；先裁剪，再按 frequency_hz 选帧。
+#   frequency_hz: 5.0 # 可选Hz；改变进入检测和求解的帧，省略时不降采样。
+
+target:
+  path: aprilgrid.yaml # 板参数必须与实体板一致。
+
+cameras: # 列表顺序定义 cam0、cam1…及相邻外参方向。
+  - id: cam0 # 目录输入按 ID 定位图像，无需 topic。
+    model: pinhole-equi # cameras-rs 当前支持 pinhole-equi、pinhole-radtan。
+  - id: cam1
+    model: pinhole-equi
+
+# initialization: # 与普通相机任务共用 camera_calibration_initialization。
+#   path: ../initialization_stereo.yaml # 可包含每目K/D及相邻T_cn_cnm1。
+#   strategy: refine # 默认refine；direct要求完整K/D和全部相邻外参。
+
+rolling_shutter: # 键必须与 cameras[].id 完全一致。
+  cam0:
+    line_delay_s: 0.0 # 秒/行；首行时间为相机时间戳，正值表示y增大时更晚。
+    estimate: true # true用有界tanh状态联合估计；false固定给定值。
+    max_abs_line_delay_s: 0.00002 # 秒/行；估计时必填且严格大于初值绝对值。
+  cam1:
+    line_delay_s: 0.0
+    estimate: true
+    max_abs_line_delay_s: 0.00002
+
+calibration:
+  freeze_intrinsics: false # 默认false；true要求至少双目且初始化含每目完整K/D。
+  window_half_size_px: 7 # px，正整数；省略时原生默认2。
+  max_displacement_px: 1.0 # px，有限正数；省略时原生默认sqrt(1.5)。
+  focal_initialization_min_visible_corner_ratio: 1.0 # (0,1]；1保留完整板焦距初始化。
+  synchronization_tolerance_s: 0.0001 # 秒，>=0；仅建多目共视关系。
+  min_views_for_outlier_statistics: 20 # 正整数；不足时不做最终统计过滤。
+  remove_outliers: true # 总开关；与final_filtering同时为true才执行RS最终过滤。
+  final_filtering: true # RS无增量过滤；与remove_outliers同时开启后按max(4σ,feature_sigma_px)过滤并重解。
+  blake_zisserman: false # true对RS联合重投影项使用Blake-Zisserman鲁棒核。
+  max_iterations: 80 # 正整数；每次RS联合Optimizer2的最大迭代数，默认80。
+  spline_order: 4 # 无量纲整数，>=3；连续目标位姿样条阶数，二阶运动先验要求至少3阶，默认4。
+  time_padding_s: 0.5 # 秒，有限正数且须严格大于各目(H-1)*行时间范围；样条两端支持，默认0.5。
+#   knots_per_second: 1.0 # 可选正数Hz；省略时取实际入选观测中位频率，按含padding的完整时间域计算段数，且>=2*spline_order。
+  feature_sigma_px: 1.0 # px，有限正数；重投影协方差标准差，默认1。
+  motion_translation_weight: 0.00001 # 二阶平移运动先验信息权重，有限正数，默认1e-5。
+  motion_rotation_weight: 0.01 # 二阶旋转运动先验信息权重，有限正数，默认1e-2。
+
+execution:
+  detector_processes: 8 # 正整数；检测进程数。
+  optimizer_threads: 4 # 正整数；已接入Optimizer2和可观性计算的线程预算。
+  detector_inflight_per_worker: 2 # 正整数；每个检测worker的在途帧上限。
+  detector_opencv_threads: 1 # 正整数；每个检测worker内OpenCV线程数。
+  profiling_memory_sample_interval_s: 0.25 # 秒，>0；仅project-profile且显式请求时采样。
+
+output:
+  save_diagnostics: false # 默认false；按需保存日志、validation、observability和manifest。
+  save_metrics: false # 默认false；按需另存metrics.json。
+  export_text: false # 默认false；按需另存结果文本。
+  archive_observations: true # 默认false；保存最终逐角点预测、残差和角点时刻。
+  archive_selection_history: true # 依赖archive_observations；保存筛选事件。
+  copy_used_images: false # 默认不复制原图。
+  export_opencv: false # 只导出静态K/D/T；OpenCV校正不包含逐行运动补偿。
+  export_poses: false # 可选保存首行时间参考的目标位姿CSV。
+  verbose: false # 关闭原生详细日志。
+  show_extraction: false # 默认不打开检测窗口。
+  interactive_report: false # 生成HTML/PDF但不弹窗。
+  evaluation_pairing_tolerance_s: 0.0001 # 秒，>=0；只用于输出评价配对。
+  visualizations:
+    enabled: false # 默认false；开启后生成检测/残差及普通光学校正图。
+    max_frames_per_camera: 30 # 每目展示上限，正整数；不改变统计总体。
+    max_pairs: 30 # 双目展示上限，正整数。
+    sampling: uniform # 确定性均匀抽样。
+  rectification:
+    balance: 0.0 # [0,1]；fisheye普通光学校正视场平衡。
+    fov_scale: 1.0 # >0；OpenCV fisheye校正视场倍率。
+    size: null # null沿用源尺寸，或填写[宽,高]正整数像素。
+  assessment:
+    reference_grading: true # 参考等级不是产线判定。
+    rules: [] # 空列表表示未配置业务验收阈值。

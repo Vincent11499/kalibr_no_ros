@@ -113,7 +113,7 @@ Kalibr 的目录读取、`validate` 和标定前输入校验只读取公共 `dat
       ...
 ```
 
-CLI 显式传入 `--output-dir <设备目录>/result`，两类任务使用同一个结果根目录。
+CLI 显式传入 `--output-dir <设备目录>/result`，各标定任务使用同一个结果根目录。
 启用的观测、可视化、指标及诊断直接归入任务同名子目录，无需在工程内另存一份
 `result/<设备名>/`。目录建立和文件映射由 `delivery.py` 负责；`config/`、`execution/`
 等额外归档若由外层流程保存，也归入对应任务子目录，不代表 CLI 默认都会生成。
@@ -127,7 +127,10 @@ CLI 显式传入 `--output-dir <设备目录>/result`，两类任务使用同一
 | cam1 单目 | camera_calibration_cam1.yaml |
 | cam0 + cam1 双目 | camera_calibration_cam0_cam1.yaml |
 | cam0 + cam1 + cam2 多目 | camera_calibration_cam0_cam1_cam2.yaml |
+| cam0 + cam1 纯视觉 RS | camera_rolling_shutter_calibration_cam0_cam1.yaml |
+| cam0 原生 RS 临时对照 | native_camera_rolling_shutter_calibration_cam0.yaml |
 | 双目 + imu0 | camera_imu_calibration_cam0_cam1_imu0.yaml |
+| RS 双目 + imu0 | camera_imu_rolling_shutter_calibration_cam0_cam1_imu0.yaml |
 
 默认只交付 `<名称>.yaml`、`<名称>.report.html` 和 `<名称>.report.pdf`。可以用
 `output.name` 显式覆盖名称，例如不同模型使用 `stereo_equi`、`stereo_radtan8`；只允许
@@ -136,6 +139,8 @@ CLI 显式传入 `--output-dir <设备目录>/result`，两类任务使用同一
 
 每目结果以标量 `rms: 0.24955518585492681` 表示最终保留角点的二维重投影 RMS，单位 px。
 相邻外参旁的 `alignment: 0.22041488139290424` 为双目校正后非视差方向的像素误差 RMS。
+纯视觉 RS 多目结果还写 `rs_compensated_pair_residual`，它从校正域内实测左右差减去
+联合模型预测左右差，是依赖拟合轨迹的样本内诊断；普通 `alignment` 仍只使用 K/D/T。
 缺少可用证据时写 null，不写为 0；数量、状态和误差分布保留在可选 metrics.json 中。
 结果不再输出 `transform_convention` 文本；方向仍为点从源相机变换到目标相机：
 相机列表为 `[cam0, cam1]` 时，cam1 条目的 `T_cn_cnm1` 表示 cam0 → cam1；不再输出重复的 from_camera 字段。

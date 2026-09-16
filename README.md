@@ -72,6 +72,8 @@ YAML 所在目录为基准。软件、任务、初始化、目录清单和结果
 
 ```text
 kalibr-noros calibrate cameras
+kalibr-noros calibrate cameras-rs
+kalibr-noros calibrate native-rs-cameras
 kalibr-noros calibrate imu-camera
 kalibr-noros calibrate imu-camera-rs
 kalibr-noros validate
@@ -87,6 +89,12 @@ kalibr-noros convert job
 滚动快门相机＋IMU 使用独立任务 `camera_imu_rolling_shutter_calibration` 和
 `calibrate imu-camera-rs`，逐目联合估计行时间；配置和架构见
 [滚动快门联合标定](docs/ROLLING_SHUTTER_ZH.md)。普通任务的默认行为不变。
+
+纯视觉滚动快门相机使用 `camera_rolling_shutter_calibration` 和 `calibrate cameras-rs`，
+支持单目、双目及多目联合 K/D、相邻外参、连续轨迹和每目行时间。临时
+`calibrate native-rs-cameras` 只支持单目，用于与 Kalibr 原生 RS 求解器对照；它使用
+同一 task schema，但只接受文档列出的原生后端参数子集。时间基准、配置和两种算法差异见
+[滚动快门相机标定](docs/ROLLING_SHUTTER_CAMERA_CALIBRATION_ZH.md)。
 
 ## 模型与输出
 

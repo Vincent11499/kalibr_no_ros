@@ -133,6 +133,7 @@ class RunContext:
     def __init__(self, calibration_type, capture_history=False):
         calibration_type = {
             "camera_calibration": "cameras",
+            "camera_rolling_shutter_calibration": "cameras",
             "camera_imu_calibration": "camera_imu",
             "camera_imu_rolling_shutter_calibration": "camera_imu",
         }.get(calibration_type, calibration_type)
@@ -328,11 +329,40 @@ class RunContext:
                 transform = T_camera_target.copy()
                 for index in range(camera_id):
                     transform = np.asarray(calibrator.baselines[index].T(), dtype=float) @ transform
+                reference_transforms = getattr(batch, "reference_transforms", {})
+                if camera_id in reference_transforms:
+                    native_transform = reference_transforms[camera_id]
+                    if native_transform is not None:
+                        transform = np.asarray(
+                            native_transform.toTransformationMatrix(), dtype=float)
                 frame = self.frame(observation)
                 frame.update({"used": any(error is not None for error in batch.rerrs[camera_id]),
                               "view_id": view["view_id"],
                               "T_camera_target": _array(transform)})
                 self._final_corners(frame, observation, enumerate(batch.rerrs[camera_id]))
+                corner_times = getattr(batch, "corner_times", {}).get(camera_id)
+                corner_transforms = getattr(
+                    batch, "corner_transforms", {}).get(camera_id)
+                if corner_times is not None:
+                    if corner_transforms is None or len(corner_times) != len(corner_transforms):
+                        raise RuntimeError(
+                            "rolling-shutter corner time and pose arrays differ")
+                    reference_time = float(observation.time().toSec())
+                    frame["solver_timestamp_s"] = reference_time
+                    frame["pose_time_reference"] = "row0_timestamp"
+                    indexed = {corner["corner_id"]: corner
+                               for corner in frame["corners"]}
+                    for corner_id, (time, pose) in enumerate(
+                            zip(corner_times, corner_transforms)):
+                        if time is None or pose is None or corner_id not in indexed:
+                            continue
+                        timestamp = float(time.toScalar())
+                        indexed[corner_id].update({
+                            "solver_timestamp_s": timestamp,
+                            "row_time_offset_s": timestamp - reference_time,
+                            "T_camera_target": _array(
+                                pose.toTransformationMatrix()),
+                        })
         final_corners = [corner for camera in self.artifacts["cameras"]
                          for frame in camera["frames"] if frame["used"]
                          for corner in frame["corners"] if corner["used"]]
@@ -346,6 +376,142 @@ class RunContext:
             "definition": "sum(weight(s) * s), s = residual^T * invR * residual; no factor of one half",
         }
         self.artifacts["optimizer"] = self._solver_summary or _optimizer_summary(None, "last_attempt")
+        self.artifacts["state"] = "completed"
+
+    def publish_native_rs_camera(self, calibrator, public_model):
+        """Publish the final native single-camera RS snapshot without re-solving."""
+        if len(self.artifacts["cameras"]) != 1:
+            raise RuntimeError(
+                "native rolling-shutter publication requires exactly one camera")
+        result = calibrator.getResult()
+        residuals = calibrator.getResiduals()
+        if not isinstance(result, dict) or not isinstance(residuals, list) or not residuals:
+            raise RuntimeError("native rolling-shutter solver published no final residuals")
+
+        camera = self.artifacts["cameras"][0]
+        intrinsics = np.asarray(result.get("intrinsics"), dtype=float).reshape(-1)
+        distortion = np.asarray(
+            result.get("distortion_coeffs"), dtype=float).reshape(-1)
+        resolution = result.get("resolution")
+        line_delay = result.get("line_delay_s")
+        rms = result.get("rms_px")
+        count = result.get("residual_count")
+        if (intrinsics.size not in (4, 5) or not np.all(np.isfinite(intrinsics))
+                or distortion.size < 1 or not np.all(np.isfinite(distortion))
+                or not isinstance(resolution, (list, tuple))
+                or len(resolution) != 2
+                or any(type(value) is not int or value <= 0 for value in resolution)
+                or isinstance(line_delay, bool)
+                or not isinstance(line_delay, (int, float))
+                or not np.isfinite(line_delay)
+                or isinstance(rms, bool) or not isinstance(rms, (int, float))
+                or not np.isfinite(rms)
+                or type(count) is not int or count != len(residuals)):
+            raise RuntimeError("invalid native rolling-shutter result snapshot")
+        camera.update({
+            "model": public_model,
+            "intrinsics": _vector(intrinsics),
+            "distortion_coeffs": _vector(distortion),
+            "resolution": [int(resolution[0]), int(resolution[1])],
+            "shutter": {
+                "type": "rolling_shutter",
+                "line_delay_s": float(line_delay),
+                "reference_row_px": 0.0,
+                "first_to_last_row_span_s": abs(float(line_delay)) * (
+                    int(resolution[1]) - 1),
+                "estimated": bool(result.get("line_delay_estimated", True)),
+                "timestamp_reference": "row0_exposure_end",
+                "corner_time_equation": (
+                    "t_corner_s = t_camera_timestamp_s + y_px * line_delay_s"),
+            },
+        })
+
+        observations = {}
+        for observation, frame in self._observations.values():
+            timestamp = frame.get("observation_timestamp_ns")
+            if timestamp in observations:
+                raise RuntimeError(
+                    "duplicate native rolling-shutter observation timestamp")
+            observations[timestamp] = (observation, frame)
+        grouped = {}
+        squared_norms = []
+        for record in residuals:
+            if not isinstance(record, dict) or type(record.get("timestamp_ns")) is not int:
+                raise RuntimeError("invalid native rolling-shutter residual snapshot")
+            timestamp = record["timestamp_ns"]
+            if timestamp not in observations:
+                raise RuntimeError(
+                    "native rolling-shutter residual has no recorded source frame")
+            corner_id = record.get("corner_id")
+            if type(corner_id) is not int:
+                raise RuntimeError("native rolling-shutter corner_id must be an integer")
+            measurement = np.asarray(
+                record.get("measurement_px"), dtype=float).reshape(-1)
+            prediction = np.asarray(
+                record.get("prediction_px"), dtype=float).reshape(-1)
+            residual = np.asarray(record.get("residual_px"), dtype=float).reshape(-1)
+            if (measurement.size != 2 or prediction.size != 2 or residual.size != 2
+                    or not all(np.all(np.isfinite(value))
+                               for value in (measurement, prediction, residual))
+                    or not np.allclose(measurement - prediction, residual,
+                                       rtol=1e-9, atol=1e-9)):
+                raise RuntimeError(
+                    "native rolling-shutter residual is non-finite or inconsistent")
+            solver_timestamp = record.get("solver_timestamp_s")
+            row_offset = record.get("row_time_offset_s")
+            if (isinstance(solver_timestamp, bool)
+                    or not isinstance(solver_timestamp, (int, float))
+                    or not np.isfinite(solver_timestamp)
+                    or isinstance(row_offset, bool)
+                    or not isinstance(row_offset, (int, float))
+                    or not np.isfinite(row_offset)):
+                raise RuntimeError("native rolling-shutter corner timing is invalid")
+            observation, frame = observations[timestamp]
+            corner = _corner(observation, corner_id)
+            if not np.allclose(corner["measurement_px"], measurement,
+                               rtol=1e-9, atol=1e-7):
+                raise RuntimeError(
+                    "native rolling-shutter measurement snapshot does not match detection")
+            corner.update({
+                "measurement_px": _vector(measurement),
+                "prediction_px": _vector(prediction),
+                "residual_px": _vector(residual),
+                "used": True,
+                "solver_timestamp_s": float(solver_timestamp),
+                "row_time_offset_s": float(row_offset),
+                "normalization_unavailable": (
+                    "native adaptive-covariance snapshot exposes pixel residuals only"),
+            })
+            grouped.setdefault(timestamp, {})[corner_id] = corner
+            squared_norms.append(float(residual @ residual))
+
+        recomputed_rms = float(np.sqrt(np.mean(squared_norms)))
+        if not np.isclose(recomputed_rms, float(rms), rtol=1e-9, atol=1e-12):
+            raise RuntimeError(
+                "native rolling-shutter RMS does not match its residual snapshot")
+        for timestamp, corners in grouped.items():
+            observation, frame = observations[timestamp]
+            frame.update({
+                "used": True,
+                "solver_timestamp_s": timestamp * 1e-9,
+                "pose_time_reference": "row0_timestamp",
+                "corners": [corners[key] for key in sorted(corners)],
+            })
+            view = self.view(timestamp * 1e-9, [(0, observation)])
+            view["used"] = True
+            frame["view_id"] = view["view_id"]
+        if hasattr(calibrator, "getOptimizerResult"):
+            self.artifacts["optimizer"] = _optimizer_summary(
+                calibrator.getOptimizerResult(), "final_joint_optimization")
+        else:
+            self.artifacts["optimizer"] = _optimizer_summary(
+                None, "final_joint_optimization")
+        self.artifacts["objective"] = {
+            "scope": "final_retained_camera_views",
+            "pixel_squared_residual_sum": float(sum(squared_norms)),
+            "used_error_term_count": len(squared_norms),
+            "definition": "sum(dx^2 + dy^2) over final native RS residuals",
+        }
         self.artifacts["state"] = "completed"
 
     def publish_imu_camera(self, calibrator):
@@ -426,6 +592,12 @@ def publish_camera(calibrator, models):
     context = current_context()
     if context is not None:
         context.publish_camera(calibrator, models)
+
+
+def publish_native_rs_camera(calibrator, public_model):
+    context = current_context()
+    if context is not None:
+        context.publish_native_rs_camera(calibrator, public_model)
 
 
 def publish_imu_camera(calibrator):

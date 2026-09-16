@@ -29,6 +29,27 @@ except ImportError:
 
 @unittest.skipIf(backend is None, "native calibration modules are unavailable")
 class NativeObservabilityAnalysisTest(unittest.TestCase):
+    def _m_estimator_report(self, robust):
+        problem = backend.OptimizationProblem()
+        transforms = []
+        for index in range(2):
+            transform = backend.TransformationDv(sm.Transformation())
+            transforms.append(transform)
+            problem.addDesignVariable(transform.q)
+            problem.addDesignVariable(transform.t)
+            error = backend.ErrorTermTransformation(
+                transform.toExpression(), sm.Transformation(), 1.0, 1.0)
+            if robust and index == 1:
+                error.setMEstimatorPolicy(
+                    backend.BlakeZissermanMEstimator(6.0))
+            problem.addErrorTerm(error)
+        return incremental.analyzeObservability(
+            problem, [transforms[1].q, transforms[1].t], 1)
+
+    def test_analysis_reports_actual_m_estimator_usage(self):
+        self.assertFalse(self._m_estimator_report(False)["uses_m_estimator"])
+        self.assertTrue(self._m_estimator_report(True)["uses_m_estimator"])
+
     def _transformation_spectrum(self, weight_rotation, weight_translation):
         problem = backend.OptimizationProblem()
         transforms = []

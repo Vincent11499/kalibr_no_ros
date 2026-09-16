@@ -91,7 +91,35 @@ ${}^{A}_{B}\mathbf T$ 将 B 系点变到 A 系。`T_cam_imu` 将 IMU 点变到�
 `shuffle: false` 保持数据库顺序；检测成功、时间同步成功、共视图连接和增量接受
 是不同状态，输出证据不能混淆它们。
 
-## 4. Camera–IMU 标定
+## 4. 纯视觉 Rolling Shutter 相机标定
+
+公开 job 为 `camera_rolling_shutter_calibration`。正式入口
+`kalibr-noros calibrate cameras-rs` 调用
+`calibration/kalibr/python/kalibr_calibrate_rs_camera_system`，主要实现位于同级
+`kalibr_rs_camera_calibration/SystemCalibrator.py`。它支持单目、双目和按 task 列表排列的
+多目系统，并在一个问题中联合优化 K/D、相邻 `T_cn_cnm1`、每目行时间和共享的连续
+标定板轨迹。
+
+`src/python/kalibr_no_ros/rolling_shutter.py` 校验逐目 `line_delay_s`、`estimate` 与
+`max_abs_line_delay_s`；`task.py` 将公开相机 ID 映射为原生位置 ID、选择正式或临时后端，
+并把求解结果统一为第 0 行时间戳语义。目录数据仍按各相机自己的时间戳流读取，多目
+view 同时要求同步容差和共同全局角点 ID。第三台及后续相机的位姿使用从 cam0 开始的
+累计相邻变换，不能只使用最后一段 baseline。
+
+正式求解器用 `tau = max_abs_line_delay_s * tanh(q)` 表示带符号秒/行，角点时刻为
+`t_camera_row0 + y_px * tau`。轨迹 knot 默认根据实际选中观测率生成，并加入分段二阶
+运动先验。`optimizer_threads` 通过 `kalibr_runtime` 传给该 Optimizer2；报告生成、初值
+循环和 Python 误差项建图仍主要在主进程。
+
+临时 `kalibr-noros calibrate native-rs-cameras` 包装现有
+`calibration/kalibr/python/kalibr_calibrate_rs_cameras`，只允许一台相机。其实现保留
+`kalibr_rs_camera_calibration/RsCalibrator.py` 的 adaptive knot、随运动自适应像素
+协方差、运动先验和 DogLeg；本工程补上 no-ROS 数据入口、公开 `pinhole-equi` 映射、
+显式行时间 seed 和结构化输出。该后端的 `max_abs_line_delay_s` 只在求解后检查，不能
+理解为优化过程中的边界。完整算法和结果口径见
+[纯视觉 RS 相机标定](ROLLING_SHUTTER_CAMERA_CALIBRATION_ZH.md)。
+
+## 5. Camera–IMU 标定
 
 入口为 `kalibr_calibrate_imu_camera`，主要实现位于
 `kalibr_imu_camera_calibration/IccSensors.py` 与 `IccCalibrator.py`。
@@ -110,7 +138,7 @@ ${}^{A}_{B}\mathbf T$ 将 B 系点变到 A 系。`T_cam_imu` 将 IMU 点变到�
 `direct` 与 `refine` 仅改变允许的初始化阶段，不增加吸引参数靠近 seed 的残差。
 hard rank 失败必须保留诊断并失败，operational rank 用于表示较弱的可观方向。
 
-## 5. 模型与原生优化器
+## 6. 模型与原生优化器
 
 原生 `pinhole-equi` 保持四内参加四畸变参数。独立
 `kalibr_opencv_fisheye` 扩展只提供九参数模型：五个投影参数
@@ -132,7 +160,7 @@ LM 的阻尼、更新接受/回滚和停止规则由原生实现负责。Schur �
 并行 Hessian 对每个固定分块独立累积，按既定顺序归并；直接构造 Hessian 的误差项
 仍走自己的实现。数学正确性检查应包含这些误差项及 worker 异常传播。
 
-## 6. 输出证据与维护检查
+## 7. 输出证据与维护检查
 
 按任务与传感器 ID 命名的结果 YAML 是下游权威参数输入；可选 `metrics.json` 记录证据支持的量化值，
 `assessment.json` 分离用户显式判定规则与显示用参考评级。不能把没有角点证据的
@@ -153,4 +181,5 @@ Python 修改后重新 configure。profile 的 `check` 目标显式执行功能�
 
 定位问题时按症状查入口：数据/ID/时间错误先查 validation 与 datasets；
 模型维数/alpha 丢失查模型和转换；使用帧变化查 detector、view 与增量状态；
-Camera–IMU 结果异常查坐标、时钟和运动可观性；输出缺项查观测证据与输出配置。
+纯视觉 RS 结果异常还要核对第 0 行时间戳语义、扫描方向、行覆盖、轨迹 knot 和行时间
+可观性；Camera–IMU 结果异常查坐标、时钟和运动可观性；输出缺项查观测证据与输出配置。

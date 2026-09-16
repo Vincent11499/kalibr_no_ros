@@ -1,0 +1,422 @@
+#!/usr/bin/env python3
+"""Calibrate a mono or multi-camera rolling-shutter camera system."""
+
+from __future__ import print_function
+
+import argparse
+import math
+import multiprocessing
+import os
+import signal
+import sys
+
+import numpy as np
+import yaml
+
+import aslam_cv_backend as acvb
+import kalibr_camera_calibration as kcc
+import kalibr_common as kc
+import kalibr_runtime as native_runtime
+import sm
+
+from kalibr_rs_camera_calibration.SystemCalibrator import SystemRsCalibrator
+
+
+CAMERA_MODELS = {
+    "pinhole-equi": acvb.EquidistantPinholeRs,
+    "pinhole-radtan": acvb.DistortedPinholeRs,
+}
+
+
+def _signal_exit(unused_signal, unused_frame):
+    sm.logWarn("Shutdown requested! (CTRL+C)")
+    sys.exit(2)
+
+
+def _load_shutters(path, camera_count):
+    try:
+        with open(path, "r") as stream:
+            document = yaml.safe_load(stream)
+    except (IOError, OSError, yaml.YAMLError) as error:
+        raise RuntimeError(
+            "could not read rolling-shutter config {}: {}".format(
+                path, error))
+    if not isinstance(document, dict):
+        raise RuntimeError("rolling-shutter config must be a mapping")
+    if document.get("schema_version") != "1.0.0":
+        raise RuntimeError(
+            "rolling-shutter config schema_version must be string 1.0.0")
+    if document.get("kind") != "rolling_shutter_config":
+        raise RuntimeError(
+            "rolling-shutter config kind must be rolling_shutter_config")
+    cameras = document.get("cameras")
+    expected = {"cam{}".format(index) for index in range(camera_count)}
+    if not isinstance(cameras, dict) or set(cameras) != expected:
+        raise RuntimeError(
+            "rolling-shutter config cameras must contain exactly {}".format(
+                ", ".join(sorted(expected))))
+    result = {}
+    allowed = {"line_delay_s", "estimate", "max_abs_line_delay_s"}
+    for camera_id in sorted(cameras):
+        block = cameras[camera_id]
+        if not isinstance(block, dict) or set(block) - allowed:
+            raise RuntimeError(
+                "invalid rolling-shutter fields for {}".format(camera_id))
+        result[camera_id] = dict(block)
+    return result
+
+
+def _extract_and_initialize(parsed, target, initialization, shutters):
+    cameras = []
+    obsdb = kcc.ObservationDatabase(parsed.max_delta_approxsync)
+    for camera_id, (topic, model_name) in enumerate(
+            zip(parsed.topics, parsed.models)):
+        if model_name not in CAMERA_MODELS:
+            raise RuntimeError(
+                "unsupported rolling-shutter camera model {}; choose {}"
+                .format(model_name, ", ".join(sorted(CAMERA_MODELS))))
+        camera_name = "cam{}".format(camera_id)
+        seed = (initialization["cameras"].get(camera_name, {})
+                if initialization is not None else None)
+        print("Initializing {}:".format(camera_name))
+        print("\tCamera model:     {}".format(model_name))
+        dataset = native_runtime.timed_call(
+            "image_dataset_index", "io", {"topic": topic},
+            kc.BagImageDatasetReader, parsed.bagfile, topic,
+            bag_from_to=parsed.bag_from_to, bag_freq=parsed.bag_freq)
+        print("\tNumber of images: {}".format(dataset.numImages()))
+        camera_model = CAMERA_MODELS[model_name]
+        camera = kcc.CameraGeometry(
+            camera_model, target, dataset,
+            verbose=(parsed.verbose or parsed.show_extraction),
+            windowHalfSizePx=parsed.window_half_size_px,
+            maxDisplacementPx=parsed.max_displacement_px,
+            freezeIntrinsics=parsed.freeze_intrinsics)
+        observations = kc.extractCornersFromDataset(
+            dataset, camera.ctarget.detector,
+            multithreading=not (parsed.verbose or parsed.show_extraction),
+            clearImages=False, noTransformation=True)
+        if not observations:
+            raise RuntimeError(
+                "no successful target observations for {}".format(
+                    camera_name))
+
+        if seed is not None and "intrinsics" in seed:
+            geometry = kcc.cameraGeometryFromInitialization(
+                camera_model, camera_name, seed, observations)
+            camera = kcc.CameraGeometry(
+                camera_model, target, dataset, geometry=geometry,
+                verbose=(parsed.verbose or parsed.show_extraction),
+                windowHalfSizePx=parsed.window_half_size_px,
+                maxDisplacementPx=parsed.max_displacement_px,
+                freezeIntrinsics=parsed.freeze_intrinsics)
+
+        for observation in observations:
+            if observation is not None and observation.hasSuccessfulObservation():
+                obsdb.addObservation(camera_id, observation)
+        if camera_id not in obsdb.observations:
+            raise RuntimeError(
+                "no valid target observations for {}".format(camera_name))
+
+        if parsed.freeze_intrinsics:
+            camera.initGeometryFromSeed(observations, camera_name, seed)
+        elif (initialization is not None and
+              initialization["strategy"] == "direct"):
+            camera.initGeometryFromSeed(observations, camera_name, seed)
+        elif seed is not None and (
+                "intrinsics" in seed or "distortion_coeffs" in seed):
+            success = native_runtime.timed_call(
+                "camera_intrinsics_initialization", "initialization",
+                {"camera": camera_name, "seeded": True},
+                camera.initGeometryFromObservationsWithSeed,
+                observations, camera_name, seed,
+                parsed.focal_initialization_min_visible_corner_ratio)
+            if not success:
+                raise RuntimeError(
+                    "could not initialize {} intrinsics".format(camera_name))
+        else:
+            success = native_runtime.timed_call(
+                "camera_intrinsics_initialization", "initialization",
+                {"camera": camera_name, "seeded": False},
+                camera.initGeometryFromObservations, observations,
+                parsed.focal_initialization_min_visible_corner_ratio)
+            if not success:
+                raise RuntimeError(
+                    "could not initialize {} intrinsics".format(camera_name))
+
+        camera.geometry.shutter().setParameters(np.asarray([
+            float(shutters[camera_name].get("line_delay_s", 0.0))
+        ], dtype=float))
+        print("\tProjection:       {}".format(
+            camera.geometry.projection().getParameters().flatten()))
+        print("\tDistortion:       {}".format(
+            camera.geometry.projection().distortion().getParameters().flatten()))
+        cameras.append(camera)
+    return cameras, obsdb
+
+
+def _initialize_baselines(parsed, cameras, obsdb, initialization):
+    graph = kcc.MulticamCalibrationGraph(obsdb)
+    if not graph.isGraphConnected():
+        raise RuntimeError(
+            "cameras are not connected through synchronized observations "
+            "with common target corner IDs")
+    if len(cameras) == 1:
+        return graph, []
+    if (initialization is not None and
+            initialization["strategy"] == "direct"):
+        baselines = kcc.cameraInitializationBaselineGuesses(
+            initialization, len(cameras), require_all=True)
+    elif initialization is not None:
+        overrides = kcc.cameraInitializationBaselineGuesses(
+            initialization, len(cameras))
+        baselines = native_runtime.timed_call(
+            "camera_baseline_initialization", "initialization",
+            {"inclusive": True}, graph.getInitialGuesses,
+            cameras, overrides)
+    else:
+        baselines = native_runtime.timed_call(
+            "camera_baseline_initialization", "initialization",
+            {"inclusive": True}, graph.getInitialGuesses, cameras)
+    return graph, baselines
+
+
+def _camera_output(camera, model_name, topic, shutter):
+    projection = camera.geometry.projection()
+    return {
+        "camera_model": "pinhole",
+        "distortion_model": (
+            "equidistant" if model_name == "pinhole-equi" else "radtan"),
+        "intrinsics": np.asarray(
+            projection.getParameters(), dtype=float).reshape(-1).tolist(),
+        "distortion_coeffs": np.asarray(
+            projection.distortion().getParameters(),
+            dtype=float).reshape(-1).tolist(),
+        "resolution": [int(projection.ru()), int(projection.rv())],
+        "rostopic": topic,
+        "shutter": shutter,
+    }
+
+
+def _write_results(parsed, calibrator, shutters, rms):
+    bagtag = os.path.splitext(parsed.bagfile)[0]
+    chain = {}
+    for index, camera in enumerate(calibrator.cameras):
+        item = _camera_output(
+            camera, parsed.models[index], parsed.topics[index],
+            shutters[index])
+        if index:
+            item["T_cn_cnm1"] = np.asarray(
+                calibrator.baselines[index - 1].T(),
+                dtype=float).tolist()
+        chain["cam{}".format(index)] = item
+    chain_path = bagtag + "-camchain.yaml"
+    with open(chain_path, "w") as stream:
+        yaml.safe_dump(chain, stream, allow_unicode=True,
+                       default_flow_style=False, sort_keys=False,
+                       width=1000000)
+
+    text_path = bagtag + "-results-cam.txt"
+    with open(text_path, "w") as stream:
+        stream.write("Rolling-shutter camera-system calibration\n")
+        stream.write("=========================================\n")
+        stream.write("timestamp reference: camera row 0\n")
+        stream.write("trajectory strategy: {}\n".format(
+            calibrator.spline_metadata["strategy"]))
+        stream.write("trajectory segments: {}\n".format(
+            calibrator.spline_metadata["segment_count"]))
+        for index, (shutter, camera_rms) in enumerate(zip(shutters, rms)):
+            stream.write("cam{} line_delay_s: {:.17g}\n".format(
+                index, shutter["line_delay_s"]))
+            stream.write("cam{} reprojection_rms_px: {:.17g}\n".format(
+                index, camera_rms))
+        for index, baseline in enumerate(calibrator.baselines, start=1):
+            stream.write("T_c{}_c{}:\n{}\n".format(
+                index, index - 1,
+                np.asarray(baseline.T(), dtype=float)))
+    if parsed.export_poses:
+        kcc.exportPoses(calibrator, filename=bagtag + "-poses-cam0.csv")
+    return chain_path, text_path
+
+
+def _parse_args():
+    parser = argparse.ArgumentParser(
+        description=(
+            "Joint mono/multi-camera rolling-shutter calibration. Camera "
+            "timestamps identify row zero."))
+    parser.add_argument("--bag", dest="bagfile", required=True)
+    parser.add_argument("--target", dest="target_yaml", required=True)
+    parser.add_argument("--topics", nargs="+", required=True)
+    parser.add_argument("--models", nargs="+", required=True,
+                        choices=sorted(CAMERA_MODELS))
+    parser.add_argument("--rolling-shutter-config", required=True)
+    parser.add_argument("--initialization-config")
+    parser.add_argument("--bag-from-to", nargs=2, type=float)
+    parser.add_argument("--bag-freq", type=float)
+    parser.add_argument("--approx-sync", dest="max_delta_approxsync",
+                        type=float, default=0.02)
+    parser.add_argument("--window-half-size-px", type=int)
+    parser.add_argument("--max-displacement-px", type=float)
+    parser.add_argument(
+        "--focal-initialization-min-visible-corner-ratio", type=float,
+        default=1.0)
+    parser.add_argument("--freeze-intrinsics", action="store_true")
+    parser.add_argument("--max-iterations", "--max-iter",
+                        dest="max_iter", type=int, default=80)
+    parser.add_argument("--feature-sigma-px", type=float, default=1.0)
+    parser.add_argument("--time-padding-s", "--time-padding",
+                        dest="time_padding", type=float, default=0.5)
+    parser.add_argument("--spline-order", type=int, default=4)
+    parser.add_argument("--knots-per-second", type=float)
+    parser.add_argument(
+        "--motion-translation-weight", "--motion-prior-translation-weight",
+        dest="motion_translation_weight", type=float, default=1e-5)
+    parser.add_argument(
+        "--motion-rotation-weight", "--motion-prior-rotation-weight",
+        dest="motion_rotation_weight", type=float, default=1e-2)
+    parser.add_argument("--no-outliers-removal", action="store_false",
+                        default=True, dest="remove_outliers")
+    parser.add_argument("--no-final-filtering", action="store_false",
+                        default=True, dest="final_filtering")
+    parser.add_argument("--min-views-outlier", type=int, default=20)
+    parser.add_argument("--use-blakezisserman", action="store_true")
+    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--show-extraction", action="store_true")
+    parser.add_argument("--dont-show-report", action="store_true")
+    parser.add_argument("--export-poses", action="store_true")
+    native_runtime.add_parallelism_arguments(parser)
+    parsed = parser.parse_args()
+    if len(parsed.topics) != len(parsed.models):
+        parser.error("--topics and --models must have equal lengths")
+    if parsed.max_delta_approxsync < 0.0:
+        parser.error("--approx-sync must be nonnegative")
+    if parsed.window_half_size_px is not None and parsed.window_half_size_px < 1:
+        parser.error("--window-half-size-px must be positive")
+    if (parsed.max_displacement_px is not None and
+            (not math.isfinite(parsed.max_displacement_px) or
+             parsed.max_displacement_px <= 0.0)):
+        parser.error("--max-displacement-px must be positive and finite")
+    ratio = parsed.focal_initialization_min_visible_corner_ratio
+    if not math.isfinite(ratio) or ratio <= 0.0 or ratio > 1.0:
+        parser.error(
+            "--focal-initialization-min-visible-corner-ratio must be in (0,1]")
+    if parsed.min_views_outlier < 1:
+        parser.error("--min-views-outlier must be positive")
+    if parsed.max_iter < 1:
+        parser.error("--max-iterations must be positive")
+    if parsed.spline_order < 3:
+        parser.error("--spline-order must be at least 3")
+    for option, value in (
+            ("--feature-sigma-px", parsed.feature_sigma_px),
+            ("--time-padding-s", parsed.time_padding),
+            ("--motion-translation-weight",
+             parsed.motion_translation_weight),
+            ("--motion-rotation-weight", parsed.motion_rotation_weight)):
+        if not math.isfinite(value) or value <= 0.0:
+            parser.error("{} must be positive and finite".format(option))
+    if (parsed.knots_per_second is not None and
+            (not math.isfinite(parsed.knots_per_second) or
+             parsed.knots_per_second <= 0.0)):
+        parser.error("--knots-per-second must be positive and finite")
+    native_runtime.configure(
+        parsed, command="kalibr_calibrate_rs_camera_system")
+    return parsed
+
+
+def main():
+    parsed = _parse_args()
+    sm.setLoggingLevel(sm.LoggingLevel.Debug if parsed.verbose
+                       else sm.LoggingLevel.Info)
+    signal.signal(signal.SIGINT, _signal_exit)
+    shutters = _load_shutters(
+        parsed.rolling_shutter_config, len(parsed.topics))
+    initialization = None
+    if parsed.initialization_config:
+        initialization = kcc.loadCameraCalibrationInitialization(
+            parsed.initialization_config, len(parsed.topics),
+            [CAMERA_MODELS[name] for name in parsed.models])
+    if parsed.freeze_intrinsics:
+        if initialization is None:
+            raise RuntimeError(
+                "--freeze-intrinsics requires --initialization-config")
+        incomplete = []
+        for index in range(len(parsed.topics)):
+            seed = initialization["cameras"].get(
+                "cam{}".format(index), {})
+            for field in ("intrinsics", "distortion_coeffs"):
+                if field not in seed:
+                    incomplete.append("cam{}.{}".format(index, field))
+        if incomplete:
+            raise RuntimeError(
+                "--freeze-intrinsics requires complete seeds; missing {}"
+                .format(", ".join(incomplete)))
+
+    target = kc.CalibrationTargetParameters(parsed.target_yaml)
+    cameras, obsdb = _extract_and_initialize(
+        parsed, target, initialization, shutters)
+    unused_graph, baseline_guesses = _initialize_baselines(
+        parsed, cameras, obsdb, initialization)
+    calibrator = SystemRsCalibrator(
+        cameras, obsdb, baseline_guesses, shutters,
+        spline_order=parsed.spline_order,
+        time_padding_s=parsed.time_padding,
+        knots_per_second=parsed.knots_per_second,
+        feature_sigma_px=parsed.feature_sigma_px,
+        motion_translation_weight=parsed.motion_translation_weight,
+        motion_rotation_weight=parsed.motion_rotation_weight,
+        freeze_intrinsics=parsed.freeze_intrinsics,
+        use_blake_zisserman=parsed.use_blakezisserman,
+        max_iterations=parsed.max_iter,
+        verbose=parsed.verbose)
+    native_runtime.timed_call(
+        "camera_rs_joint_optimization", "optimization",
+        {"camera_count": len(cameras),
+         "trajectory_segments": calibrator.spline_metadata["segment_count"]},
+        calibrator.build_problem)
+    native_runtime.timed_call(
+        "camera_rs_joint_optimization", "optimization",
+        {"stage": "initial"}, calibrator.optimize)
+    if parsed.remove_outliers and parsed.final_filtering:
+        removed = native_runtime.timed_call(
+            "camera_rs_outlier_filtering", "optimization",
+            {"minimum_views": parsed.min_views_outlier},
+            calibrator.filter_outliers, parsed.min_views_outlier)
+        if removed:
+            sm.logWarn("Removed {} rolling-shutter corner outliers".format(
+                removed))
+
+    from kalibr_no_ros import observability
+    observability_threads = native_runtime.optimizer_threads_or(
+        max(1, multiprocessing.cpu_count() - 1))
+    native_runtime.timed_call(
+        "observability_analysis", "reporting",
+        {"job": "camera_rolling_shutter_calibration",
+         "optimizer_threads": observability_threads},
+        observability.analyze_write_require,
+        calibrator.problem, calibrator.observability_parameter_blocks(),
+        job="camera_rolling_shutter_calibration",
+        path="observability.yaml", num_threads=observability_threads)
+    calibrator.require_interior_line_delays()
+
+    shutter_results = calibrator.line_delay_results()
+    rms = calibrator.reprojection_rms()
+    calibrator.publish_artifacts(parsed.models)
+    _write_results(parsed, calibrator, shutter_results, rms)
+    print("Rolling-shutter camera-system calibration complete")
+    for index, (shutter, camera_rms) in enumerate(
+            zip(shutter_results, rms)):
+        print("  cam{}: RMS {:.6f} px, line delay {:.6f} us/row".format(
+            index, camera_rms, shutter["line_delay_s"] * 1e6))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BaseException:
+        try:
+            native_runtime.finish("error")
+        except Exception:
+            pass
+        raise
+    else:
+        native_runtime.finish("ok")

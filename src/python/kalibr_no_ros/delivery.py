@@ -2,23 +2,24 @@
 
 from pathlib import Path
 import json
+import math
 import os
 import re
 import shutil
 import tempfile
-from .rolling_shutter import CAMERA_IMU_JOBS
+from .rolling_shutter import CAMERA_IMU_JOBS, CAMERA_CALIBRATION_JOBS
 
 
 def _ids(task):
     from .task import load_yaml, resolve_task_path
-    if task['job'] == 'camera_calibration':
+    if task['job'] in CAMERA_CALIBRATION_JOBS:
         return [c.get('id', 'cam{}'.format(i)) for i, c in enumerate(task['cameras'])]
     value = task['camera_calibration']
     path = value.get('path') if isinstance(value, dict) else value
     return [c['id'] for c in load_yaml(resolve_task_path(task, path))['cameras']]
 
 
-def result_name(task):
+def result_name(task, rs_solver_backend='system'):
     from .task import TaskError
     name = task['output'].get('name')
     if not name:
@@ -26,6 +27,8 @@ def result_name(task):
         if task['job'] in CAMERA_IMU_JOBS:
             ids += [c.get('id', 'imu{}'.format(i)) for i, c in enumerate(task['imus'])]
         name = task['job'] + '_' + '_'.join(ids)
+    if rs_solver_backend == 'native' and not name.startswith('native_'):
+        name = 'native_' + name
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,159}', name):
         raise TaskError('result name is not a safe filename; set output.name explicitly')
     return name
@@ -91,16 +94,68 @@ def apply_camera_ids(task, artifacts, result):
             event['frame_id'] = frame_ids.get(event['frame_id'], event['frame_id'])
 
 
+def _rolling_shutter_pair_quality(pair, field, pair_id):
+    """Return the public scalar/null value without inventing evidence.
+
+    Detailed unavailability reasons remain in metrics.json and the reports; the
+    calibration-result contract keeps these fields scalar (or null).
+    """
+    from .task import TaskError
+
+    metric = pair.get(field)
+    label = '{} for {}'.format(field, pair_id)
+    if metric is None:
+        return None
+    if not isinstance(metric, dict):
+        raise TaskError('{} metric must be a mapping'.format(label))
+
+    status = metric.get('status')
+    value = metric.get('rms_px')
+    count = metric.get('count')
+    if status == 'available':
+        if (type(count) is not int or count <= 0
+                or isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value) or value < 0.0):
+            raise TaskError(
+                '{} marked available requires a positive sample count and a '
+                'nonnegative finite rms_px'.format(label))
+        return float(value)
+    if status != 'unavailable':
+        raise TaskError('{} status must be available or unavailable'.format(label))
+    if type(count) is not int or count != 0 or value is not None:
+        raise TaskError(
+            '{} marked unavailable requires count 0 and rms_px null'.format(
+                label))
+    return None
+
+
 def enrich_result(result, metrics):
+    from .task import TaskError
+
     result.pop('transform_convention', None)
     for i, camera in enumerate(result['cameras']):
         camera.pop('from_camera', None)
         values = metrics['cameras'][camera['id']]['reprojection']
-        camera['rms'] = values.get('rms_px')
+        rms = values.get('rms_px')
+        if camera.get('shutter') and rms is None:
+            raise TaskError(
+                'rolling-shutter result requires final pixel residuals for {}'.format(
+                    camera['id']))
+        camera['rms'] = rms
         if i and 'T_cn_cnm1' in camera:
             previous = result['cameras'][i-1]['id']
-            pair = metrics.get('stereo_pairs', {}).get(previous + '_' + camera['id'], {})
-            camera['alignment'] = (pair.get('alignment') or {}).get('rms_px')
+            pair_id = previous + '_' + camera['id']
+            pair = metrics.get('stereo_pairs', {}).get(pair_id, {})
+            if camera.get('shutter'):
+                camera['alignment'] = _rolling_shutter_pair_quality(
+                    pair, 'alignment', pair_id)
+                camera['rs_compensated_pair_residual'] = (
+                    _rolling_shutter_pair_quality(
+                        pair, 'rs_compensated_pair_residual', pair_id))
+            else:
+                camera['alignment'] = (
+                    (pair.get('alignment') or {}).get('rms_px'))
 
 
 def locate_result(source):
@@ -249,7 +304,8 @@ def run_delivery(prefix, config, output_dir, expected_job, force, overrides):
     if output in {Path('/'), Path.home(), Path.cwd()} or output == dataset or dataset in output.parents or output in dataset.parents:
         raise TaskError('output directory must be separate from the input dataset and workspace root')
     discover_camera_result(task, output)
-    name = result_name(task)
+    rs_solver_backend = overrides.get('_rs_solver_backend', 'system')
+    name = result_name(task, rs_solver_backend)
     _check_owned(output, name, force)
     inputs = [Path(config).resolve(), *([Path(overrides['initialization']).resolve()] if overrides.get('initialization') else [])]
     for block in [task.get('target'), task.get('camera_calibration'), task.get('initialization'), *task.get('imus', [])]:

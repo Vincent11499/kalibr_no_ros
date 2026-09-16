@@ -4,6 +4,7 @@ import ctypes.util
 import math
 import types
 import unittest
+from unittest import mock
 import numpy as np
 import cv2
 
@@ -18,12 +19,454 @@ try:
     import incremental_calibration
     from kalibr_imu_camera_calibration.IccRollingShutter import IccRollingShutterCamera, IccRollingShutterCalibrator
     from kalibr_imu_camera_calibration.IccSensors import IccCamera
+    from kalibr_rs_camera_calibration.RsCalibrator import (
+        NATIVE_TIME_EXPRESSION_BUFFER_S,
+        NATIVE_TIME_PADDING_S,
+        RsCalibrator,
+        RsCalibratorConfiguration,
+        requireOptimizerSuccess,
+    )
+    import kalibr_rs_camera_calibration.SystemCalibrator as system_calibrator
 except ImportError:
     backend = None
 
 
 @unittest.skipIf(backend is None, "native calibration modules are unavailable")
 class RollingShutterNativeTest(unittest.TestCase):
+    def test_native_visual_time_buffer_fits_initial_row_span(self):
+        config = RsCalibratorConfiguration()
+        config.timeOffsetConstantSparsityPattern = \
+            NATIVE_TIME_EXPRESSION_BUFFER_S
+        config.timeOffsetPadding = NATIVE_TIME_PADDING_S
+        self.assertEqual(config.timeOffsetConstantSparsityPattern, 0.5)
+        self.assertEqual(config.timeOffsetPadding, 0.5)
+        config.validate(True)
+        config.validateTimeSupport(2160, 20e-6)
+
+        config.timeOffsetPadding = 0.25
+        with self.assertRaisesRegex(
+                ValueError, "must strictly exceed.*initial row span"):
+            config.validateTimeSupport(2160, 20e-6)
+
+    def test_native_visual_rejects_solver_failure_and_iteration_exhaustion(self):
+        failed = types.SimpleNamespace(
+            iterations=3, linearSolverFailure=True,
+            dXFinal=1.0, dJFinal=1.0)
+        with self.assertRaisesRegex(RuntimeError, "failed during initial solve"):
+            requireOptimizerSuccess(failed, 20, "initial solve")
+
+        exhausted = types.SimpleNamespace(
+            iterations=20, linearSolverFailure=False,
+            dXFinal=0.2, dJFinal=0.01)
+        with self.assertRaisesRegex(
+                RuntimeError,
+                r"adaptive knot iteration 2 within max_iterations=20 .*iterations=20"):
+            requireOptimizerSuccess(
+                exhausted, 20, "adaptive knot iteration 2")
+
+        converged = types.SimpleNamespace(
+            iterations=19, linearSolverFailure=False,
+            dXFinal=1e-9, dJFinal=1e-5)
+        self.assertIs(
+            requireOptimizerSuccess(converged, 20, "initial solve"),
+            converged)
+
+    def test_native_visual_filters_failed_pnp_before_spline_initialization(self):
+        class Observation:
+            def __init__(self, timestamp, pnp_success=True):
+                self.timestamp = timestamp
+                self.pnp_success = pnp_success
+                self.pose = None
+
+            def time(self):
+                return types.SimpleNamespace(toSec=lambda: self.timestamp)
+
+            def set_T_t_c(self, pose):
+                self.pose = pose
+
+        class Camera:
+            @staticmethod
+            def estimateTransformation(observation):
+                return observation.pnp_success, sm.Transformation()
+
+        observations = [
+            Observation(float(index), pnp_success=(index != 2))
+            for index in range(5)
+        ]
+        calibrator = RsCalibrator()
+        calibrator._RsCalibrator__observations = observations
+        calibrator._RsCalibrator__camera = Camera()
+        calibrator._RsCalibrator__config = types.SimpleNamespace(splineOrder=4)
+
+        calibrator._RsCalibrator__generateExtrinsicsInitialGuess()
+
+        retained = calibrator._RsCalibrator__observations
+        self.assertEqual(retained,
+                         [observations[0], observations[1],
+                          observations[3], observations[4]])
+        self.assertTrue(all(observation.pose is not None
+                            for observation in retained))
+
+        calibrator._RsCalibrator__observations = observations[:4]
+        with self.assertRaisesRegex(
+                RuntimeError,
+                r"requires at least 4 finite, unique PnP target poses; "
+                r"retained 3 of 4 observations \(1 PnP failures"):
+            calibrator._RsCalibrator__generateExtrinsicsInitialGuess()
+
+    def test_visual_system_rejects_iteration_budget_exhaustion(self):
+        calibrator = system_calibrator.SystemRsCalibrator.__new__(
+            system_calibrator.SystemRsCalibrator)
+        calibrator.problem = object()
+        calibrator.max_iterations = 80
+        calibrator.verbose = False
+        result = types.SimpleNamespace(
+            iterations=80, failedIterations=0,
+            linearSolverFailure=False, dXFinal=0.21867490780318674,
+            dJFinal=0.01368354311512121)
+
+        optimizer = mock.Mock()
+        with mock.patch.object(
+                system_calibrator.aopt, "Optimizer2Options",
+                return_value=types.SimpleNamespace()), mock.patch.object(
+                system_calibrator.aopt, "BlockCholeskyLinearSystemSolver",
+                return_value=object()), mock.patch.object(
+                system_calibrator.aopt, "LevenbergMarquardtTrustRegionPolicy",
+                return_value=object()), mock.patch.object(
+                system_calibrator.aopt, "Optimizer2", return_value=optimizer), \
+                mock.patch.object(
+                    system_calibrator.native_runtime, "apply_optimizer_threads"), \
+                mock.patch.object(
+                    system_calibrator.native_runtime, "run_optimizer",
+                    return_value=result):
+            with self.assertRaisesRegex(
+                    RuntimeError,
+                    r"max_iterations=80 .*iterations=80, dXFinal=0\.218674.*dJFinal=0\.0136835"):
+                calibrator.optimize()
+        self.assertIs(calibrator.optimizer_result, result)
+
+    def test_visual_system_rejects_nonfinite_trajectory_and_pixel_residuals(self):
+        class Projection:
+            @staticmethod
+            def getParameters():
+                return np.array([400.0, 400.0, 320.0, 240.0])
+
+            @staticmethod
+            def distortion():
+                return types.SimpleNamespace(
+                    getParameters=lambda: np.zeros(4))
+
+        class Error:
+            def __init__(self, prediction):
+                self.prediction = np.asarray(prediction, dtype=float)
+
+            @staticmethod
+            def evaluateError():
+                return 0.0
+
+            @staticmethod
+            def getMeasurement():
+                return np.array([10.0, 20.0])
+
+            def getPredictedMeasurement(self):
+                return self.prediction
+
+        calibrator = system_calibrator.SystemRsCalibrator.__new__(
+            system_calibrator.SystemRsCalibrator)
+        calibrator.cameras = [types.SimpleNamespace(
+            geometry=types.SimpleNamespace(projection=lambda: Projection()))]
+        calibrator.baselines = []
+        calibrator.line_delays = [types.SimpleNamespace(
+            camera_id="cam0", value_s=lambda: 8e-6)]
+        calibrator.spline_dv = types.SimpleNamespace(
+            spline=lambda: types.SimpleNamespace(
+                coefficients=lambda: np.array([[float("nan")]])))
+        calibrator.views = []
+
+        with self.assertRaisesRegex(RuntimeError,
+                                    "trajectory coefficients are not finite"):
+            calibrator._validate_solution()
+
+        calibrator.spline_dv = types.SimpleNamespace(
+            spline=lambda: types.SimpleNamespace(
+                coefficients=lambda: np.zeros((6, 4))))
+        calibrator.views = [types.SimpleNamespace(
+            rig_observations=[(0, object())],
+            rerrs={0: [Error([float("nan"), 20.0])]})]
+        with self.assertRaisesRegex(
+                RuntimeError,
+                "non-finite two-dimensional final reprojection"):
+            calibrator._validate_solution()
+
+        calibrator.views[0].rerrs[0] = [Error([9.0, 18.0])]
+        self.assertAlmostEqual(
+            calibrator.reprojection_rms()[0], math.sqrt(5.0))
+
+    def test_visual_line_delay_state_is_bounded_and_uses_row_zero(self):
+        class Projection:
+            @staticmethod
+            def rv():
+                return 480
+
+        class Shutter:
+            def __init__(self):
+                self.parameters = None
+
+            def setParameters(self, value):
+                self.parameters = np.asarray(value, dtype=float)
+
+        native_shutter = Shutter()
+        geometry = types.SimpleNamespace(geometry=types.SimpleNamespace(
+            projection=lambda: Projection(), shutter=lambda: native_shutter))
+        state = system_calibrator.LineDelayState(
+            "cam0", geometry,
+            {"line_delay_s": 8e-6, "estimate": True,
+             "max_abs_line_delay_s": 2e-5})
+        self.assertAlmostEqual(state.value_s(), 8e-6, places=15)
+        self.assertAlmostEqual(state.support_extent_s, 479 * 2e-5)
+        self.assertAlmostEqual(
+            state.expression_margin_s, 479 * (2e-5 + 8e-6))
+        state.dv.update(np.array([30.0]))
+        self.assertLess(abs(state.value_s()), 2e-5 + 1e-18)
+        state.dv.revertUpdate()
+        result = state.result()
+        self.assertEqual(result["reference_row_px"], 0.0)
+        self.assertEqual(result["timestamp_reference"], "row0_exposure_end")
+        self.assertEqual(
+            result["corner_time_equation"],
+            "t_corner_s = t_camera_timestamp_s + y_px * line_delay_s")
+        self.assertAlmostEqual(result["first_to_last_row_span_s"], 479 * 8e-6)
+        state.sync_native_shutter()
+        np.testing.assert_allclose(native_shutter.parameters, [8e-6])
+
+        fixed = system_calibrator.LineDelayState(
+            "cam0", geometry,
+            {"line_delay_s": -8e-6, "estimate": False})
+        self.assertFalse(fixed.dv.isActive())
+        self.assertNotIn("max_abs_line_delay_s", fixed.result())
+        self.assertAlmostEqual(fixed.support_extent_s, 479 * 8e-6)
+        self.assertAlmostEqual(fixed.expression_margin_s, 479 * 8e-6)
+
+    def test_system_spline_default_tracks_selected_observation_rate(self):
+        pose_samples = []
+        for index in range(26):
+            matrix = np.eye(4)
+            matrix[0, 3] = 0.01 * index
+            pose_samples.append((1.2 * index, sm.Transformation(matrix)))
+
+        with self.assertRaisesRegex(
+                RuntimeError, "at least 3 for the second-order motion prior"):
+            system_calibrator.make_pose_spline(
+                pose_samples, order=2, padding_s=0.5)
+        with self.assertRaisesRegex(
+                RuntimeError, "at least 3 for the second-order motion prior"):
+            system_calibrator.SystemRsCalibrator(
+                [], None, [], {}, spline_order=2)
+
+        _, metadata = system_calibrator.make_pose_spline(
+            pose_samples, order=4, padding_s=0.5)
+        _, explicit_metadata = system_calibrator.make_pose_spline(
+            pose_samples, order=4, padding_s=0.5,
+            knots_per_second=1.0 / 1.2)
+
+        self.assertEqual(metadata["strategy"], "selected_observation_rate")
+        self.assertAlmostEqual(
+            metadata["selected_frame_rate_hz"], 1.0 / 1.2)
+        self.assertAlmostEqual(
+            metadata["requested_knots_per_second"], 1.0 / 1.2)
+        self.assertEqual(metadata["requested_segment_count"], 27)
+        self.assertEqual(metadata["minimum_segment_count"], 8)
+        self.assertNotIn("automatic_maximum_segment_count", metadata)
+        self.assertEqual(metadata["segment_count"], 27)
+        self.assertEqual(explicit_metadata["segment_count"], 27)
+        self.assertEqual(
+            explicit_metadata["strategy"], "explicit_knots_per_second")
+
+        support = [-0.02] + [1.2 * index for index in range(26)] + [30.02]
+        extended, extended_metadata = system_calibrator.make_pose_spline(
+            pose_samples[1:-1], order=4, padding_s=0.5,
+            selected_timestamps=[1.2 * index for index in range(26)],
+            support_timestamps=support)
+        self.assertEqual(extended_metadata["selected_timestamp_count"], 26)
+        self.assertEqual(extended_metadata["support_timestamp_count"], 28)
+        self.assertAlmostEqual(
+            extended_metadata["selected_frame_rate_hz"], 1.0 / 1.2)
+        self.assertLessEqual(float(extended.t_min()), min(support))
+        self.assertGreaterEqual(float(extended.t_max()), max(support))
+
+    def test_system_observation_timestamps_include_views_without_pnp(self):
+        def observation(timestamp):
+            return types.SimpleNamespace(
+                time=lambda: types.SimpleNamespace(toSec=lambda: timestamp))
+
+        views = {
+            0: [(1, observation(0.002)), (0, observation(0.0))],
+            1: [(1, observation(1.003))],
+            2: [(0, observation(2.0)), (1, observation(2.004))],
+        }
+        calibrator = system_calibrator.SystemRsCalibrator.__new__(
+            system_calibrator.SystemRsCalibrator)
+        calibrator.obsdb = types.SimpleNamespace(
+            getAllViewTimestamps=lambda: list(views),
+            getAllObsAtTimestamp=lambda timestamp: views[timestamp])
+
+        selected, support = calibrator._observation_timestamps()
+        self.assertEqual(selected, [0.0, 1.003, 2.0])
+        self.assertEqual(
+            support, [0.002, 0.0, 1.003, 2.0, 2.004])
+
+    def test_saturated_error_lists_estimate_and_bound_per_camera(self):
+        calibrator = system_calibrator.SystemRsCalibrator.__new__(
+            system_calibrator.SystemRsCalibrator)
+        calibrator.line_delays = [
+            types.SimpleNamespace(
+                camera_id="cam0", estimate=True, bound_s=2e-5,
+                value_s=lambda: 1.999e-5),
+            types.SimpleNamespace(
+                camera_id="cam1", estimate=True, bound_s=3e-5,
+                value_s=lambda: -2.999e-5),
+            types.SimpleNamespace(
+                camera_id="cam2", estimate=False, bound_s=None,
+                value_s=lambda: 0.0),
+        ]
+
+        with self.assertRaises(RuntimeError) as raised:
+            calibrator.require_interior_line_delays()
+        message = str(raised.exception)
+        self.assertIn("cam0: estimate=", message)
+        self.assertIn("bound=2", message)
+        self.assertIn("cam1: estimate=", message)
+        self.assertIn("bound=3", message)
+        self.assertNotIn("cam2: estimate=", message)
+        self.assertIn("s/row", message)
+
+    def test_three_camera_baseline_chain_is_previous_to_current(self):
+        first_matrix = np.eye(4)
+        first_matrix[:3, :3] = np.array([
+            [0.0, -1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ])
+        first_matrix[:3, 3] = [1.0, 2.0, 0.0]
+        second_matrix = np.eye(4)
+        second_matrix[:3, :3] = np.array([
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0],
+            [0.0, 1.0, 0.0],
+        ])
+        second_matrix[:3, 3] = [-0.5, 0.0, 3.0]
+        first = sm.Transformation(first_matrix)
+        second = sm.Transformation(second_matrix)
+        cumulative = system_calibrator.SystemRsCalibrator._cumulative_baseline(
+            [first, second], 2)
+        np.testing.assert_allclose(
+            cumulative.T(), second_matrix @ first_matrix, atol=1e-14)
+
+    def test_visual_system_uses_each_camera_timestamp_and_row(self):
+        class FakeProblem:
+            def __init__(self):
+                self.errors = []
+
+            def addErrorTerm(self, error):
+                self.errors.append(error)
+
+        class FakeTime:
+            def __init__(self, value):
+                self.value = value
+
+            def toSec(self):
+                return self.value
+
+        class FakeObservation:
+            def __init__(self, timestamp, row):
+                self.timestamp = timestamp
+                self.row = row
+
+            def time(self):
+                return FakeTime(self.timestamp)
+
+            @staticmethod
+            def getCornersIdx():
+                return [0]
+
+            def imagePoint(self, unused_corner_id):
+                return True, np.array([50.0, self.row])
+
+        class FakeTarget:
+            @staticmethod
+            def size():
+                return 1
+
+        class FakeModel:
+            @staticmethod
+            def reprojectionError(*unused_arguments):
+                return types.SimpleNamespace()
+
+        class FakeSpline:
+            @staticmethod
+            def transformationAtTime(time, unused_left, unused_right):
+                return types.SimpleNamespace(
+                    toTransformationMatrix=lambda: np.eye(4))
+
+        observations = [
+            (0, FakeObservation(1.0, 100.0)),
+            (1, FakeObservation(1.002, 200.0)),
+        ]
+        calibrator = system_calibrator.SystemRsCalibrator.__new__(
+            system_calibrator.SystemRsCalibrator)
+        calibrator.obsdb = types.SimpleNamespace(
+            getAllViewTimestamps=lambda: [1.0],
+            getAllObsAtTimestamp=lambda unused_timestamp: observations)
+        calibrator.line_delays = [
+            types.SimpleNamespace(
+                expression=backend.ScalarExpression(1e-5),
+                support_extent_s=0.01, expression_margin_s=0.012),
+            types.SimpleNamespace(
+                expression=backend.ScalarExpression(-2e-5),
+                support_extent_s=0.01, expression_margin_s=0.023),
+        ]
+        calibrator.cameras = [
+            types.SimpleNamespace(model=FakeModel(), dv=object()),
+            types.SimpleNamespace(model=FakeModel(), dv=object()),
+        ]
+        calibrator.spline_dv = FakeSpline()
+        calibrator.feature_sigma_px = 1.0
+        calibrator.use_blake_zisserman = False
+        calibrator._active_corners = None
+        calibrator._add_design_variables = lambda unused_problem: None
+        calibrator._target_landmarks = lambda unused_problem: (
+            FakeTarget(), [object()])
+        evaluated_times = []
+
+        # Special methods are resolved on the class, so use a tiny explicit
+        # transform class rather than relying on SimpleNamespace.__mul__.
+        class FakeTransform:
+            def __mul__(self, point):
+                return point
+
+        def camera_target_expression(camera_id, timestamp, margin):
+            evaluated_times.append((camera_id, timestamp.toScalar(), margin))
+            return FakeTransform()
+
+        calibrator._camera_target_expression = camera_target_expression
+        original_problem = system_calibrator.inc.CalibrationOptimizationProblem
+        system_calibrator.inc.CalibrationOptimizationProblem = FakeProblem
+        try:
+            calibrator.build_problem()
+        finally:
+            system_calibrator.inc.CalibrationOptimizationProblem = original_problem
+
+        self.assertTrue(any(camera == 0 and abs(time - 1.0) < 1e-15
+                            for camera, time, margin in evaluated_times))
+        self.assertTrue(any(camera == 1 and abs(time - 1.002) < 1e-15
+                            for camera, time, margin in evaluated_times))
+        self.assertTrue(any(camera == 0 and abs(time - 1.001) < 1e-15
+                            for camera, time, margin in evaluated_times))
+        self.assertTrue(any(camera == 1 and abs(time - 0.998) < 1e-15
+                            for camera, time, margin in evaluated_times))
+        self.assertTrue(all(abs(margin - 0.023001) < 1e-15
+                            for camera, time, margin in evaluated_times))
+
     def test_bounded_scalar_value_and_jacobians(self):
         for value in [-2., 0., .8, 2.]:
             dv = backend.Scalar(value);dv.setActive(True);dv.setBlockIndex(0)

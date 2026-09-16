@@ -12,6 +12,7 @@ cam0 表示左目、cam1 表示右目；单目示例只使用 cam0。
 | 单目内参 | mono_camera_calibration_task.yaml | all_params/mono_camera_calibration_task_full.yaml | cam0 内参、四项等距畸变 |
 | 双目内外参 | stereo_camera_calibration_task.yaml | all_params/stereo_camera_calibration_task_full.yaml | 两目内参、畸变、相邻外参 |
 | 双目＋IMU 外参 | camera_imu_calibration_task.yaml | all_params/camera_imu_calibration_task_full.yaml | 相机–IMU 外参、时间偏移与 IMU 参数 |
+| 单目／多目滚动快门相机 | camera_rolling_shutter_calibration_task.yaml | all_params/camera_rolling_shutter_calibration_task_full.yaml | K/D、相邻外参、每目行时间与RS残差 |
 | 滚动快门双目＋IMU | camera_imu_rolling_shutter_calibration_task.yaml | all_params/camera_imu_rolling_shutter_calibration_task_full.yaml | 每目行时间、相机–IMU 外参、整体时间偏移与 IMU 参数 |
 
 根目录还提供以下无注释配置：
@@ -26,7 +27,13 @@ cam0 表示左目、cam1 表示右目；单目示例只使用 cam0。
 | `evaluation.yaml` | 从已归档观测重新生成指标、判定和图像 |
 
 `all_params/` 中的 `aprilgrid.yaml`、`imu.yaml`、`evaluation.yaml` 保留参数解释与规则示例。
-两种任务的 job 分开，不把完整相机标定嵌入 Camera–IMU 任务。
+相机与 Camera–IMU 的 job 分开，不把完整相机标定嵌入 Camera–IMU 任务。
+
+`camera_rolling_shutter_calibration_task.yaml` 当前写成双目；做单目时同时删除第二个
+`cameras` 项和对应的 `rolling_shutter.cam1`，做三目及以上时按相同 ID 规则成对增加。
+正式 `cameras-rs` 可直接使用完整注释版。临时 `native-rs-cameras` 只支持单目，且不接受
+完整注释版中的同步、样条、运动先验和异常点过滤字段；从简洁版改为单目后，还需删除
+`calibration.synchronization_tolerance_s`。两条命令共用 task schema，不共用全部后端参数。
 
 ## 准备输入
 
@@ -56,10 +63,12 @@ kalibr-noros validate --config mono_camera_calibration_task.yaml
 kalibr-noros calibrate cameras --config mono_camera_calibration_task.yaml --output-dir output
 kalibr-noros validate --config all_params/stereo_camera_calibration_task_full.yaml
 kalibr-noros calibrate cameras --config all_params/stereo_camera_calibration_task_full.yaml --output-dir output
+kalibr-noros calibrate cameras-rs --config all_params/camera_rolling_shutter_calibration_task_full.yaml --output-dir output
 kalibr-noros calibrate imu-camera --config all_params/camera_imu_calibration_task_full.yaml --output-dir output
 ```
 
-三个任务可以使用同一输出目录 `output`，结果按任务与相机 ID 命名。
+各任务可以使用同一输出目录 `output`，结果按任务与相机 ID 命名；临时原生 RS 单目
+对照结果会增加 `native_` 前缀。
 IMU task 省略 `camera_calibration`，运行时从输出目录查找唯一匹配双目/多目结果。
 有多个结果时填写显式路径；单独运行 `validate` 时也需要该路径，因为该命令没有输出目录上下文。
 IMU 任务要求相机结果的模型、尺寸、

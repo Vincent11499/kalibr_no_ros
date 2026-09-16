@@ -1,7 +1,8 @@
 # 标定 Task 参数与超参数完整说明
 
 本文基于 v1.0.0 接口源码，逐项说明
-`camera_calibration` 与 `camera_imu_calibration` task 中真正受支持的字段、默认值、
+`camera_calibration`、`camera_rolling_shutter_calibration`、
+`camera_imu_calibration` 与 `camera_imu_rolling_shutter_calibration` task 中真正受支持的字段、默认值、
 CLI 映射、作用阶段、内部算法和有效范围。字段校验以当前 `validation.py`、
 `task.py`、`initialization.py` 和 `reporting.py` 为准。
 
@@ -23,7 +24,7 @@ CLI 映射、作用阶段、内部算法和有效范围。字段校验以当前 
 - **算法有效范围**：当前代码未必提前校验，但越界会导致无意义配置、矩阵奇异或运行期失败；
 - **特殊值**：具有与普通数值不同的控制语义。
 
-## 1. 两类 task 的完整示例
+## 1. 两类普通 task 的完整示例
 
 ### 1.1 `camera_calibration`
 
@@ -122,8 +123,10 @@ execution:
   profiling_memory_sample_interval_s: 0.25
 ```
 
-以上两份“全部字段”示例默认不启用 `initialization`：未配置时保持原生自动初始化。
-要启用时在 task 顶层增加第 2.2 节的块，或使用同节所述 CLI 覆盖。
+以上两份普通任务的“全部字段”示例默认不启用 `initialization`：未配置时保持原生自动
+初始化。要启用时在 task 顶层增加第 2.2 节的块，或使用同节所述 CLI 覆盖。纯视觉 RS
+相机任务见第 10 节，RS Camera–IMU 的附加字段见
+[`ROLLING_SHUTTER_ZH.md`](ROLLING_SHUTTER_ZH.md)。
 
 ## 2. 公共 task 字段
 
@@ -132,7 +135,7 @@ execution:
 | 字段 | 类型与范围 | 作用 |
 |---|---|---|
 | `schema_version` | 字符串，当前必须为 `"1.0.0"` | 与初始化和结果文档统一版本；由 `job`/`kind` 区分文档用途 |
-| `job` | `camera_calibration` 或 `camera_imu_calibration` | 选择任务及允许出现的顶层字段 |
+| `job` | 四种公开 calibration job 之一 | 选择普通/RS相机或普通/RS Camera–IMU任务，并决定允许的顶层字段 |
 | `dataset` | mapping，必填 | 数据来源和数据裁剪参数 |
 | `target` | mapping，必填 | 标定板配置 |
 | `initialization` | mapping，可省略 | 独立物理初值文件与 `refine`/`direct` 策略 |
@@ -750,6 +753,8 @@ OpenCV 解码和 target detection 才是并行流水线。
 - 双目/多相机 baseline 初始化 LM；
 - 相机 full-batch refinement LM；
 - 相机最终增量 `addBatch`/GN；
+- 正式纯视觉 RS 相机系统联合 LM 与过滤后的再次联合 LM；
+- 临时原生 RS 单目初始联合求解及 adaptive knot 更新后的重复求解；
 - Camera–IMU rotation/gyro bias 初值；
 - 多 IMU rotation 初值；
 - Camera–IMU 最终联合 LM；
@@ -772,10 +777,26 @@ kalibr-noros calibrate cameras \
   --config camera_calibration_task.yaml \
   --output-dir output
 
+kalibr-noros calibrate cameras-rs \
+  --config camera_rolling_shutter_calibration_task.yaml \
+  --output-dir output
+
+kalibr-noros calibrate native-rs-cameras \
+  --config camera_rolling_shutter_calibration_task.yaml \
+  --output-dir output
+
 kalibr-noros calibrate imu-camera \
   --config camera_imu_calibration_task.yaml \
   --output-dir output
+
+kalibr-noros calibrate imu-camera-rs \
+  --config camera_imu_rolling_shutter_calibration_task.yaml \
+  --output-dir output
 ```
+
+上例的 `native-rs-cameras` 配置名表示同一 RS task schema；实际运行前必须按第 10.2 节
+改成单目并移除正式求解器专用字段。它不实现轨迹导出；若
+`output.export_poses: true`，会在读取数据和求解前明确拒绝，需改用 `cameras-rs`。
 
 数据选择和算法超参数以 task YAML 为唯一正式入口；`calibrate` CLI 不提供
 `--max-iter`、`--approx-sync` 或 `--recompute-camera-chain-extrinsics` 等算法覆盖参数。
@@ -878,6 +899,15 @@ synchronize_clocks
 estimate_multi_imu_delay
 calibrate_time_offset
 recompute_camera_chain_extrinsics
+rolling_shutter.*.line_delay_s
+rolling_shutter.*.estimate
+rolling_shutter.*.max_abs_line_delay_s
+spline_order
+time_padding_s
+knots_per_second
+feature_sigma_px
+motion_translation_weight
+motion_rotation_weight
 initialization.path 中的任一物理 seed
 initialization.strategy
 ```
@@ -912,4 +942,68 @@ initialization.strategy
   `src/kalibr/calibration/kalibr/python/kalibr_imu_camera_calibration/IccCalibrator.py`；
 - 并行覆盖和 profiling：`src/python/kalibr_runtime/runtime.py`；
 - 多进程图像读取、解码、检测和有界队列：
-  `src/kalibr/calibration/kalibr/python/kalibr_common/TargetExtractor.py`。
+  `src/kalibr/calibration/kalibr/python/kalibr_common/TargetExtractor.py`；
+- 正式纯视觉 RS 相机系统入口与联合求解：
+  `src/kalibr/calibration/kalibr/python/kalibr_calibrate_rs_camera_system`、
+  `src/kalibr/calibration/kalibr/python/kalibr_rs_camera_calibration/SystemCalibrator.py`；
+- 临时原生 RS 单目入口与上游求解器：
+  `src/kalibr/calibration/kalibr/python/kalibr_calibrate_rs_cameras`、
+  `src/kalibr/calibration/kalibr/python/kalibr_rs_camera_calibration/RsCalibrator.py`。
+
+## 10. `camera_rolling_shutter_calibration` 专用配置
+
+该 job 使用与普通相机任务相同的 `dataset`、`target`、`cameras` 和
+`camera_calibration_initialization`，另要求 `rolling_shutter`。正式
+`calibrate cameras-rs` 支持单目／多目，临时 `calibrate native-rs-cameras` 仅支持单目。
+完整原理、时间基准和两种求解器差异见
+[RS 相机标定](ROLLING_SHUTTER_CAMERA_CALIBRATION_ZH.md)。
+
+### 10.1 `rolling_shutter`
+
+该块也由 `camera_imu_rolling_shutter_calibration` 共用。纯视觉任务的键集合必须与
+`cameras[].id` 完全一致；Camera–IMU RS 任务则必须与引用相机结果的 ID 完全一致。
+每目字段如下：
+
+| 字段 | 默认值 | 强制范围 | 内部作用 |
+|---|---:|---|---|
+| `line_delay_s` | `0.0` s/行 | 有限实数 | 行时间初值；`estimate:false` 时为固定值 |
+| `estimate` | `true` | 布尔值 | 正式求解器使用有界latent；false不优化该目行时间 |
+| `max_abs_line_delay_s` | 无 | `estimate:true` 时必填；只要提供就必须为有限正数且严格大于初值绝对值 | 正式求解器的tanh范围和样条支持；原生临时入口只作求解后可接受性检查 |
+
+相机时间戳是第0行曝光结束。角点时刻为
+`t_camera_timestamp + y_px * line_delay_s`；输出首末行跨度为
+`(image_height - 1) * abs(line_delay_s)`。
+
+### 10.2 联合求解字段
+
+RS job 接受普通相机字段中的 `freeze_intrinsics`、`window_half_size_px`、
+`max_displacement_px`、`focal_initialization_min_visible_corner_ratio`、
+`synchronization_tolerance_s`、`min_views_for_outlier_statistics`、
+`remove_outliers`、`final_filtering` 和 `blake_zisserman`。它不执行增量 view 选择，
+因此拒绝 `qr_tolerance`、`information_gain_tolerance` 和 `shuffle`，避免配置被静默忽略。
+该求解器也没有普通相机任务的逐批异常点删除；只有 `remove_outliers` 与
+`final_filtering` 同时为 true 才执行一次最终过滤，逐坐标阈值为
+`max(4 * sigma, feature_sigma_px)`，删除后用同一联合模型重新求解。
+
+| 字段 | 默认值 | 强制范围 | 内部作用 |
+|---|---:|---|---|
+| `max_iterations` | `80` | 正整数 | 每次 RS 联合 Optimizer2 的最大迭代数；达到上限视为未收敛，任务失败且不发布正式结果 |
+| `spline_order` | `4` | 整数 `>=3` | 共享目标位姿样条阶数；二阶运动先验要求至少三阶 |
+| `time_padding_s` | `0.5` s | 有限正数，且严格大于各目最大可能首末行跨度 | 样条端部支持；范围来自 `(H-1) * max_abs_line_delay_s`，固定且无 bound 时使用初值绝对值 |
+| `knots_per_second` | 自动 | 省略或有限正数 Hz | 显式轨迹 knot 敏感性设置；自动值为实际入选观测的中位频率，按含 padding 的完整时间域计算段数且下限为 `2*spline_order`；不按位姿数截断 |
+| `feature_sigma_px` | `1.0` px | 有限正数 | 正式求解器二维重投影协方差标准差 |
+| `motion_translation_weight` | `1e-5` | 有限正数 | 二阶平移运动先验的信息权重 |
+| `motion_rotation_weight` | `1e-2` | 有限正数 | 二阶旋转运动先验的信息权重 |
+
+临时原生单目入口接受角点参数、`max_iterations`、`feature_sigma_px`，以及值为
+`false` 的 `freeze_intrinsics`；公共 task 契约不允许在单目任务中固定 K/D。它保留
+上游自适应 knot、运动先验和 adaptive covariance，因而拒绝
+显式 `spline_order`、`time_padding_s`、`knots_per_second` 及两个 motion weight，防止将
+正式新求解器参数假装成原生参数。观测率从实际选中时间戳计算，允许小于1 Hz；显式
+`line_delay_s` 不再由该频率覆盖。
+
+### 10.3 指标字段
+
+RS 每目 `rms` 使用最终二维像素残差。相邻 `alignment` 仍是只用 K/D/T 的普通光学
+校正诊断；新增 `rs_compensated_pair_residual` 从校正后的实测左右差中减去模型预测左右
+差，使用行时间和轨迹，但属于拟合依赖的样本内诊断。两者定义不同，不能互相替代。

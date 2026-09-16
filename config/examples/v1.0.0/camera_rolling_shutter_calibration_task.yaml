@@ -1,0 +1,35 @@
+schema_version: "1.0.0"
+kind: calibration_task
+job: camera_rolling_shutter_calibration
+dataset:
+  type: directory
+  path: data/stereo_YYMMDD_hhmm
+target:
+  path: aprilgrid.yaml
+cameras:
+  - id: cam0
+    model: pinhole-equi
+  - id: cam1
+    model: pinhole-equi
+rolling_shutter:
+  cam0:
+    line_delay_s: 0.0
+    estimate: true
+    max_abs_line_delay_s: 0.00002
+  cam1:
+    line_delay_s: 0.0
+    estimate: true
+    max_abs_line_delay_s: 0.00002
+calibration:
+  window_half_size_px: 7
+  max_displacement_px: 1.0
+  synchronization_tolerance_s: 0.0001
+  max_iterations: 80
+execution:
+  detector_processes: 4
+  optimizer_threads: 4
+  detector_inflight_per_worker: 2
+  detector_opencv_threads: 1
+output:
+  archive_observations: false
+  archive_selection_history: false

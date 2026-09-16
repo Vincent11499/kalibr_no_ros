@@ -2,7 +2,7 @@
 
 本文只说明日常使用需要修改的内容：任务 YAML、目录数据集、相机模型和运行命令。
 算法原理与源码调用链见
-[`SOURCE_CODE_DEEP_DIVE_ZH.md`](SOURCE_CODE_DEEP_DIVE_ZH.md)。两类 task 的全部可配置字段、默认值、
+[`SOURCE_CODE_DEEP_DIVE_ZH.md`](SOURCE_CODE_DEEP_DIVE_ZH.md)。四类 calibration task 的全部可配置字段、默认值、
 有效范围和内部算法影响见
 [`TASK_PARAMETERS_ZH.md`](TASK_PARAMETERS_ZH.md)。
 
@@ -53,7 +53,8 @@ imus:
 ```
 
 task 文件名只表达任务类型，例如 `mono_camera_calibration_task.yaml`、
-`stereo_camera_calibration_task.yaml`、`camera_imu_calibration_task.yaml`；bag 和目录输入都使用同一命名方式，由
+`stereo_camera_calibration_task.yaml`、`camera_rolling_shutter_calibration_task.yaml`、
+`camera_imu_calibration_task.yaml`；bag 和目录输入都使用同一命名方式，由
 `dataset.type` 区分。
 
 task 中的 `dataset.path`、`target.path`、`camera_calibration.path`、
@@ -79,6 +80,24 @@ execution:
 
 检测队列和 worker 内 OpenCV 线程数有稳定默认值，不要求普通任务逐项重复。
 `release` 不启用性能采样；需要计时或内存诊断时使用 `project-profile` 并显式请求。
+
+当前共有 5 个标定子命令，按标定对象展开后的能力如下：
+
+| 标定对象 | CLI 指令 | task 的 `job` | 支持范围 |
+|---|---|---|---|
+| 普通单目 | `calibrate cameras` | `camera_calibration` | 1 台相机 |
+| 普通双目／多目 | `calibrate cameras` | `camera_calibration` | 2 台及以上相机，联合求内参和相邻外参 |
+| RS 单目 | `calibrate cameras-rs` | `camera_rolling_shutter_calibration` | 正式项目 RS 求解器 |
+| RS 双目／多目 | `calibrate cameras-rs` | `camera_rolling_shutter_calibration` | 共享连续轨迹，联合求 K/D、相邻外参和每目行时间 |
+| 原生 Kalibr RS 单目对照 | `calibrate native-rs-cameras` | `camera_rolling_shutter_calibration` | 只支持 1 台相机，用于上游算法对照 |
+| 普通相机＋IMU | `calibrate imu-camera` | `camera_imu_calibration` | 单目／双目／多目相机链，支持 1 个或多个 IMU |
+| RS 相机＋IMU | `calibrate imu-camera-rs` | `camera_imu_rolling_shutter_calibration` | 单目／双目／多目相机链，支持 1 个或多个 IMU，并联合估计行时间 |
+
+`calibrate cameras` 和 `calibrate cameras-rs` 的相机数量由 task 中的
+`cameras[]` 决定；`imu-camera` 和 `imu-camera-rs` 的相机链来自已有
+`camera_calibration` 结果。工程当前没有脱离相机的“IMU-only”标定命令。
+普通 `imu-camera` 使用全局快门重投影残差；需要逐行时间模型时必须显式使用
+`imu-camera-rs`。
 
 ### 2.1 可选的显式物理初值
 
@@ -119,6 +138,55 @@ kalibr-noros calibrate cameras --config task.yaml --output-dir output \
 双目和双目＋IMU 完整 task 及匹配初值模板。模板中的数值是教学占位值，默认未启用；
 先换成当前硬件的可信 seed，再启用完整 task 中已注释的 `initialization` 块。
 输入准备、验证和双目到 Camera–IMU 的运行顺序见初始化指南第 8 节。
+
+### 2.2 纯视觉 Rolling Shutter 相机任务
+
+纯视觉 RS 使用独立 job，并按相机 ID 配置每目行时间：
+
+```yaml
+schema_version: "1.0.0"
+kind: calibration_task
+job: camera_rolling_shutter_calibration
+dataset: {type: directory, path: /data/stereo_YYMMDD_hhmm}
+target: {path: aprilgrid.yaml}
+cameras:
+  - {id: cam0, model: pinhole-equi}
+  - {id: cam1, model: pinhole-equi}
+rolling_shutter:
+  cam0: {line_delay_s: 0.0, estimate: true, max_abs_line_delay_s: 0.00002}
+  cam1: {line_delay_s: 0.0, estimate: true, max_abs_line_delay_s: 0.00002}
+```
+
+正式入口支持单目、双目及按列表排列的多目系统：
+
+```bash
+kalibr-noros validate --config camera_rolling_shutter_calibration_task.yaml
+kalibr-noros calibrate cameras-rs \
+  --config camera_rolling_shutter_calibration_task.yaml \
+  --output-dir output
+```
+
+目录输入不写 `topic`；bag 输入必须为每台相机填写 `topic`。相机项与
+`rolling_shutter` 项必须使用完全相同的一组 ID。当前 RS 相机入口只接受
+`pinhole-equi` 和 `pinhole-radtan`。
+
+临时 `native-rs-cameras` 用于单目上游算法对照。它使用相同 job 与输入结构，但 task
+必须只保留一台相机，并且 `calibration` 只能包含
+`window_half_size_px`、`max_displacement_px`、`max_iterations`、
+`feature_sigma_px` 和值为 `false` 的 `freeze_intrinsics`。例如从简洁示例删去 cam1
+及其行时间项，同时删去 `synchronization_tolerance_s` 后运行。该临时入口不导出轨迹，
+必须保持 `output.export_poses: false`：
+
+```bash
+kalibr-noros calibrate native-rs-cameras \
+  --config camera_rolling_shutter_calibration_task.yaml \
+  --output-dir output
+```
+
+`line_delay_s` 的单位是秒/行。纯视觉 RS 的相机时间戳表示原图第 0 行曝光结束，
+角点时刻为 `t_camera_timestamp + y_px * line_delay_s`，高度为 $H$ 时首末行跨度为
+`(H - 1) * abs(line_delay_s)`。详细参数、两种求解器差异和指标边界见
+[`ROLLING_SHUTTER_CAMERA_CALIBRATION_ZH.md`](ROLLING_SHUTTER_CAMERA_CALIBRATION_ZH.md)。
 
 ## 3. 相机模型
 

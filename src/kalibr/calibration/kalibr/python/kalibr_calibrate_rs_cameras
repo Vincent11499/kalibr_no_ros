@@ -1,25 +1,22 @@
 #!/usr/bin/env python
-print("importing libraries")
-import rosbag
-import cv_bridge
+from __future__ import print_function
 
 import sm
-from sm import PlotCollection
-import aslam_cv as acv
-import aslam_cameras_april as acv_april
 import aslam_cv_backend as acvb
 import kalibr_common as kc
 import kalibr_camera_calibration as kcc
 import kalibr_rs_camera_calibration as rscc
+import kalibr_runtime as native_runtime
 
-import cv2
-import os
 import numpy as np
-import pylab as pl
 import argparse
 import sys
-import random
 import signal
+
+try:
+    from kalibr_no_ros import artifacts as run_artifacts
+except ImportError:
+    run_artifacts = None
 
 np.set_printoptions(suppress=True)
 
@@ -35,10 +32,13 @@ cameraModels = {
     # rolling shutter
     'pinhole-radtan-rs': acvb.DistortedPinholeRs,
     'pinhole-equi-rs':   acvb.EquidistantPinholeRs,
+    # Project-facing pinhole-equi is always rolling shutter in this command.
+    'pinhole-equi':      acvb.EquidistantPinholeRs,
+    'pinhole-radtan':    acvb.DistortedPinholeRs,
     'omni-radtan-rs':    acvb.DistortedOmniRs,
     # global shutter
-    'pinhole-radtan':    acvb.DistortedPinhole,
-    'pinhole-equi':      acvb.EquidistantPinhole,
+    'pinhole-radtan-gs': acvb.DistortedPinhole,
+    'pinhole-equi-gs':   acvb.EquidistantPinhole,
     'omni-radtan':       acvb.DistortedOmni
 }
 
@@ -72,7 +72,7 @@ def __parseArgs():
 
     %(prog)s --model pinhole-radtan-rs --target aprilgrid.yaml \\
               --bag MYROSBAG.bag --topic /cam0/image_raw \\
-              --feature-variance 1 --frame-rate 20
+              --inverse-feature-variance 1 --frame-rate 20
 
     example aprilgrid.yaml:
         target_type: 'aprilgrid'
@@ -83,8 +83,8 @@ def __parseArgs():
 
     parser = KalibrArgParser(description='Calibrate the intrinsics of a single rolling shutter camera.', usage=usage)
     parser.add_argument('--model', dest='model', help='The camera model to estimate. '
-                        'Currently supported models are {0}, where the suffix \'-rs\' identifies rolling shutter models.'.format(', '.join(list(cameraModels.keys()))), required=True)
-    parser.add_argument('--frame-rate', dest='framerate', type=int, help='Approximate framerate of the camera.', required=True)
+                        'Project-facing pinhole-equi and pinhole-radtan select rolling shutter; explicit *-rs aliases remain supported. Available models: {0}.'.format(', '.join(list(cameraModels.keys()))), required=True)
+    parser.add_argument('--frame-rate', dest='framerate', type=native_runtime.positive_float, help='Approximate rate of observations passed to the solver [Hz].', required=True)
 
     groupSource = parser.add_argument_group('Data source')
     groupSource.add_argument('--bag', dest='bagfile', help='The bag file with the data.')
@@ -98,21 +98,28 @@ def __parseArgs():
 
     groupOpt = parser.add_argument_group('Optimization options')
     groupOpt.add_argument('--max-iter', type=int, default=30, dest='max_iter', help='Max. iterations (default: %(default)s).', required=False)
+    groupOpt.add_argument('--initialization-config', dest='initializationConfig', help='v1.0.0 camera calibration initialization YAML for cam0.')
+    groupOpt.add_argument('--line-delay-seed', dest='lineDelaySeed', type=float, help='Explicit rolling-shutter line-delay seed [s].')
+    groupOpt.add_argument('--no-estimate-line-delay', dest='estimateLineDelay', action='store_false', default=True, help='Keep the explicit line-delay seed fixed.')
+    groupOpt.add_argument('--max-abs-line-delay', dest='maxAbsLineDelay', type=float, help='Reject a final line delay outside +/- this value [s]; this does not bound the optimizer.')
+    groupOpt.add_argument('--freeze-intrinsics', dest='freezeIntrinsics', action='store_true', help='Keep projection and distortion fixed at the complete initialization seed.')
+    groupOpt.add_argument('--window-half-size-px', dest='windowHalfSizePx', type=int, default=None, help='Subpixel-refinement half-window size [px].')
+    groupOpt.add_argument('--max-displacement-px', dest='maxDisplacementPx', type=float, default=None, help='Maximum subpixel-refinement displacement [px].')
+    native_runtime.add_parallelism_arguments(groupOpt)
 
     outputSettings = parser.add_argument_group('Output options')
     outputSettings.add_argument('--verbose', action='store_true', dest='verbose', help='Enable (really) verbose output (disables plots).')
     outputSettings.add_argument('--show-extraction', action='store_true', dest='showextraction', help='Show the calibration target extraction. (disables plots).')
+    outputSettings.add_argument('--dont-show-report', action='store_true', dest='dontShowReport', help=argparse.SUPPRESS)
 
     # print help if no argument is specified
     if len(sys.argv)==1:
         parser.print_help()
         sys.exit(2)
 
-    # Parse the argument list
-    try:
-        parsed = parser.parse_args()
-    except:
-        sys.exit(2)
+    # Parse the argument list. ArgumentParser already reports invalid input
+    # with status 2 and reports --help with status 0.
+    parsed = parser.parse_args()
 
     # there is an issue with the gtk plot widget, so we cant plot if we have opencv windows open...
     # --> disable the plots in these special situations
@@ -123,6 +130,48 @@ def __parseArgs():
 
 def main():
     parsed = __parseArgs()
+
+    if (not np.isfinite(parsed.inverseFeatureVariance) or
+            parsed.inverseFeatureVariance <= 0.0):
+        raise RuntimeError(
+            "--inverse-feature-variance must be a positive finite number")
+    if parsed.max_iter < 1:
+        raise RuntimeError("--max-iter must be a positive integer")
+    if (parsed.windowHalfSizePx is not None and
+            parsed.windowHalfSizePx < 1):
+        raise RuntimeError(
+            "--window-half-size-px must be a positive integer")
+    if (parsed.maxDisplacementPx is not None and
+            (not np.isfinite(parsed.maxDisplacementPx) or
+             parsed.maxDisplacementPx <= 0.0)):
+        raise RuntimeError(
+            "--max-displacement-px must be a positive finite number")
+    if parsed.lineDelaySeed is not None and not np.isfinite(parsed.lineDelaySeed):
+        raise RuntimeError("--line-delay-seed must be finite")
+    if not parsed.estimateLineDelay and parsed.lineDelaySeed is None:
+        raise RuntimeError(
+            "--no-estimate-line-delay requires --line-delay-seed")
+    if parsed.freezeIntrinsics and not parsed.initializationConfig:
+        raise RuntimeError(
+            "--freeze-intrinsics requires --initialization-config")
+    if (parsed.maxAbsLineDelay is not None and
+            (not np.isfinite(parsed.maxAbsLineDelay) or
+             parsed.maxAbsLineDelay <= 0.0)):
+        raise RuntimeError(
+            "--max-abs-line-delay must be a positive finite number")
+
+    native_runtime.configure(
+        parsed, command='kalibr_calibrate_rs_cameras')
+    status = "error"
+    try:
+        result = _run(parsed)
+        status = "ok"
+        return result
+    finally:
+        native_runtime.finish(status)
+
+
+def _run(parsed):
 
     # logging modes
     if parsed.verbose:
@@ -136,11 +185,17 @@ def main():
     ######
     ## load bagfile and extract targets:
     targetConfig = kc.CalibrationTargetParameters(parsed.targetYaml)
-    dataset = __initBagDataset(parsed.bagfile, parsed.topic, parsed.bag_from_to, parsed.bag_freq)
+    dataset = native_runtime.timed_call(
+        "dataset_open", "input", {}, __initBagDataset,
+        parsed.bagfile, parsed.topic, parsed.bag_from_to, parsed.bag_freq)
 
     #create camera
     cameraModel = cameraModels[parsed.model]
-    cameraGeometry = kcc.CameraGeometry(cameraModel, targetConfig, dataset, verbose=(parsed.verbose or parsed.showextraction))
+    cameraGeometry = kcc.CameraGeometry(
+        cameraModel, targetConfig, dataset,
+        verbose=(parsed.verbose or parsed.showextraction),
+        windowHalfSizePx=parsed.windowHalfSizePx,
+        maxDisplacementPx=parsed.maxDisplacementPx)
 
     # extract observations of the targets
     multithreading = not (parsed.verbose or parsed.showextraction)
@@ -157,13 +212,47 @@ def main():
     config.inverseFeatureCovariance = 1.0/parsed.inverseFeatureVariance
     config.maxNumberOfIterations = parsed.max_iter
     config.framerate = parsed.framerate
-    config.timeOffsetConstantSparsityPattern = 0.08
-    config.timeOffsetPadding = 0.5
+    # Keep the upstream unbounded shutter variable, but allow DogLeg trial
+    # steps to move corner timestamps by as much as 0.5 s.  The spline is
+    # initialized with twice the padding at each end, which remains strictly
+    # larger than this buffer plus the physical initial row span.
+    config.timeOffsetConstantSparsityPattern = \
+        rscc.NATIVE_TIME_EXPRESSION_BUFFER_S
+    config.timeOffsetPadding = rscc.NATIVE_TIME_PADDING_S
+    config.lineDelaySeed = parsed.lineDelaySeed
+    config.maxAbsLineDelay = parsed.maxAbsLineDelay
+    config.estimateParameters['shutter'] = parsed.estimateLineDelay
+    if parsed.freezeIntrinsics:
+        config.estimateParameters['intrinsics'] = False
+        config.estimateParameters['distortion'] = False
+    if parsed.initializationConfig:
+        initialization = kcc.loadCameraCalibrationInitialization(
+            parsed.initializationConfig, 1, [cameraModel])
+        config.cameraInitialization = initialization['cameras'].get(
+            'cam0', {})
+        config.initializationStrategy = initialization['strategy']
+        if parsed.freezeIntrinsics:
+            missing = [field for field in (
+                'intrinsics', 'distortion_coeffs')
+                if field not in config.cameraInitialization]
+            if missing:
+                raise RuntimeError(
+                    '--freeze-intrinsics requires a complete cam0 seed; '
+                    'missing {}'.format(', '.join(missing)))
 
     ######
     ## Calibrate
     calibrator = rscc.RsCalibrator()
-    calibrator.calibrate(cameraGeometry, observations, config)
+    native_runtime.timed_call(
+        "rolling_shutter_camera_calibration", "optimization", {},
+        calibrator.calibrate, cameraGeometry, observations, config)
+    if run_artifacts is not None and run_artifacts.current_context() is not None:
+        publisher = getattr(run_artifacts, 'publish_native_rs_camera', None)
+        if publisher is None:
+            raise RuntimeError(
+                "managed output requires publish_native_rs_camera support")
+        publisher(calibrator, parsed.model)
+    return calibrator
 
 if __name__ == "__main__":
     try:
@@ -171,4 +260,3 @@ if __name__ == "__main__":
     except Exception as e:
         sm.logError("Exception: {0}".format(e))
         sys.exit(-1)
-

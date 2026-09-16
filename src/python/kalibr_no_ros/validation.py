@@ -6,6 +6,11 @@ import re
 from kalibr_bag_io import open_dataset, DirectoryReader
 from .version import SCHEMA_VERSION
 from .initialization import CAMERA_MODEL_DIMENSIONS, _transform
+from .rolling_shutter import (
+    CAMERA_RS_JOB,
+    CAMERA_CALIBRATION_JOBS,
+    ROLLING_SHUTTER_JOBS,
+)
 from .task import (
     TaskError, load_task, load_yaml, require_document_version,
     resolve_execution, resolve_initialization, resolve_task_path,
@@ -68,8 +73,8 @@ def _quality_summary(value, label, rms=False):
 
 
 def validate_options(task):
-    from .rolling_shutter import JOB, validate_shutters
-    if task["job"] == JOB:
+    from .rolling_shutter import validate_shutters
+    if task["job"] in ROLLING_SHUTTER_JOBS:
         validate_shutters(task.get("rolling_shutter"))
     dataset = task["dataset"]
     _fields(dataset, {"type", "path", "time_range_s", "frequency_hz"}, "dataset")
@@ -93,18 +98,30 @@ def validate_options(task):
         "min_views_for_outlier_statistics", "shuffle", "remove_outliers",
         "final_filtering", "blake_zisserman",
     }
+    if task["job"] == CAMERA_RS_JOB:
+        camera_fields = {
+            "freeze_intrinsics", "focal_initialization_min_visible_corner_ratio",
+            "synchronization_tolerance_s", "min_views_for_outlier_statistics",
+            "remove_outliers", "final_filtering", "blake_zisserman",
+            "max_iterations", "spline_order", "time_padding_s",
+            "knots_per_second", "feature_sigma_px",
+            "motion_translation_weight", "motion_rotation_weight",
+        }
     imu_fields = {
         "max_iterations", "time_offset_padding_s", "reprojection_sigma_px",
         "synchronize_clocks", "estimate_multi_imu_delay", "calibrate_time_offset",
         "recover_covariance", "recompute_camera_chain_extrinsics",
     }
-    _fields(calibration, common | (camera_fields if task["job"] == "camera_calibration" else imu_fields), "calibration")
+    _fields(calibration, common | (
+        camera_fields if task["job"] in CAMERA_CALIBRATION_JOBS else imu_fields),
+        "calibration")
     booleans = {
         "freeze_intrinsics", "shuffle", "remove_outliers", "final_filtering", "blake_zisserman",
         "synchronize_clocks", "estimate_multi_imu_delay", "calibrate_time_offset",
         "recover_covariance", "recompute_camera_chain_extrinsics",
     }
-    integers = {"window_half_size_px", "min_views_for_outlier_statistics", "max_iterations"}
+    integers = {"window_half_size_px", "min_views_for_outlier_statistics",
+                "max_iterations", "spline_order"}
     for key, value in calibration.items():
         if key in booleans:
             if type(value) is not bool:
@@ -112,6 +129,9 @@ def validate_options(task):
         elif key in integers:
             if type(value) is not int or value < 1:
                 raise TaskError("calibration.{} must be a positive integer".format(key))
+            if key == "spline_order" and value < 3:
+                raise TaskError(
+                    "calibration.spline_order must be at least 3")
         else:
             if key == "information_gain_tolerance" and type(value) in (int, float) and value == -1:
                 continue
@@ -121,20 +141,31 @@ def validate_options(task):
             if key == "focal_initialization_min_visible_corner_ratio" and value > 1:
                 raise TaskError("calibration.{} must be in (0, 1]".format(key))
     resolve_execution(task.get("execution"))
-    if task["job"] == "camera_calibration":
+    if task["job"] in CAMERA_CALIBRATION_JOBS:
         topics = set()
         camera_ids = set()
         for index, camera in enumerate(task["cameras"]):
             _fields(camera, {"id", "topic", "model"}, "cameras[{}]".format(index))
-            _camera_id(camera.get("id", "cam{}".format(index)), camera_ids, "cameras[{}].id".format(index))
+            camera_id = camera.get("id", "cam{}".format(index))
+            _camera_id(
+                camera_id, camera_ids, "cameras[{}].id".format(index))
             topic = camera.get("topic")
             directory = dataset["type"] == "directory"
             if directory and "topic" not in camera and "id" not in camera:
                 raise TaskError("directory cameras require an explicit id")
+            if not directory and "id" not in camera:
+                # Bag topics identify streams, so public camera IDs remain
+                # optional.  Materialize the documented positional default once
+                # here so every later ID-based contract sees the same camN value.
+                camera["id"] = camera_id
             if (not directory or "topic" in camera) and (not isinstance(topic, str) or not topic.strip() or topic in topics):
                 raise TaskError("camera topics must be non-empty and unique")
             if not isinstance(camera.get("model"), str) or camera["model"] not in CAMERA_MODEL_DIMENSIONS:
                 raise TaskError("unsupported camera model: {}".format(camera.get("model")))
+            if (task["job"] == CAMERA_RS_JOB
+                    and camera["model"] not in {"pinhole-equi", "pinhole-radtan"}):
+                raise TaskError(
+                    "camera_rolling_shutter_calibration supports pinhole-equi and pinhole-radtan")
             topics.add(topic)
     else:
         if "camera_calibration" in task:
@@ -221,8 +252,81 @@ def load_imu(task, block):
     return value
 
 
+def _validate_shutter_result(shutter, resolution, calibration_type):
+    """Validate persisted shutter metadata and its derived quantities."""
+    allowed = {
+        "type", "line_delay_s", "reference_row_px",
+        "first_to_last_row_span_s", "estimated", "timestamp_reference",
+        "corner_time_equation", "max_abs_line_delay_s",
+        "distance_to_bound_s", "bound_role", "time_reference",
+        "line_delay_std_s",
+    }
+    _fields(shutter, allowed, "camera shutter result")
+    if shutter.get("type") != "rolling_shutter":
+        raise TaskError("invalid camera shutter result type")
+    if type(shutter.get("estimated")) is not bool:
+        raise TaskError("camera shutter result estimated must be boolean")
+    for field in ("line_delay_s", "reference_row_px",
+                  "first_to_last_row_span_s"):
+        if (type(shutter.get(field)) not in (int, float)
+                or not math.isfinite(shutter[field])):
+            raise TaskError("invalid shutter." + field)
+
+    line_delay = float(shutter["line_delay_s"])
+    reference_row = float(shutter["reference_row_px"])
+    expected_span = abs(line_delay) * (resolution[1] - 1)
+    if not math.isclose(
+            float(shutter["first_to_last_row_span_s"]), expected_span,
+            rel_tol=1e-9, abs_tol=1e-15):
+        raise TaskError(
+            "shutter.first_to_last_row_span_s is inconsistent with "
+            "abs(line_delay_s) * (image_height - 1)")
+
+    if calibration_type == "cameras":
+        if reference_row != 0.0:
+            raise TaskError(
+                "visual camera shutter reference_row_px must be 0")
+        if shutter.get("timestamp_reference") != "row0_exposure_end":
+            raise TaskError(
+                "visual camera shutter timestamp_reference must be "
+                "row0_exposure_end")
+        equation = shutter.get("corner_time_equation")
+        if (equation is not None and equation !=
+                "t_corner_s = t_camera_timestamp_s + y_px * line_delay_s"):
+            raise TaskError("invalid visual camera shutter corner_time_equation")
+    elif not 0.0 <= reference_row <= resolution[1] - 1:
+        raise TaskError("camera-IMU shutter reference_row_px is outside the image")
+
+    bound = shutter.get("max_abs_line_delay_s")
+    if bound is not None:
+        if (type(bound) not in (int, float) or not math.isfinite(bound)
+                or bound <= 0.0 or abs(line_delay) > float(bound)):
+            raise TaskError(
+                "shutter.max_abs_line_delay_s must be positive and cover "
+                "abs(line_delay_s)")
+    distance = shutter.get("distance_to_bound_s")
+    if distance is not None:
+        if bound is None or type(distance) not in (int, float) or not math.isfinite(distance):
+            raise TaskError(
+                "shutter.distance_to_bound_s requires a finite "
+                "max_abs_line_delay_s")
+        expected_distance = float(bound) - abs(line_delay)
+        if (distance < 0.0 or not math.isclose(
+                float(distance), expected_distance,
+                rel_tol=1e-9, abs_tol=1e-15)):
+            raise TaskError(
+                "shutter.distance_to_bound_s is inconsistent with its bound")
+    if "line_delay_std_s" in shutter:
+        _positive(
+            shutter["line_delay_std_s"],
+            "shutter.line_delay_std_s", zero=True)
+    if ("bound_role" in shutter and shutter["bound_role"] not in {
+            "optimizer_parameterization", "post_solve_admissibility"}):
+        raise TaskError("invalid shutter.bound_role")
+
+
 def load_cameras(task):
-    if task["job"] == "camera_calibration":
+    if task["job"] in CAMERA_CALIBRATION_JOBS:
         reader = _directory_reader(task)
         if reader is not None:
             return [dict(camera, topic=reader.sensor_topic(camera.get("id", "cam{}".format(index)), "camera", camera.get("topic")))
@@ -248,9 +352,10 @@ def load_cameras(task):
     for index, camera in enumerate(cameras):
         _fields(camera, {"id", "camera_model", "distortion_model", "intrinsics", "distortion_coeffs",
                          "resolution", "rostopic", "T_cn_cnm1", "T_cam_imu", "timeshift_cam_imu",
-                         "cam_overlaps", "line_delay", "from_camera", "rms", "alignment", "shutter"}, "camera result entry")
+                         "cam_overlaps", "line_delay", "from_camera", "rms", "alignment", "shutter",
+                         "rs_compensated_pair_residual"}, "camera result entry")
         _camera_id(camera.get("id"), camera_ids, "camera result id")
-        for name in ("rms", "alignment"):
+        for name in ("rms", "alignment", "rs_compensated_pair_residual"):
             if name in camera:
                 _quality_summary(camera[name], "camera result " + name, rms=name == "rms")
         projection = camera.get("camera_model")
@@ -273,15 +378,14 @@ def load_cameras(task):
         if not isinstance(resolution, list) or len(resolution) != 2 or any(type(v) is not int or v <= 0 for v in resolution):
             raise TaskError("camera result resolution must be [positive width, positive height]")
         if "shutter" in camera:
-            from .rolling_shutter import JOB
-            if task["job"] != JOB:
-                raise TaskError("a rolling-shutter result requires the rolling-shutter job")
-            shutter = camera["shutter"]
-            if not isinstance(shutter, dict) or shutter.get("type") != "rolling_shutter":
-                raise TaskError("invalid camera shutter result")
-            for field in ("line_delay_s", "reference_row_px", "first_to_last_row_span_s"):
-                if type(shutter.get(field)) not in (int, float) or not math.isfinite(shutter[field]):
-                    raise TaskError("invalid shutter." + field)
+            # The shutter block describes the source camera calibration result.
+            # It is valid input metadata regardless of the downstream Camera-IMU
+            # job.  _legacy_camchain() removes it before invoking the ordinary
+            # global-shutter solver; an RS Camera-IMU job obtains line_delay_s
+            # states from its own explicit rolling_shutter task block.
+            _validate_shutter_result(
+                camera["shutter"], resolution,
+                value.get("calibration_type", "cameras"))
         topic = camera.get("rostopic")
         if not isinstance(topic, str) or not topic.strip() or topic in topics:
             raise TaskError("camera result rostopic must be non-empty and unique")
@@ -307,17 +411,48 @@ def load_cameras(task):
             for camera in cameras]
 
 
-def validate_task(config, *, decode_images=True):
+def _validate_camera_rs_time_support(task, camera, resolution, shutters):
+    """Reject an RS spline padding range that cannot cover every image row."""
+    if task.get("job") != CAMERA_RS_JOB:
+        return
+    camera_id = camera["id"]
+    shutter = shutters[camera_id]
+    delay_support_s = abs(float(shutter["line_delay_s"]))
+    if "max_abs_line_delay_s" in shutter:
+        delay_support_s = max(
+            delay_support_s, float(shutter["max_abs_line_delay_s"]))
+    height = int(resolution[1])
+    maximum_row_span_s = (height - 1) * delay_support_s
+    time_padding_s = float(
+        (task.get("calibration") or {}).get("time_padding_s", 0.5))
+    if time_padding_s <= maximum_row_span_s:
+        raise TaskError(
+            "calibration.time_padding_s {:.17g} must exceed the maximum "
+            "rolling-shutter row span {:.17g} for {} "
+            "(image_height={}, support_line_delay_s={:.17g})".format(
+                time_padding_s, maximum_row_span_s, camera_id, height,
+                delay_support_s))
+
+
+def validate_task(config, *, decode_images=True, solver_backend=None):
     """Return a versioned report; no target detector or native solver is loaded."""
     report = {"schema_version": SCHEMA_VERSION, "kind": "input_validation", "status": "passed", "errors": [], "warnings": [], "cameras": [], "imus": []}
     try:
+        if solver_backend not in {None, "system", "native"}:
+            raise TaskError("solver_backend must be system or native")
         task = load_task(config)
+        if solver_backend is not None and task["job"] != CAMERA_RS_JOB:
+            raise TaskError(
+                "solver_backend is only valid for {}".format(CAMERA_RS_JOB))
         validate_options(task)
         load_target(task)
         cameras = load_cameras(task)
-        from .rolling_shutter import JOB, validate_shutters
-        if task["job"] == JOB:
-            validate_shutters(task["rolling_shutter"], [camera["id"] for camera in cameras])
+        from .rolling_shutter import ROLLING_SHUTTER_JOBS, validate_shutters
+        shutters = None
+        if task["job"] in ROLLING_SHUTTER_JOBS:
+            shutters = validate_shutters(
+                task["rolling_shutter"],
+                [camera["id"] for camera in cameras])
         imu_configs = [load_imu(task, block) for block in task.get("imus", [])]
         resolve_initialization(task)
         reader = open_dataset(resolve_task_path(task, task["dataset"]["path"]))
@@ -338,9 +473,14 @@ def validate_task(config, *, decode_images=True):
                     for entry in indices:
                         image = dataset.get_by_entry(entry).image
                         actual = [int(image.shape[1]), int(image.shape[0])]
-                        if resolution is not None and actual != resolution:
+                        if resolution is None:
+                            resolution = actual
+                            if (task["job"] == CAMERA_RS_JOB
+                                    and solver_backend != "native"):
+                                _validate_camera_rs_time_support(
+                                    task, camera, resolution, shutters)
+                        elif actual != resolution:
                             raise TaskError("camera {} has inconsistent image resolution at {}".format(topic, entry.header_timestamp_ns))
-                        resolution = actual
                     if camera.get("resolution") and resolution != camera["resolution"]:
                         raise TaskError("camera {} resolution does not match camera calibration".format(topic))
                 lower, upper = indices[0].header_timestamp_ns, indices[-1].header_timestamp_ns
@@ -356,7 +496,24 @@ def validate_task(config, *, decode_images=True):
             duration = (upper - lower) * 1e-9
             rate = (len(records) - 1) / duration if duration > 0 else None
             report["imus"].append({"topic": imu["rostopic"], "samples": len(records), "observed_rate_hz": rate, "configured_rate_hz": imu["update_rate"], "first_timestamp_ns": str(lower), "last_timestamp_ns": str(upper)})
-        report["note"] = "Structure and timing checks only; calibration quality and observability are not evaluated."
+        if task["job"] == CAMERA_RS_JOB:
+            if solver_backend == "native":
+                report["note"] = (
+                    "Shared camera-RS structure and dataset timing were checked "
+                    "for the native backend. Its command-specific single-camera "
+                    "and option restrictions are checked by the calibrate route "
+                    "before image decoding. Calibration quality and observability "
+                    "are not evaluated.")
+            else:
+                report["note"] = (
+                    "Shared camera-RS structure, dataset timing and system spline "
+                    "support were checked. The standalone validate command does "
+                    "not select a solver backend; native-rs-cameras applies its "
+                    "additional single-camera and option restrictions in that "
+                    "command before image decoding. Calibration quality and "
+                    "observability are not evaluated.")
+        else:
+            report["note"] = "Structure and timing checks only; calibration quality and observability are not evaluated."
     except (ValueError, RuntimeError, OSError, KeyError) as error:
         report["status"] = "failed"
         report["errors"].append(str(error))

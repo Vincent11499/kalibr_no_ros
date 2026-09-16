@@ -163,6 +163,7 @@ boost::python::dict analyzeObservability(
   std::vector<ErrorTerm::Ptr> equivalentErrorOwners;
   errors.reserve(problem.numErrorTerms());
   size_t expandedQuadraticTerms = 0;
+  bool usesMEstimator = false;
   size_t rowBase = 0;
   for (size_t i = 0; i < problem.numErrorTerms(); ++i) {
     ErrorTerm* error = problem.errorTerm(i);
@@ -179,6 +180,8 @@ boost::python::dict analyzeObservability(
             "quadratic error produced a null Jacobian-equivalent term");
         replacements[replacementIndex]->setRowBase(rowBase);
         rowBase += replacements[replacementIndex]->dimension();
+        usesMEstimator = usesMEstimator ||
+          replacements[replacementIndex]->getMEstimatorName() != "none";
         errors.push_back(replacements[replacementIndex].get());
         equivalentErrorOwners.push_back(replacements[replacementIndex]);
       }
@@ -186,6 +189,8 @@ boost::python::dict analyzeObservability(
     else {
       error->setRowBase(rowBase);
       rowBase += error->dimension();
+      usesMEstimator = usesMEstimator ||
+        error->getMEstimatorName() != "none";
       errors.push_back(error);
     }
   }
@@ -262,7 +267,7 @@ boost::python::dict analyzeObservability(
     activeFlags.append(selectedActive[i] != 0);
   boost::python::dict result;
   result["state"] = "final_relinearized";
-  result["uses_m_estimator"] = true;
+  result["uses_m_estimator"] = usesMEstimator;
   result["damping_applied"] = false;
   result["column_scaling"] = "l2";
   result["nuisance_dimensions"] = nuisanceDimensions;

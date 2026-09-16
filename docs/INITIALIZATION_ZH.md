@@ -1,6 +1,6 @@
 # 显式物理初值、分阶段初始化与可观性诊断
 
-本文说明 `camera_calibration` 和 `camera_imu_calibration` 如何从独立 YAML 接收
+本文说明普通与 RS 的 camera、Camera–IMU job 如何从独立 YAML 接收
 物理参数初值。这个接口解决的是“已有可信近似值时，如何绕过脆弱的自动初值阶段，
 或从更好的位置开始优化”。`initialization` 本身不会增加固定约束或先验残差；相机
 内参是否固定由独立的 `calibration.freeze_intrinsics` 活动策略决定。
@@ -103,9 +103,14 @@ $$
 最后一行必须为 $[0,0,0,1]$。接口不会接受四元数、旋转向量或“只给平移”的缩写，
 从而避免单位、四元数排列和变换方向被静默猜错。
 
-## 3. `camera_calibration` 初值
+## 3. `camera_calibration` 与纯视觉 RS 相机初值
 
 ### 3.1 文件结构
+
+`camera_rolling_shutter_calibration` 复用本节同一
+`camera_calibration_initialization`，行时间不写入初值文件，而在 task 的
+`rolling_shutter.<camera_id>.line_delay_s` 中配置。两种纯视觉 RS 后端的初始化差异见
+[`ROLLING_SHUTTER_CAMERA_CALIBRATION_ZH.md`](ROLLING_SHUTTER_CAMERA_CALIBRATION_ZH.md)。
 
 ```yaml
 schema_version: "1.0.0"

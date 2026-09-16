@@ -343,20 +343,30 @@ def _summary_sections(metrics, assessment, calibration):
     if metrics.get("observability"):
         observability = metrics["observability"]
         yield "Local observability", ["Parameter", "Value"], [
+            ["Status", observability.get("status")],
             ["Quality", observability.get("quality")],
             ["Native numerical rank", "{} / {}".format(observability.get("rank"), observability.get("columns"))],
             ["Operational rank", "{} / {}".format(observability.get("operational_rank"), observability.get("columns"))],
+            ["Unavailable reason", observability.get("reason")],
             ["Interpretation", "Full numerical rank can still have weakly constrained directions. This is not a hardware accuracy guarantee."],
         ]
     if metrics.get("stereo_pairs"):
         rows = []
+        has_rolling_shutter = False
         for name, pair in metrics["stereo_pairs"].items():
             alignment = pair.get("alignment") or {}
+            compensated = pair.get("rs_compensated_pair_residual") or {}
             baseline = pair.get("baseline_m")
             rows.append([name, baseline * 1000. if baseline is not None else None,
                          alignment.get("mean_abs_px", alignment.get("mean")), alignment.get("rms_px"),
-                         alignment.get("count"), pair.get("status")])
-        yield "Stereo alignment", ["Pair", "Baseline [mm]", "Mean abs [px]", "RMS [px]", "Corners", "Status"], rows
+                         compensated.get("rms_px"), alignment.get("count"), pair.get("status")])
+            has_rolling_shutter |= "rs_compensated_pair_residual" in pair
+        yield "Stereo optical alignment", ["Pair", "Baseline [mm]", "Mean abs [px]", "Optical RMS [px]", "RS compensated RMS [px]", "Corners", "Status"], rows
+        if has_rolling_shutter:
+            yield "Rolling-shutter stereo metric definitions", ["Metric", "Meaning"], [
+                ["Optical alignment RMS", "Static OpenCV rectification of original measurements using K/D/T only; no row-time, trajectory, or target-depth compensation."],
+                ["RS compensated pair residual", "Measured non-disparity difference minus the fitted RS model's predicted difference at per-corner times. This is a fit-dependent diagnostic, not independent validation."],
+            ]
     result_cameras = (calibration or {}).get("cameras", [])
     results = {camera.get("id", "cam{}".format(index)): camera for index, camera in enumerate(result_cameras)}
     previous_ids = {camera.get("id", "cam{}".format(index)): result_cameras[index - 1].get("id", "cam{}".format(index - 1))
@@ -381,7 +391,13 @@ def _summary_sections(metrics, assessment, calibration):
                          ["Reference row [px]", shutter["reference_row_px"]],
                          ["First-to-last row span [s]", shutter["first_to_last_row_span_s"]],
                          ["Line delay estimated", shutter["estimated"]],
-                         ["Frame time shift reference", "Effective sample at reference row"]]
+                         ["Camera timestamp reference", shutter.get("timestamp_reference", "effective sample at reference row")],
+                         ["Corner-time equation", shutter.get("corner_time_equation", "unavailable")]]
+            if "max_abs_line_delay_s" in shutter:
+                rows.extend([
+                    ["Maximum absolute line delay [s/row]", shutter["max_abs_line_delay_s"]],
+                    ["Line-delay limit role", shutter.get("bound_role", "unavailable")],
+                ])
             if "line_delay_std_s" in shutter:
                 rows.append(["Local line-delay std [s/row]", shutter["line_delay_std_s"]])
             yield name + " · Rolling shutter timing", ["Parameter", "Value"], rows
@@ -470,7 +486,7 @@ def render_reports(metrics, assessment, files, *, artifacts=None, calibration=No
     grade = assessment.get("reference_grading", {}).get("status", "unavailable")
     subtitle = "Final used observations; 2D corner RMS in pixels. Missing evidence is unavailable."
     if any(c.get("shutter") for c in metrics.get("cameras", {}).values()):
-        subtitle += " Rolling shutter: reprojection uses per-corner times; alignment and images use optical rectification without row-time compensation."
+        subtitle += " Rolling shutter: reprojection uses per-corner times. Optical alignment and rectified images use only K/D/T; the separately labelled RS-compensated pair residual is fit-dependent."
     document = ['<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">',
                 '<title>Calibration report</title><style>' + _STYLE + '</style></head><body><main>',
                 '<header><div class="eyebrow">KALIBR NO-ROS · V{}</div><h1>Calibration report</h1><div class="badges">'.format(VERSION),

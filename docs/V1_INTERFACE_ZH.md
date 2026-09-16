@@ -28,7 +28,8 @@ CLI 的 `--output-dir`、初始化覆盖和重定位 `--dataset` 以执行命令
 生成结果应写新目录，采集数据与标定输出分别管理。
 
 完整可复制示例见 [config/examples/v1.0.0](../config/examples/v1.0.0/README_ZH.md)：
-单目内参、双目内外参、双目＋IMU 各有最简和完整注释 task，并附板、IMU、
+单目内参、双目内外参、纯视觉 RS 相机、双目＋IMU 与 RS Camera–IMU 提供最简和完整
+注释 task，并附板、IMU、
 初值与评价示例。示例根目录的配置不带注释，带注释版本位于 `all_params/`；
 数据集清单由采集工程生成，示例中不再重复提供。所有相机示例使用 `pinhole-equi`，内参 `[fu,fv,cu,cv]`、
 畸变 `[k1,k2,k3,k4]`；它使用原生等距模型，不能和五项带 alpha 的
@@ -72,7 +73,7 @@ bag 标定仍需填写话题。文件依赖和输出含义见 [数据与输出�
 
 ## 3. 求解边界与可选观测记录
 
-camera 与 Camera–IMU 分别调用原生标定入口，保持阶段顺序、残差、
+普通 camera 与普通 Camera–IMU 分别调用原生标定入口，保持阶段顺序、残差、
 active 参数、优化器、超参数、停止与异常点逻辑。相机初始化、最终观测选择和残差评价
 不是同一步骤；新增保存钩子只读取原生状态，不重新检测、替换图像或改变 view 顺序。
 
@@ -80,6 +81,14 @@ active 参数、优化器、超参数、停止与异常点逻辑。相机初始�
 时跳过单相机内参 LM，并在后续阶段固定投影与畸变，baseline 与 target pose 保持 active。
 Camera–IMU 读取既有相机结果，`recompute_camera_chain_extrinsics` 仅控制联合阶段是否
 放开相邻 baseline，不执行完整相机标定。显式初值默认不启用，示例初值都是占位数据。
+
+纯视觉 RS 使用独立 `camera_rolling_shutter_calibration` job。正式入口支持单目／多目
+K/D、相邻外参、共享连续轨迹与每目 `line_delay_s` 联合求解；临时原生入口仅用于单目
+算法对照。它们的时间戳语义、参数范围和输出指标见
+[纯视觉 RS 相机标定](ROLLING_SHUTTER_CAMERA_CALIBRATION_ZH.md)。RS Camera–IMU 的参考行
+和整体时移语义见[滚动快门 Camera–IMU](ROLLING_SHUTTER_ZH.md)，两者不能直接互换。
+Camera–IMU 读取纯视觉 RS 结果时只复用 K/D/T；普通 job 的残差保持全局快门，RS job
+则从自己的 `rolling_shutter` 块显式取得行时间，不从结果元数据静默继承。
 
 可重复示例明确 `shuffle: false`、检测 4 进程、优化 4 线程、每 worker 两个在途任务、
 每 worker 一个 OpenCV 线程。相机同步示例为 0.0002 s，用于对齐采集；未配置时仍恢复

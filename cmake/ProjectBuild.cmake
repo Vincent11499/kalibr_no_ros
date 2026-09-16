@@ -156,6 +156,7 @@ copy_python_package("${KALIBR_OPTIMIZATION}/aslam_backend_python/python" aslam_b
 copy_python_package("${KALIBR_APP_ROOT}/python" kalibr_errorterms)
 copy_python_package("${KALIBR_APP_ROOT}/python" kalibr_common)
 copy_python_package("${KALIBR_APP_ROOT}/python" kalibr_camera_calibration)
+copy_python_package("${KALIBR_APP_ROOT}/python" kalibr_rs_camera_calibration)
 copy_python_package("${KALIBR_APP_ROOT}/python" kalibr_imu_camera_calibration)
 copy_python_package("${CMAKE_CURRENT_SOURCE_DIR}/src/python" kalibr_bag_io)
 copy_python_package("${CMAKE_CURRENT_SOURCE_DIR}/src/python" kalibr_no_ros)
@@ -244,6 +245,8 @@ function(prepare_cli name)
 endfunction()
 
 prepare_cli(kalibr_calibrate_cameras)
+prepare_cli(kalibr_calibrate_rs_camera_system)
+prepare_cli(kalibr_calibrate_rs_cameras)
 prepare_cli(kalibr_calibrate_imu_camera)
 
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/tools/kalibr-noros"

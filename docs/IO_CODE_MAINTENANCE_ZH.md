@@ -154,6 +154,8 @@ Camera–IMU 没给 `camera_calibration.path` 时，在输出目录找到唯一�
 | [kalibr_calibrate_cameras](../src/kalibr/calibration/kalibr/python/kalibr_calibrate_cameras) | 单目/多目原生入口和标定阶段调度 |
 | [CameraIntializers.py](../src/kalibr/calibration/kalibr/python/kalibr_camera_calibration/CameraIntializers.py) | 相机内参与 baseline 初始化；文件名确实是 `Intializers` |
 | [CameraCalibrator.py](../src/kalibr/calibration/kalibr/python/kalibr_camera_calibration/CameraCalibrator.py) | 相机视图、误差项、活动参数及增量标定 |
+| [kalibr_calibrate_rs_camera_system](../src/kalibr/calibration/kalibr/python/kalibr_calibrate_rs_camera_system)、[SystemCalibrator.py](../src/kalibr/calibration/kalibr/python/kalibr_rs_camera_calibration/SystemCalibrator.py) | 纯视觉 RS 单目／多目入口、共享轨迹、K/D、相邻外参与逐目行时间联合求解 |
+| [kalibr_calibrate_rs_cameras](../src/kalibr/calibration/kalibr/python/kalibr_calibrate_rs_cameras)、[RsCalibrator.py](../src/kalibr/calibration/kalibr/python/kalibr_rs_camera_calibration/RsCalibrator.py) | 临时原生 RS 单目对照入口及上游 adaptive knot/DogLeg 求解 |
 | [kalibr_calibrate_imu_camera](../src/kalibr/calibration/kalibr/python/kalibr_calibrate_imu_camera) | Camera–IMU 原生入口 |
 | [IccSensors.py](../src/kalibr/calibration/kalibr/python/kalibr_imu_camera_calibration/IccSensors.py)、[IccCalibrator.py](../src/kalibr/calibration/kalibr/python/kalibr_imu_camera_calibration/IccCalibrator.py) | 传感器模型、连续时间轨迹、残差与联合求解 |
 | [TargetExtractor.py](../src/kalibr/calibration/kalibr/python/kalibr_common/TargetExtractor.py) | 检测 worker、任务提交与有序回收 |
@@ -216,6 +218,8 @@ output:
 
 当前 `enrich_result()` 将计算出的每目 RMS 写入相机的标量 `rms`，将相邻外参的校正后
 对齐 RMS 写入标量 `alignment`，单位均为像素；缺失证据为 `null`。
+纯视觉 RS 多目结果还写入 `rs_compensated_pair_residual`；它使用逐角点轨迹预测，和只用
+K/D/T 的 `alignment` 不是同一指标。
 结果不写 `from_camera` 或 `transform_convention`，变换方向由契约说明。
 
 如果只想修改展示名称或小数位，优先修改报告层。若要改变结果 YAML 的字段，需要：

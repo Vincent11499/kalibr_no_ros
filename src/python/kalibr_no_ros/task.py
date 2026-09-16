@@ -11,6 +11,7 @@ import math
 import os
 import runpy
 import shutil
+import statistics
 import sys
 import tempfile
 import traceback
@@ -18,10 +19,16 @@ from datetime import datetime, timezone
 
 import yaml
 
-from kalibr_bag_io import detect_dataset_format
+from kalibr_bag_io import detect_dataset_format, open_dataset
 
 from .version import VERSION, SCHEMA_VERSION
-from .rolling_shutter import JOB as ROLLING_SHUTTER_JOB, CAMERA_IMU_JOBS
+from .rolling_shutter import (
+    JOB as ROLLING_SHUTTER_JOB,
+    CAMERA_RS_JOB,
+    CAMERA_IMU_JOBS,
+    CAMERA_CALIBRATION_JOBS,
+    ROLLING_SHUTTER_JOBS,
+)
 try:
     from ._build_info import GIT_COMMIT, SOURCE_VARIANT
 except ImportError:
@@ -71,6 +78,7 @@ _COMMON_TASK_KEYS = {
 }
 _JOB_TASK_KEYS = {
     "camera_calibration": {"cameras"},
+    CAMERA_RS_JOB: {"cameras", "rolling_shutter"},
     "camera_imu_calibration": {"camera_calibration", "imus"},
     ROLLING_SHUTTER_JOB: {"camera_calibration", "imus", "rolling_shutter"},
 }
@@ -201,7 +209,7 @@ def load_task(path, expected_job=None):
         except InitializationError as error:
             raise TaskError(str(error)) from error
     _camera_freeze_intrinsics(task)
-    if job == "camera_calibration":
+    if job in CAMERA_CALIBRATION_JOBS:
         cameras = task.get("cameras")
         if not isinstance(cameras, list) or not cameras:
             raise TaskError("cameras must be a non-empty list")
@@ -244,10 +252,10 @@ def _camera_freeze_intrinsics(task):
     if type(value) is not bool:
         raise TaskError("calibration.freeze_intrinsics must be a boolean")
     job = task.get("job")
-    if job not in (None, "camera_calibration"):
+    if job is not None and job not in CAMERA_CALIBRATION_JOBS:
         raise TaskError(
             "calibration.freeze_intrinsics is only supported for "
-            "camera_calibration")
+            "camera calibration jobs")
     cameras = task.get("cameras")
     if value and isinstance(cameras, list) and len(cameras) < 2:
         raise TaskError(
@@ -385,7 +393,8 @@ def _sha256(path):
     return digest.hexdigest()
 
 
-def _write_initialization_report(initialization, task, temporary):
+def _write_initialization_report(
+        initialization, task, temporary, solver_backend=None):
     if initialization is None:
         return None
     report = build_initialization_report(
@@ -397,6 +406,7 @@ def _write_initialization_report(initialization, task, temporary):
         path_origin=initialization["path_origin"],
         strategy_origin=initialization["strategy_origin"],
         camera_ids=initialization["camera_ids"],
+        solver_backend=solver_backend,
     )
     path = temporary / "initialization_report.yaml"
     dump_yaml(report, path)
@@ -454,7 +464,8 @@ def prepare_output_directory(path, force=False):
     return output
 
 
-def write_run_manifest(output, *, status, task=None, failure=None, source_run=None):
+def write_run_manifest(output, *, status, task=None, failure=None,
+                       source_run=None, solver_backend=None):
     """Inventory only files created inside this run, including format metadata."""
     output = Path(output)
     document = {
@@ -466,6 +477,11 @@ def write_run_manifest(output, *, status, task=None, failure=None, source_run=No
         "files": [],
         "directories": [],
     }
+    if solver_backend is not None:
+        if solver_backend not in {"system", "native"}:
+            raise TaskError(
+                "solver_backend must be system or native")
+        document["solver_backend"] = solver_backend
     if task is not None:
         document["job"] = task["job"]
         document["dataset"] = dict(task["dataset"])
@@ -748,6 +764,221 @@ def _camera_arguments(task, bag, target, overrides, initialization_config=None):
     return arguments
 
 
+def _rolling_shutter_config(task, temporary):
+    """Translate public camera IDs to the native solver's positional IDs."""
+    from .rolling_shutter import validate_shutters
+
+    camera_ids = [
+        camera.get("id", "cam{}".format(index))
+        for index, camera in enumerate(task["cameras"])
+    ]
+    shutters = validate_shutters(task["rolling_shutter"], camera_ids)
+    path = temporary / "rolling_shutter.yaml"
+    dump_yaml(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "kind": "rolling_shutter_config",
+            "cameras": {
+                "cam{}".format(index): shutters[camera_id]
+                for index, camera_id in enumerate(camera_ids)
+            },
+        },
+        path,
+    )
+    return path, shutters
+
+
+_NATIVE_RS_CALIBRATION_FIELDS = frozenset({
+    "window_half_size_px", "max_displacement_px", "max_iterations",
+    "feature_sigma_px", "freeze_intrinsics",
+})
+
+
+def _validate_camera_rs_backend(task, solver_backend):
+    """Validate command-specific RS constraints without opening the dataset."""
+    if solver_backend not in {"system", "native"}:
+        raise TaskError(
+            "rolling-shutter solver_backend must be system or native")
+    if task.get("job") != CAMERA_RS_JOB:
+        raise TaskError(
+            "rolling-shutter solver_backend is only valid for {}".format(
+                CAMERA_RS_JOB))
+    if solver_backend == "system":
+        return
+
+    cameras = task.get("cameras")
+    if not isinstance(cameras, list) or len(cameras) != 1:
+        raise TaskError(
+            "native-rs-cameras supports exactly one camera; use cameras-rs "
+            "for stereo/multicamera")
+    if bool((task.get("output") or {}).get("export_poses")):
+        raise TaskError(
+            "native-rs-cameras does not support output.export_poses; "
+            "use cameras-rs when poses.csv is required")
+    calibration = task.get("calibration") or {}
+    unsupported = sorted(
+        set(calibration) - _NATIVE_RS_CALIBRATION_FIELDS)
+    if unsupported:
+        raise TaskError(
+            "native-rs-cameras does not implement these cameras-rs "
+            "calibration fields: {}".format(
+                ", ".join(unsupported)))
+
+
+def _rs_task_cameras(task):
+    cameras = task.get("cameras")
+    if not isinstance(cameras, list) or not cameras:
+        raise TaskError("cameras must be a non-empty list")
+    if task.get("dataset", {}).get("type") == "directory":
+        from .validation import load_cameras
+        cameras = load_cameras(task)
+    for index, camera in enumerate(cameras):
+        if (not isinstance(camera, dict) or not camera.get("topic")
+                or not camera.get("model")):
+            raise TaskError("camera {} requires topic and model".format(index))
+    return cameras
+
+
+def _rs_camera_arguments(task, bag, target, temporary, overrides,
+                         initialization_config=None):
+    """Build the private command line for mono/stereo/multicamera RS solving."""
+    cameras = _rs_task_cameras(task)
+    models = [str(camera["model"]) for camera in cameras]
+    unsupported = sorted(set(models) - {"pinhole-equi", "pinhole-radtan"})
+    if unsupported:
+        raise TaskError(
+            "cameras-rs supports pinhole-equi and pinhole-radtan; got {}".format(
+                ", ".join(unsupported)))
+    shutter_path, _ = _rolling_shutter_config(task, temporary)
+    arguments = [
+        "--bag", str(bag), "--target", str(target),
+        "--topics", *[str(camera["topic"]) for camera in cameras],
+        "--models", *models,
+        "--rolling-shutter-config", str(shutter_path),
+    ]
+    _append_common_dataset(arguments, task)
+    calibration = task.get("calibration") or {}
+    freeze_intrinsics = _camera_freeze_intrinsics(task)
+    if freeze_intrinsics and initialization_config is None:
+        raise TaskError(
+            "calibration.freeze_intrinsics: true requires an initialization path")
+    _append_corner_refinement(arguments, calibration)
+    _append_focal_initialization(arguments, calibration)
+    for key, option in (
+        ("synchronization_tolerance_s", "--approx-sync"),
+        ("min_views_for_outlier_statistics", "--min-views-outlier"),
+        ("max_iterations", "--max-iterations"),
+        ("spline_order", "--spline-order"),
+        ("time_padding_s", "--time-padding-s"),
+        ("knots_per_second", "--knots-per-second"),
+        ("feature_sigma_px", "--feature-sigma-px"),
+        ("motion_translation_weight", "--motion-translation-weight"),
+        ("motion_rotation_weight", "--motion-rotation-weight"),
+    ):
+        if calibration.get(key) is not None:
+            arguments.extend([option, str(calibration[key])])
+    _flag(arguments, calibration.get("remove_outliers") is False,
+          "--no-outliers-removal")
+    _flag(arguments, calibration.get("final_filtering") is False,
+          "--no-final-filtering")
+    _flag(arguments, bool(calibration.get("blake_zisserman")),
+          "--use-blakezisserman")
+    _flag(arguments, bool((task.get("output") or {}).get("verbose")), "--verbose")
+    _flag(arguments, bool((task.get("output") or {}).get("show_extraction")),
+          "--show-extraction")
+    _flag(arguments, bool((task.get("output") or {}).get("export_poses")),
+          "--export-poses")
+    _flag(arguments, freeze_intrinsics, "--freeze-intrinsics")
+    if not (task.get("output") or {}).get("interactive_report", False):
+        arguments.append("--dont-show-report")
+    if initialization_config is not None:
+        arguments.extend(["--initialization-config", str(initialization_config)])
+    _append_execution(arguments, task, overrides)
+    return arguments
+
+
+def _selected_frame_rate_hz(task, topic):
+    """Estimate the rate of observations actually sent to the native solver."""
+    reader = open_dataset(resolve_task_path(task, task["dataset"]["path"]))
+    try:
+        with reader.index_images(topic, grayscale=True) as dataset:
+            records = list(dataset.index)
+        interval = task["dataset"].get("time_range_s")
+        if interval is not None and records:
+            start = records[0].header_timestamp_ns
+            lower = start + int(round(float(interval[0]) * 1e9))
+            upper = start + int(round(float(interval[1]) * 1e9))
+            records = [record for record in records
+                       if lower <= record.header_timestamp_ns <= upper]
+        frequency = task["dataset"].get("frequency_hz")
+        if frequency is not None:
+            minimum_delta_ns = 1e9 / float(frequency)
+            selected = []
+            previous = None
+            for record in records:
+                if (previous is None
+                        or record.header_timestamp_ns - previous >= minimum_delta_ns):
+                    selected.append(record)
+                    previous = record.header_timestamp_ns
+            records = selected
+        intervals = [
+            current.header_timestamp_ns - previous.header_timestamp_ns
+            for previous, current in zip(records, records[1:])
+            if current.header_timestamp_ns > previous.header_timestamp_ns
+        ]
+    finally:
+        close = getattr(reader, "close", None)
+        if close is not None:
+            close()
+    if not intervals:
+        raise TaskError(
+            "native-rs-cameras requires at least two selected timestamps to infer frame rate")
+    rate = 1e9 / statistics.median(intervals)
+    if not math.isfinite(rate) or rate <= 0.0:
+        raise TaskError("could not infer a positive finite source frame rate")
+    return float(rate)
+
+
+def _native_rs_camera_arguments(task, bag, target, temporary, overrides,
+                                initialization_config=None):
+    """Adapt the shared RS task to Kalibr's native single-camera RS solver."""
+    _validate_camera_rs_backend(task, "native")
+    cameras = _rs_task_cameras(task)
+    camera = cameras[0]
+    if camera["model"] not in {"pinhole-equi", "pinhole-radtan"}:
+        raise TaskError(
+            "native-rs-cameras supports pinhole-equi and pinhole-radtan")
+    _, shutters = _rolling_shutter_config(task, temporary)
+    camera_id = task["cameras"][0].get("id", "cam0")
+    shutter = shutters[camera_id]
+    calibration = task.get("calibration") or {}
+    feature_sigma = float(calibration.get("feature_sigma_px", 1.0))
+    arguments = [
+        "--bag", str(bag), "--target", str(target),
+        "--topic", str(camera["topic"]), "--model", str(camera["model"]),
+        "--frame-rate", str(_selected_frame_rate_hz(task, camera["topic"])),
+        "--inverse-feature-variance", str(feature_sigma * feature_sigma),
+        "--line-delay-seed", str(shutter["line_delay_s"]),
+    ]
+    if "max_abs_line_delay_s" in shutter:
+        arguments.extend([
+            "--max-abs-line-delay", str(shutter["max_abs_line_delay_s"])])
+    _flag(arguments, shutter["estimate"] is False, "--no-estimate-line-delay")
+    _append_common_dataset(arguments, task)
+    _append_corner_refinement(arguments, calibration)
+    arguments.extend([
+        "--max-iter", str(calibration.get("max_iterations", 80))])
+    _flag(arguments, bool((task.get("output") or {}).get("verbose")), "--verbose")
+    _flag(arguments, bool((task.get("output") or {}).get("show_extraction")),
+          "--show-extraction")
+    _flag(arguments, bool(calibration.get("freeze_intrinsics")),
+          "--freeze-intrinsics")
+    if initialization_config is not None:
+        arguments.extend(["--initialization-config", str(initialization_config)])
+    _append_execution(arguments, task, overrides)
+    return arguments
+
+
 def _legacy_camchain(task, temporary):
     value = task.get("camera_calibration")
     if isinstance(value, dict):
@@ -765,7 +996,9 @@ def _legacy_camchain(task, temporary):
     for index, camera in enumerate(cameras):
         item = dict(camera)
         item.pop("id", None)
-        for field in ("rms", "alignment", "from_camera", "shutter"):
+        for field in (
+                "rms", "alignment", "rs_compensated_pair_residual",
+                "from_camera", "shutter", "line_delay"):
             item.pop(field, None)
         item["rostopic"] = item.pop("topic")
         legacy["cam{}".format(index)] = item
@@ -907,11 +1140,101 @@ def _native_cameras_to_result(data, calibration_type, imus=None):
     return result
 
 
-def _collect_outputs(work, output, job, export_poses):
-    if job == "camera_calibration":
+def _normalize_camera_rs_result(result, task, solver_backend):
+    """Enforce the public row-0 timestamp semantics for RS camera outputs."""
+    from .rolling_shutter import validate_shutters
+
+    camera_ids = [camera.get("id", "cam{}".format(index))
+                  for index, camera in enumerate(task["cameras"])]
+    configured = validate_shutters(task["rolling_shutter"], camera_ids)
+    result_cameras = result.get("cameras")
+    if (not isinstance(result_cameras, list)
+            or len(result_cameras) != len(camera_ids)):
+        raise TaskError(
+            "rolling-shutter solver camera count does not match the task")
+    for index, camera in enumerate(result_cameras):
+        shutter = dict(camera.get("shutter") or {})
+        line_delay = shutter.get("line_delay_s", camera.pop("line_delay", None))
+        resolution = camera.get("resolution")
+        if (isinstance(line_delay, bool)
+                or not isinstance(line_delay, (int, float))
+                or not math.isfinite(line_delay)):
+            raise TaskError(
+                "rolling-shutter solver did not publish a finite line_delay_s for {}".format(
+                    camera.get("id")))
+        if (not isinstance(resolution, list) or len(resolution) != 2
+                or any(type(value) is not int or value <= 0 for value in resolution)):
+            raise TaskError("rolling-shutter result requires a valid camera resolution")
+        configured_shutter = configured[camera_ids[index]]
+        shutter.update({
+            "type": "rolling_shutter",
+            "line_delay_s": float(line_delay),
+            "reference_row_px": 0.0,
+            "first_to_last_row_span_s": abs(float(line_delay)) * (
+                resolution[1] - 1),
+            "estimated": bool(configured_shutter["estimate"]),
+            "timestamp_reference": "row0_exposure_end",
+            "corner_time_equation": (
+                "t_corner_s = t_camera_timestamp_s + y_px * line_delay_s"),
+        })
+        if "max_abs_line_delay_s" in configured_shutter:
+            shutter["max_abs_line_delay_s"] = float(
+                configured_shutter["max_abs_line_delay_s"])
+            shutter["bound_role"] = (
+                "post_solve_admissibility"
+                if solver_backend == "native"
+                else "optimizer_parameterization")
+        camera["shutter"] = shutter
+    return result
+
+
+def _overlay_structured_camera_snapshots(result, artifacts):
+    """Prefer the managed final-state snapshot over legacy serializer copies."""
+    native = artifacts.get("cameras", [])
+    public = result.get("cameras", [])
+    if len(native) != len(public):
+        raise TaskError("native camera result and managed snapshot counts differ")
+    for snapshot, camera in zip(native, public):
+        for field in ("intrinsics", "distortion_coeffs", "resolution"):
+            if field in snapshot:
+                camera[field] = copy.deepcopy(snapshot[field])
+        if "shutter" in snapshot:
+            shutter = dict(camera.get("shutter") or {})
+            shutter.update(copy.deepcopy(snapshot["shutter"]))
+            line_delay = shutter.get("line_delay_s")
+            resolution = camera.get("resolution")
+            if (isinstance(line_delay, bool)
+                    or not isinstance(line_delay, (int, float))
+                    or not math.isfinite(line_delay)
+                    or not isinstance(resolution, list)
+                    or len(resolution) != 2
+                    or any(type(value) is not int or value <= 0
+                           for value in resolution)):
+                raise TaskError(
+                    "managed rolling-shutter snapshot is not finite")
+            shutter.update({
+                "reference_row_px": 0.0,
+                "first_to_last_row_span_s": abs(float(line_delay)) * (
+                    resolution[1] - 1),
+                "timestamp_reference": "row0_exposure_end",
+                "corner_time_equation": (
+                    "t_corner_s = t_camera_timestamp_s + y_px * line_delay_s"),
+            })
+            camera["shutter"] = shutter
+        camera.pop("line_delay", None)
+
+
+def _collect_outputs(work, output, job, export_poses, task=None,
+                     rs_solver_backend="system"):
+    if job in CAMERA_CALIBRATION_JOBS:
         camchain = next(work.glob("*-camchain.yaml"))
         result_text = next(work.glob("*-results-cam.txt"))
         result = _native_cameras_to_result(load_yaml(camchain), "cameras")
+        if job == CAMERA_RS_JOB:
+            if task is None:
+                raise TaskError("rolling-shutter output collection requires its task")
+            result = _normalize_camera_rs_result(
+                result, task, rs_solver_backend)
         pose_pattern = "*-poses-cam0.csv"
     else:
         camchain = next(work.glob("*-camchain-imucam.yaml"))
@@ -989,6 +1312,9 @@ def _run_task_staged(prefix, config, output_dir, expected_job, force=False, _tas
     from .reporting import generate_report
 
     task = _task if _task is not None else load_task(config, expected_job=expected_job)
+    rs_backend = overrides.get("_rs_solver_backend", "system")
+    public_solver_backend = (
+        rs_backend if expected_job == CAMERA_RS_JOB else None)
     initialization = resolve_initialization(
         task,
         expected_job,
@@ -1023,8 +1349,14 @@ def _run_task_staged(prefix, config, output_dir, expected_job, force=False, _tas
         imu["path"] = str(resolve_task_path(task, imu["path"]))
     if initialization is not None:
         resolved_task["initialization"] = {"path": str(initialization["path"]), "strategy": initialization["strategy"]}
+    if public_solver_backend is not None:
+        # This is managed run provenance, not a private CLI override or a
+        # user-configurable task input field.
+        resolved_task["solver_backend"] = public_solver_backend
     dump_yaml(resolved_task, output / "task_resolved.yaml")
-    write_run_manifest(output, status="running", task=task)
+    write_run_manifest(
+        output, status="running", task=task,
+        solver_backend=public_solver_backend)
     input_validated = False
     solver_completed = False
     with tempfile.TemporaryDirectory(prefix="kalibr-noros-") as temporary_name:
@@ -1032,35 +1364,89 @@ def _run_task_staged(prefix, config, output_dir, expected_job, force=False, _tas
         initialization_config = _write_initialization_config(
             initialization, temporary)
         initialization_report = _write_initialization_report(
-            initialization, task, temporary)
+            initialization, task, temporary,
+            solver_backend=public_solver_backend)
         try:
             from .validation import validate_task
-            validation = validate_task(output / "task_resolved.yaml")
+            if public_solver_backend is not None:
+                _validate_camera_rs_backend(task, public_solver_backend)
+                # solver_backend is public provenance in the managed resolved
+                # artifact.  The portable input task schema deliberately does
+                # not accept it, so validate an equivalent private copy.
+                validation_task = copy.deepcopy(resolved_task)
+                validation_task.pop("solver_backend", None)
+                validation_path = temporary / "task_for_validation.yaml"
+                dump_yaml(validation_task, validation_path)
+            else:
+                validation_path = output / "task_resolved.yaml"
+            validation = validate_task(
+                validation_path, solver_backend=public_solver_backend)
+            if public_solver_backend is not None:
+                validation["solver_backend"] = public_solver_backend
             (output / "validation.json").write_text(
                 json.dumps(validation, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
                 encoding="utf-8")
             if validation["status"] != "passed":
                 raise TaskError("input validation failed: {}".format("; ".join(validation["errors"])))
-            input_validated = True
+            if public_solver_backend != "native":
+                input_validated = True
             bag = _dataset_alias(task, temporary)
             target = _target_path(task, temporary)
             if expected_job == "camera_calibration":
                 command = "kalibr_calibrate_cameras"
                 arguments = _camera_arguments(
                     task, bag, target, overrides, initialization_config)
+            elif expected_job == CAMERA_RS_JOB:
+                if rs_backend == "native":
+                    command = "kalibr_calibrate_rs_cameras"
+                    arguments = _native_rs_camera_arguments(
+                        task, bag, target, temporary, overrides,
+                        initialization_config)
+                else:
+                    command = "kalibr_calibrate_rs_camera_system"
+                    arguments = _rs_camera_arguments(
+                        task, bag, target, temporary, overrides,
+                        initialization_config)
             else:
                 command = "kalibr_calibrate_imu_camera"
                 arguments = _imu_arguments(
                     task, bag, target, temporary, overrides,
                     initialization_config)
+            if public_solver_backend == "native":
+                # Native-only cardinality/options and timestamp-rate inference
+                # are all input adaptation; no solver code has run yet.
+                input_validated = True
             with run_context(expected_job, capture_history=task["output"]["archive_selection_history"]) as context:
                 with _capture_solver_logs(output):
                     _run_legacy(prefix, command, arguments, temporary)
             artifacts = context.artifacts
             if artifacts.get("state") != "completed":
                 raise TaskError("native calibration did not publish a completed result")
+            # The numerical solve is complete once the native artifact snapshot
+            # says so.  Any later failure belongs to output/assessment handling;
+            # delivery still publishes only after the whole staging run succeeds.
+            solver_completed = True
             artifacts["dataset"] = dict(resolved_task["dataset"])
-            if initialization is not None or expected_job == ROLLING_SHUTTER_JOB:
+            if expected_job == CAMERA_RS_JOB:
+                artifacts["rolling_shutter_solver_backend"] = rs_backend
+                if rs_backend == "native":
+                    artifacts["observability"] = {
+                        "status": "unavailable",
+                        "quality": "unavailable",
+                        "rank": None,
+                        "columns": None,
+                        "deficiency": None,
+                        "operational_rank": None,
+                        "operational_deficiency": None,
+                        "reason": (
+                            "the temporary native single-camera RS solver does not expose a final Hessian rank report"),
+                    }
+            require_observability = (
+                expected_job == ROLLING_SHUTTER_JOB
+                or expected_job == CAMERA_RS_JOB and rs_backend == "system"
+                or initialization is not None and rs_backend != "native"
+            )
+            if require_observability:
                 observability_path = temporary / "observability.yaml"
                 observability = _read_observability(observability_path)
                 if observability is None:
@@ -1074,12 +1460,15 @@ def _run_task_staged(prefix, config, output_dir, expected_job, force=False, _tas
                             observability.get("columns"),
                             observability.get("deficiency"),
                         ))
-                if expected_job == ROLLING_SHUTTER_JOB:
+                if expected_job in ROLLING_SHUTTER_JOBS:
                     artifacts["observability"] = observability
             export_poses = bool(
                 (task.get("output") or {}).get("export_poses"))
-            result = _collect_outputs(temporary, output, expected_job, export_poses)
-            solver_completed = True
+            result = _collect_outputs(
+                temporary, output, expected_job, export_poses, task=task,
+                rs_solver_backend=rs_backend)
+            if expected_job == CAMERA_RS_JOB:
+                _overlay_structured_camera_snapshots(result, artifacts)
             if initialization_report is not None:
                 _finish_initialization_report(
                     output / "initialization_report.yaml",
@@ -1092,7 +1481,9 @@ def _run_task_staged(prefix, config, output_dir, expected_job, force=False, _tas
             report = generate_report(artifacts, result, output, task["output"])
             enrich_result(result, report["metrics"])
             dump_yaml(result, output / "calibration.yaml")
-            write_run_manifest(output, status="completed", task=task)
+            write_run_manifest(
+                output, status="completed", task=task,
+                solver_backend=public_solver_backend)
         except Exception as error:
             if initialization_report is not None:
                 observability_path = temporary / "observability.yaml"
@@ -1115,7 +1506,9 @@ def _run_task_staged(prefix, config, output_dir, expected_job, force=False, _tas
                     observability_path=observability_path)
             _preserve_diagnostic_sidecars(temporary, output)
             status = "output_failed" if solver_completed else "failed" if input_validated else "input_failed"
-            write_run_manifest(output, status=status, task=task, failure=error)
+            write_run_manifest(
+                output, status=status, task=task, failure=error,
+                solver_backend=public_solver_backend)
             raise
     return output
 

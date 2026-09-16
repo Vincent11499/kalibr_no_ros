@@ -448,6 +448,121 @@ class InitializationValidationTest(unittest.TestCase):
         self.assertEqual(baseline["camera_intrinsics_state"], "fixed")
         self.assertEqual(baseline["final_incremental_state"], "active")
 
+    def test_rs_system_report_describes_shared_trajectory_joint_batch(self):
+        task = self.camera_task("pinhole-equi", "pinhole-equi")
+        task["job"] = "camera_rolling_shutter_calibration"
+        task["cameras"][0]["id"] = "left"
+        task["cameras"][1]["id"] = "right"
+        task["rolling_shutter"] = {
+            "left": {"line_delay_s": 0.0, "estimate": True},
+            "right": {"line_delay_s": 8e-6, "estimate": False},
+        }
+        task["calibration"] = {
+            "remove_outliers": False,
+            "final_filtering": True,
+        }
+        document = {
+            "schema_version": "1.0.0",
+            "kind": "camera_calibration_initialization",
+            "cameras": {
+                "cam0": {
+                    "intrinsics": [400.0, 400.0, 320.0, 240.0],
+                    "distortion_coeffs": [0.0] * 4,
+                },
+                "cam1": {
+                    "intrinsics": [401.0, 401.0, 320.0, 240.0],
+                    "distortion_coeffs": [0.0] * 4,
+                    "T_cam_from_previous": IDENTITY4,
+                },
+            },
+        }
+
+        report = build_initialization_report(
+            document, "direct", task, source_path="seed.yaml",
+            source_sha256="abc", path_origin="task",
+            strategy_origin="task", solver_backend="system")
+
+        self.assertEqual(report["solver_backend"], "system")
+        self.assertEqual(
+            report["camera_id_mapping"], {"left": "cam0", "right": "cam1"})
+        self.assertEqual(
+            [stage["stage"] for stage in report["stage_decisions"]],
+            ["rs_system_camera_geometry.left",
+             "rs_system_camera_geometry.right",
+             "rs_system_camera_chain_geometry",
+             "rs_system_shared_trajectory_joint_batch"])
+        joint = report["stage_decisions"][-1]
+        self.assertEqual(joint["joint_optimizer"], "scheduled")
+        self.assertEqual(joint["shared_target_pose_spline_state"], "active")
+        self.assertEqual(
+            joint["line_delay_states"], {"left": "active", "right": "fixed"})
+        self.assertEqual(joint["final_filtering_reoptimization"], "disabled")
+        ordinary_stage_fields = {
+            "single_camera_lm", "pairwise_stereo_lm", "full_batch_lm",
+            "final_incremental_state",
+        }
+        for stage in report["stage_decisions"]:
+            self.assertTrue(ordinary_stage_fields.isdisjoint(stage))
+
+    def test_rs_native_report_describes_single_joint_adaptive_solver(self):
+        task = self.camera_task("pinhole-equi")
+        task["job"] = "camera_rolling_shutter_calibration"
+        task["cameras"][0]["id"] = "left"
+        task["rolling_shutter"] = {
+            "left": {"line_delay_s": 0.0, "estimate": True},
+        }
+        document = {
+            "schema_version": "1.0.0",
+            "kind": "camera_calibration_initialization",
+            "cameras": {
+                "cam0": {
+                    "intrinsics": [400.0, 400.0, 320.0, 240.0],
+                },
+            },
+        }
+
+        report = build_initialization_report(
+            document, "refine", task, source_path="seed.yaml",
+            source_sha256="abc", path_origin="task",
+            strategy_origin="task", solver_backend="native")
+
+        self.assertEqual(report["solver_backend"], "native")
+        self.assertEqual(len(report["stage_decisions"]), 2)
+        geometry, joint = report["stage_decisions"]
+        self.assertEqual(geometry["stage"], "rs_native_camera_geometry.left")
+        self.assertEqual(
+            geometry["geometry_initialization"],
+            "observation_metadata_bootstrap_then_seed")
+        self.assertEqual(geometry["per_observation_pnp"], "scheduled")
+        self.assertEqual(
+            joint["stage"], "rs_native_adaptive_trajectory_joint_batch")
+        self.assertEqual(joint["adaptive_knot_refinement"], "enabled")
+        self.assertEqual(joint["target_pose_spline_state"], "active")
+        self.assertEqual(joint["joint_optimizer"], "scheduled")
+        for stage in report["stage_decisions"]:
+            self.assertNotIn("single_camera_lm", stage)
+            self.assertNotIn("pairwise_stereo_lm", stage)
+            self.assertNotIn("full_batch_lm", stage)
+            self.assertNotIn("final_incremental_state", stage)
+
+    def test_rs_report_requires_the_selected_solver_backend(self):
+        task = self.camera_task("pinhole-equi")
+        task["job"] = "camera_rolling_shutter_calibration"
+        task["rolling_shutter"] = {
+            "cam0": {"line_delay_s": 0.0, "estimate": True},
+        }
+        document = {
+            "schema_version": "1.0.0",
+            "kind": "camera_calibration_initialization",
+            "cameras": {},
+        }
+        with self.assertRaisesRegex(
+                InitializationError, "solver_backend system or native"):
+            build_initialization_report(
+                document, "refine", task, source_path="seed.yaml",
+                source_sha256="abc", path_origin="task",
+                strategy_origin="task")
+
     def test_report_marks_disabled_camera_time_correlation(self):
         task = {
             "job": "camera_imu_calibration",
@@ -805,6 +920,50 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
             saved_result = diagnostics / report["result"]["path"]
             self.assertEqual(task_module.load_yaml(saved_result), result)
             self.assertEqual(report["result"]["sha256"], task_module._sha256(saved_result))
+
+    def test_output_collection_failure_is_classified_after_completed_solve(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_camera_seed(root / "seed.yaml", 100)
+            task_path = self._write_camera_task(
+                root, ("seed.yaml", "refine"), save_diagnostics=True)
+            output = root / "output"
+
+            def finish_native(prefix, command, arguments, work):
+                del prefix, command, arguments
+                artifact_module.current_context().artifacts["state"] = "completed"
+                (Path(work) / "observability.yaml").write_text(
+                    "schema_version: 1.0.0\n"
+                    "kind: calibration_diagnostics\n"
+                    "status: full_rank\n"
+                    "calibration: {columns: 4, rank: 4, deficiency: 0}\n",
+                    encoding="utf-8")
+
+            with mock.patch.object(
+                    task_module, "_dataset_alias", return_value="bag"), \
+                    mock.patch.object(
+                        task_module, "_target_path", return_value="target"), \
+                    mock.patch.object(
+                        task_module, "_run_legacy", side_effect=finish_native), \
+                    mock.patch.object(
+                        task_module, "_collect_outputs",
+                        side_effect=RuntimeError("collection failed")), \
+                    mock.patch(
+                        "kalibr_no_ros.validation.validate_task",
+                        return_value={"status": "passed"}):
+                with self.assertRaisesRegex(RuntimeError, "collection failed"):
+                    run_task(
+                        ROOT, task_path, output,
+                        "camera_calibration", force=True)
+
+            diagnostics = output / "camera_calibration_cam0_failed"
+            self.assertFalse((output / "camera_calibration_cam0.yaml").exists())
+            self.assertFalse((diagnostics / "result.yaml").exists())
+            manifest = json.loads(
+                (diagnostics / "run_manifest.json").read_text(
+                    encoding="utf-8"))
+            self.assertEqual(manifest["status"], "output_failed")
+            self.assertEqual(manifest["failure"]["message"], "collection failed")
 
     def test_legacy_flag_is_absent_without_initialization(self):
         task = {

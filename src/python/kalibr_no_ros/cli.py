@@ -6,7 +6,7 @@ import json
 import sys
 
 from .version import VERSION
-from .rolling_shutter import JOB as ROLLING_SHUTTER_JOB
+from .rolling_shutter import JOB as ROLLING_SHUTTER_JOB, CAMERA_RS_JOB
 
 from kalibr_runtime import profiling_enabled
 from .task import (
@@ -74,6 +74,13 @@ def build_parser():
     calibration_commands = calibrate.add_subparsers(dest="calibration", required=True)
     cameras = calibration_commands.add_parser("cameras", help="camera calibration")
     _add_runtime_arguments(cameras)
+    cameras_rs = calibration_commands.add_parser(
+        "cameras-rs", help="rolling-shutter mono/stereo/multicamera calibration")
+    _add_runtime_arguments(cameras_rs)
+    native_rs = calibration_commands.add_parser(
+        "native-rs-cameras",
+        help="temporary native Kalibr rolling-shutter monocular comparison")
+    _add_runtime_arguments(native_rs)
     imu_camera = calibration_commands.add_parser(
         "imu-camera", help="camera to IMU calibration"
     )
@@ -258,20 +265,25 @@ def main(argv=None, prefix=None):
             print(output)
             return 0
         if arguments.group == "calibrate":
-            job = (
-                "camera_calibration"
-                if arguments.calibration == "cameras"
-                else "camera_imu_calibration"
-            )
-            if arguments.calibration == "imu-camera-rs":
+            if arguments.calibration == "cameras":
+                job = "camera_calibration"
+            elif arguments.calibration in ("cameras-rs", "native-rs-cameras"):
+                job = CAMERA_RS_JOB
+            elif arguments.calibration == "imu-camera-rs":
                 job = ROLLING_SHUTTER_JOB
+            else:
+                job = "camera_imu_calibration"
+            overrides = _runtime_overrides(
+                arguments, arguments.output_dir)
+            if arguments.calibration == "native-rs-cameras":
+                overrides["_rs_solver_backend"] = "native"
             output = run_task(
                 prefix,
                 arguments.config,
                 arguments.output_dir,
                 job,
                 force=arguments.force,
-                **_runtime_overrides(arguments, arguments.output_dir)
+                **overrides
             )
             print(output)
             return 0

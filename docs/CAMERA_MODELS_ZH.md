@@ -1,7 +1,7 @@
 # 相机模型与优化参数
 
 本文说明当前版本在相机 task 中可直接填写的全部相机模型、每个模型的参数
-顺序，以及这些参数在 `camera_calibration` 和 `camera_imu_calibration` 中是否参与优化。
+顺序，以及这些参数在普通 `camera_calibration` 和 `camera_imu_calibration` 中是否参与优化。
 模型注册表以
 [`kalibr_calibrate_cameras`](../src/kalibr/calibration/kalibr/python/kalibr_calibrate_cameras)
 中的 `cameraModels` 为准，而不是以 OpenCV 转换工具接受的别名为准。
@@ -25,6 +25,12 @@
 
 表中的“单相机参数量”只统计投影参数和畸变参数，不包含相机之间的外参、标定板
 位姿、Camera–IMU 外参或时间偏移。
+
+这 10 个值是普通 `camera_calibration` 的模型集合。纯视觉
+`camera_rolling_shutter_calibration` 目前只接受 `pinhole-equi` 与
+`pinhole-radtan`；快门类型由 job 选择，不新增 `*-rs` 公共模型名。RS 相机的活动状态、
+行时间与上游单目对照见
+[`ROLLING_SHUTTER_CAMERA_CALIBRATION_ZH.md`](ROLLING_SHUTTER_CAMERA_CALIBRATION_ZH.md)。
 
 默认 `camera_calibration` 流程中，这 10 种模型的全部投影参数和畸变参数都会进入每台
 相机的单目标定 LM，并在全相机 full-batch 与最终增量联合优化中保持 active。相机对
@@ -263,8 +269,8 @@ $$
 
 - 标定板三维点默认 fixed，即 AprilGrid 的 `tagSize`、`tagSpacing` 和角点布局不会被
   优化；
-- shutter design variable 在这些阶段为 fixed，当前 task 没有把 rolling-shutter
-  参数作为相机标定变量；
+- shutter design variable 在上述普通相机阶段为 fixed；只有独立 RS job 才把行时间
+  作为标定变量；
 - 图像分辨率 fixed；
 - `direct`/`refine` 只改变初值如何产生以及跳过哪些前置初值阶段，不会自行把最终
   增量问题中的内参、畸变或 baseline 固定住；需要固定相机模型时显式使用

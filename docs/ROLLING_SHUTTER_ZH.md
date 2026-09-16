@@ -17,6 +17,9 @@ kalibr-noros calibrate imu-camera-rs --config camera_imu_rolling_shutter_calibra
 新任务引用 `camera_calibration.path`；省略时仍按现有规则从输出根目录查找唯一匹配的
 相机标定结果。目录通过 `dataset.yaml` 映射 ID，bag 需要话题。相机光学模型仍是
 `pinhole-equi` 等原有模型，不把快门类型拼到模型名称中。
+若引用的纯视觉相机结果本身含 `shutter`，该块只作为来源元数据读取；本任务不会自动
+继承其中的行时间，仍以当前 task 的 `rolling_shutter` 为唯一求解配置。普通
+`imu-camera` 同样只使用其中 K/D/T，不会因结果含 `shutter` 而静默启用逐行残差。
 
 配置入口：
 [简洁示例](../config/examples/v1.0.0/camera_imu_rolling_shutter_calibration_task.yaml)、

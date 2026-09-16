@@ -19,11 +19,38 @@ from .RsPlot import plotSplineValues
 import pylab as pl
 import pdb
 
+try:
+    import kalibr_runtime as native_runtime
+except ImportError:
+    native_runtime = None
+
 # make numpy print prettier
 np.set_printoptions(suppress=True)
 
 CALIBRATION_GROUP_ID = 0
 LANDMARK_GROUP_ID = 2
+NATIVE_TIME_EXPRESSION_BUFFER_S = 0.5
+NATIVE_TIME_PADDING_S = 0.5
+
+
+def requireOptimizerSuccess(result, maxIterations, stage):
+    """Reject a native Optimizer2 failure before any result is serialized."""
+    if result is None:
+        raise RuntimeError(
+            "native rolling-shutter optimization returned no result during {0}"
+            .format(stage))
+    if result.linearSolverFailure:
+        raise RuntimeError(
+            "native rolling-shutter optimization failed during {0}"
+            .format(stage))
+    if int(result.iterations) >= int(maxIterations):
+        raise RuntimeError(
+            "native rolling-shutter optimization did not converge during {0} "
+            "within max_iterations={1} (iterations={2}, dXFinal={3:.17g}, "
+            "dJFinal={4:.17g})".format(
+                stage, int(maxIterations), int(result.iterations),
+                float(result.dXFinal), float(result.dJFinal)))
+    return result
 
 class RsCalibratorConfiguration(object):
     deltaX = 1e-8
@@ -75,12 +102,72 @@ class RsCalibratorConfiguration(object):
     knot placement and for initializing a knot sequence if no number of knots is given.
     """
 
+    def __init__(self):
+        # ``estimateParameters`` was historically a class attribute.  Give
+        # every run an independent copy while retaining all upstream defaults.
+        self.estimateParameters = dict(type(self).estimateParameters)
+        self.cameraInitialization = None
+        """Optional cam0 intrinsics/distortion seed mapping."""
+        self.initializationStrategy = None
+        """Provenance for the project initialization strategy."""
+        self.lineDelaySeed = None
+        """Optional explicit rolling-shutter line-delay seed in seconds."""
+        self.maxAbsLineDelay = None
+        """Optional post-solve line-delay validity limit in seconds."""
+
     def validate(self, isRollingShutter):
         """Validate the configuration."""
         # only rolling shutters can be estimated
         if (not isRollingShutter):
             self.estimateParameters['shutter'] = False
             self.adaptiveKnotPlacement = False
+        for value, name in (
+                (self.timeOffsetConstantSparsityPattern,
+                 "timeOffsetConstantSparsityPattern"),
+                (self.timeOffsetPadding, "timeOffsetPadding")):
+            if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                    or not np.isfinite(value) or value <= 0.0):
+                raise ValueError(name + " must be a positive finite number")
+        if (not isinstance(self.framerate, (int, float)) or
+                isinstance(self.framerate, bool) or
+                not np.isfinite(self.framerate) or self.framerate <= 0.0):
+            raise ValueError("framerate must be a positive finite number")
+        if self.lineDelaySeed is not None:
+            if (not isinstance(self.lineDelaySeed, (int, float)) or
+                    isinstance(self.lineDelaySeed, bool) or
+                    not np.isfinite(self.lineDelaySeed)):
+                raise ValueError(
+                    "lineDelaySeed must be a finite number in seconds")
+            if not isRollingShutter:
+                raise ValueError(
+                    "lineDelaySeed requires a rolling-shutter camera model")
+        if self.maxAbsLineDelay is not None:
+            if (not isinstance(self.maxAbsLineDelay, (int, float)) or
+                    isinstance(self.maxAbsLineDelay, bool) or
+                    not np.isfinite(self.maxAbsLineDelay) or
+                    self.maxAbsLineDelay <= 0.0):
+                raise ValueError(
+                    "maxAbsLineDelay must be a positive finite number in seconds")
+            if not isRollingShutter:
+                raise ValueError(
+                    "maxAbsLineDelay requires a rolling-shutter camera model")
+
+    def validateTimeSupport(self, sensorRows, lineDelay):
+        """Ensure the initial row span plus trial buffer fits the spline ends."""
+        if type(sensorRows) is not int or sensorRows <= 0:
+            raise ValueError("sensorRows must be a positive integer")
+        lineDelay = float(lineDelay)
+        if not np.isfinite(lineDelay):
+            raise ValueError("initial line delay must be finite")
+        endpointSupport = 2.0 * float(self.timeOffsetPadding)
+        requiredSupport = (
+            float(self.timeOffsetConstantSparsityPattern)
+            + abs(lineDelay) * (sensorRows - 1))
+        if endpointSupport <= requiredSupport:
+            raise ValueError(
+                "rolling-shutter spline endpoint support {0:.17g} s must "
+                "strictly exceed time-expression buffer plus initial row span "
+                "{1:.17g} s".format(endpointSupport, requiredSupport))
 
 class RsCalibrator(object):
 
@@ -114,6 +201,12 @@ class RsCalibrator(object):
     __reprojection_errors = []
     """Reprojection errors of the latest optimizer iteration"""
 
+    __residual_records = []
+    """Observation/corner metadata paired with the final error terms."""
+
+    __optimizerResult = None
+    """Return value from the latest optimizer invocation."""
+
     def calibrate(self,
         cameraGeometry,
         observations,
@@ -141,10 +234,14 @@ class RsCalibrator(object):
         self.__config = config
 
         self.__config.validate(self.__isRollingShutter())
+        if not self.__observations:
+            raise RuntimeError(
+                "native rolling-shutter calibration received no target "
+                "observations")
 
         # obtain initial guesses for extrinsics and intrinsics
         if (not self.__generateIntrinsicsInitialGuess()):
-            sm.logError("Could not generate initial guess.")
+            raise RuntimeError("Could not generate intrinsic initial guess.")
 
         # obtain the extrinsic initial guess for every observation
         self.__generateExtrinsicsInitialGuess()
@@ -162,12 +259,16 @@ class RsCalibrator(object):
         # build estimator problem
         optimisation_problem = self.__buildOptimizationProblem(W)
 
-        self.__runOptimization(
+        self.__optimizerResult = self.__runOptimization(
             optimisation_problem,
             self.__config.deltaJ,
             self.__config.deltaX,
             self.__config.maxNumberOfIterations
         )
+        requireOptimizerSuccess(
+            self.__optimizerResult,
+            self.__config.maxNumberOfIterations,
+            "initial solve")
 
         # continue with knot replacement
         if self.__config.adaptiveKnotPlacement:
@@ -188,27 +289,81 @@ class RsCalibrator(object):
                 self.__poseSpline = knotUpdateStrategy.getUpdatedSpline(self.__poseSpline_dv.spline(), knots, self.__config.splineOrder)
 
                 optimisation_problem = self.__buildOptimizationProblem(W)
-                self.__runOptimization(
+                self.__optimizerResult = self.__runOptimization(
                     optimisation_problem,
                     self.__config.deltaJ,
                     self.__config.deltaX,
                     self.__config.maxNumberOfIterations
                 )
+                requireOptimizerSuccess(
+                    self.__optimizerResult,
+                    self.__config.maxNumberOfIterations,
+                    "adaptive knot iteration {0}".format(iteration + 1))
 
         self.__printResults()
+        self.__validateFinalLineDelay()
         self.__saveParametersYaml()
+        self.__saveResultText()
+        return self.getResult()
 
     def __generateExtrinsicsInitialGuess(self):
-        """Estimate the pose of the camera with a PnP solver. Call after initializing the intrinsics"""
-        # estimate and set T_c in the observations
-        for idx, observation in enumerate(self.__observations):
-            (success, T_t_c) = self.__camera.estimateTransformation(observation)
-            if (success):
-                observation.set_T_t_c(T_t_c)
-            else:
-                sm.logWarn("Could not estimate T_t_c for observation at index {0}".format(idx))
+        """Keep only finite PnP poses used to initialize the native spline.
 
-        return
+        Corner extraction may succeed while pose initialization fails for an
+        individual frame.  The upstream implementation warned about that frame
+        but subsequently called ``T_t_c()`` on it unconditionally.  Preserve
+        the native solver stages while removing only unusable initialization
+        samples and failing explicitly when too few remain for the spline.
+        """
+        initialized = []
+        failed = []
+        for idx, observation in enumerate(self.__observations):
+            try:
+                success, T_t_c = self.__camera.estimateTransformation(
+                    observation)
+            except (RuntimeError, ValueError) as error:
+                success = False
+                failed.append((idx, str(error)))
+            if success:
+                matrix = np.asarray(T_t_c.T(), dtype=float)
+                timestamp = float(observation.time().toSec())
+                if matrix.shape == (4, 4) and np.all(np.isfinite(matrix)) \
+                        and np.isfinite(timestamp):
+                    observation.set_T_t_c(T_t_c)
+                    initialized.append((timestamp, idx, observation))
+                    continue
+                failed.append((idx, "non-finite pose or timestamp"))
+            elif not failed or failed[-1][0] != idx:
+                failed.append((idx, "PnP returned failure"))
+
+        # Dataset readers normally provide monotonic unique timestamps.  Sort
+        # defensively and discard exact duplicate pose samples because the
+        # spline initializer requires increasing abscissae.
+        retained = []
+        duplicate_count = 0
+        for timestamp, unused_idx, observation in sorted(
+                initialized, key=lambda item: (item[0], item[1])):
+            if retained and abs(timestamp - retained[-1][0]) <= 1e-12:
+                duplicate_count += 1
+                continue
+            retained.append((timestamp, observation))
+
+        minimum = max(4, int(self.__config.splineOrder))
+        if len(retained) < minimum:
+            raise RuntimeError(
+                "native rolling-shutter spline initialization requires at "
+                "least {0} finite, unique PnP target poses; retained {1} of "
+                "{2} observations ({3} PnP failures, {4} duplicate "
+                "timestamps)".format(
+                    minimum, len(retained), len(self.__observations),
+                    len(failed), duplicate_count))
+        if failed or duplicate_count:
+            sm.logWarn(
+                "Native rolling-shutter initialization retained {0} of {1} "
+                "observations ({2} PnP failures, {3} duplicate timestamps)"
+                .format(len(retained), len(self.__observations), len(failed),
+                        duplicate_count))
+        self.__observations = [item[1] for item in retained]
 
     def __generateIntrinsicsInitialGuess(self):
         """
@@ -217,7 +372,31 @@ class RsCalibrator(object):
         """
         if (self.__isRollingShutter()):
             sensorRows = self.__observations[0].imRows()
-            self.__camera.shutter().setParameters(np.array([1.0 / self.__config.framerate / float(sensorRows)]))
+            lineDelay = self.__config.lineDelaySeed
+            if lineDelay is None:
+                # Preserve the native default.  An explicit seed deliberately
+                # breaks this dependency on the selected observation rate.
+                lineDelay = 1.0 / self.__config.framerate / float(sensorRows)
+            self.__config.validateTimeSupport(sensorRows, lineDelay)
+            self.__camera.shutter().setParameters(
+                np.array([float(lineDelay)]))
+
+        seed = self.__config.cameraInitialization
+        if seed:
+            # The native RS solver has one joint K/D/shutter/pose solve rather
+            # than the staged intrinsic LM used by the ordinary camera task.
+            # Bootstrap only the image metadata, then install the requested
+            # initial K/D values before the original joint problem is built.
+            if 'intrinsics' in seed:
+                self.__cameraGeometry._bootstrapObservationMetadata(
+                    self.__observations, 'cam0')
+            else:
+                if not self.__camera.initializeIntrinsics(
+                        self.__observations):
+                    return False
+            self.__cameraGeometry._restoreUnseededInitializationDefaults(seed)
+            self.__cameraGeometry._applyInitializationSeed('cam0', seed)
+            return True
 
         return self.__camera.initializeIntrinsics(self.__observations)
 
@@ -276,6 +455,7 @@ class RsCalibrator(object):
         # store all frames
         self.__frames = []
         self.__reprojection_errors = []
+        self.__residual_records = []
 
         # This code assumes that the order of the landmarks in the observations
         # is invariant across all observations. At least for the chessboards it is true.
@@ -361,6 +541,13 @@ class RsCalibrator(object):
                         self.__poseSpline_dv
                     )
                     self.__reprojection_errors.append(reprojection_error)
+                    self.__residual_records.append({
+                        'observation': observation,
+                        'corner_id': int(corner_ids[index]),
+                        'measurement_px': np.asarray(
+                            point, dtype=float).reshape(-1).copy(),
+                        'error': reprojection_error,
+                    })
                     problem.addErrorTerm(reprojection_error)
 
         return problem
@@ -428,6 +615,8 @@ class RsCalibrator(object):
         options = aopt.Optimizer2Options()
         options.verbose = True
         options.nThreads = max(1,multiprocessing.cpu_count()-1)
+        if native_runtime is not None:
+            native_runtime.apply_optimizer_threads(options)
         options.doSchurComplement = True
         options.linearSolver = aopt.BlockCholeskyLinearSystemSolver()  #does not have multi-threading support
 
@@ -444,6 +633,8 @@ class RsCalibrator(object):
         optimizer.setProblem(problem)
 
         # go for it:
+        if native_runtime is not None:
+            return native_runtime.run_optimizer(optimizer)
         return optimizer.optimize()
 
     def __isRollingShutter(self):
@@ -461,6 +652,17 @@ class RsCalibrator(object):
         print(proj.getParameters().flatten())
         print("Distortion:")
         print(dist.getParameters().flatten())
+
+    def __validateFinalLineDelay(self):
+        bound = self.__config.maxAbsLineDelay
+        if bound is None:
+            return
+        lineDelay = float(self.__camera.shutter().lineDelay())
+        if not np.isfinite(lineDelay) or abs(lineDelay) > float(bound):
+            raise RuntimeError(
+                "estimated line delay {0:.17g} s exceeds configured "
+                "post-solve limit {1:.17g} s".format(
+                    lineDelay, float(bound)))
 
     def __saveParametersYaml(self):
         # Create new config file
@@ -505,3 +707,107 @@ class RsCalibrator(object):
 
         chain.addCameraAtEnd(camParams)
         chain.writeYaml()
+
+    def getResiduals(self):
+        """Return a detached snapshot of final per-corner pixel residuals.
+
+        Residuals use Kalibr's camera convention ``measurement - prediction``.
+        The adaptive-covariance weighting remains available through the native
+        error terms, but does not alter these physical pixel values.
+        """
+        if not self.__residual_records:
+            raise RuntimeError(
+                "rolling-shutter calibration produced no reprojection residuals")
+
+        lineDelay = 0.0
+        if self.__isRollingShutter():
+            lineDelay = float(self.__camera.shutter().lineDelay())
+        residuals = []
+        for record in self.__residual_records:
+            error = record['error']
+            error.evaluateError()
+            measurement = np.asarray(
+                record['measurement_px'], dtype=float).reshape(-1)
+            residual = np.asarray(error.error(), dtype=float).reshape(-1)
+            prediction = measurement - residual
+            observation = record['observation']
+            values = np.hstack((measurement, prediction, residual))
+            if (measurement.size != 2 or residual.size != 2 or
+                    prediction.size != 2 or not np.all(np.isfinite(values))):
+                raise RuntimeError(
+                    "native rolling-shutter solver produced a non-finite "
+                    "two-dimensional pixel residual")
+            timestampNs = int(observation.time().toNSec())
+            rowTimeOffset = float(measurement[1] * lineDelay)
+            residuals.append({
+                'timestamp_ns': timestampNs,
+                'solver_timestamp_s': float(
+                    observation.time().toSec() + rowTimeOffset),
+                'corner_id': int(record['corner_id']),
+                'measurement_px': measurement.tolist(),
+                'prediction_px': prediction.tolist(),
+                'residual_px': residual.tolist(),
+                'row_time_offset_s': rowTimeOffset,
+            })
+        return residuals
+
+    def getResult(self):
+        """Return a detached structured snapshot of the optimized camera."""
+        residuals = self.getResiduals()
+        squaredNorms = [
+            float(np.dot(entry['residual_px'], entry['residual_px']))
+            for entry in residuals
+        ]
+        rms = float(np.sqrt(np.mean(squaredNorms)))
+        if not np.isfinite(rms):
+            raise RuntimeError(
+                "native rolling-shutter solver produced a non-finite RMS")
+        projection = self.__camera.projection()
+        result = {
+            'intrinsics': np.asarray(
+                projection.getParameters(), dtype=float).reshape(-1).tolist(),
+            'distortion_coeffs': np.asarray(
+                projection.distortion().getParameters(),
+                dtype=float).reshape(-1).tolist(),
+            'resolution': [int(projection.ru()), int(projection.rv())],
+            'line_delay_s': float(self.__camera.shutter().lineDelay()),
+            'line_delay_estimated': bool(
+                self.__config.estimateParameters['shutter']),
+            'rms_px': rms,
+            'residual_count': len(residuals),
+            'frame_count': len(set(
+                entry['timestamp_ns'] for entry in residuals)),
+        }
+        numeric = (result['intrinsics'] + result['distortion_coeffs'] +
+                   [result['line_delay_s']])
+        if not all(np.isfinite(value) for value in numeric):
+            raise RuntimeError(
+                "native rolling-shutter solver produced non-finite parameters")
+        return result
+
+    def getOptimizerResult(self):
+        """Return the final native optimizer status for run diagnostics."""
+        return self.__optimizerResult
+
+    def __saveResultText(self):
+        """Write the legacy human-readable sidecar from structured values."""
+        bagtag = os.path.splitext(self.__cameraGeometry.dataset.bagfile)[0]
+        resultFile = bagtag + "-results-cam.txt"
+        result = self.getResult()
+        with open(resultFile, 'w') as stream:
+            print("Rolling-shutter camera calibration results", file=stream)
+            print("==========================================", file=stream)
+            print("topic: {0}".format(
+                self.__cameraGeometry.dataset.topic), file=stream)
+            print("intrinsics: {0}".format(
+                result['intrinsics']), file=stream)
+            print("distortion: {0}".format(
+                result['distortion_coeffs']), file=stream)
+            print("line delay [s]: {0:.17g}".format(
+                result['line_delay_s']), file=stream)
+            print("reprojection RMS [px]: {0:.17g}".format(
+                result['rms_px']), file=stream)
+            print("reprojection residuals: {0}".format(
+                result['residual_count']), file=stream)
+            print("used frames: {0}".format(
+                result['frame_count']), file=stream)
