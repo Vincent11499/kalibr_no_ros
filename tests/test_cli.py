@@ -20,6 +20,24 @@ from kalibr_no_ros.task import (
 
 
 class TaskCliTest(unittest.TestCase):
+    def test_fixed_camera_validation_cli_accepts_repeated_calibrations(self):
+        arguments = build_parser().parse_args([
+            "verify", "cameras",
+            "--calibration", "first=/data/first.yaml",
+            "--calibration", "second=/data/second.yaml",
+            "--dataset", "/data/test",
+            "--target", "/data/aprilgrid.yaml",
+            "--output-dir", "/data/verification",
+            "--window-half-size-px", "7",
+            "--max-displacement-px", "1",
+        ])
+        self.assertEqual(arguments.group, "verify")
+        self.assertEqual(arguments.verification, "cameras")
+        self.assertEqual(arguments.calibration, [
+            "first=/data/first.yaml", "second=/data/second.yaml"])
+        self.assertEqual(arguments.window_half_size_px, 7)
+        self.assertEqual(arguments.max_displacement_px, 1.0)
+
     def test_result_yaml_renders_matrix_rows_inline(self):
         document = {
             "T_cam_imu": [

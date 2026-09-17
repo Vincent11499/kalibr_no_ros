@@ -471,16 +471,32 @@ def stereo_comparison_page(original, rectified, title):
     return figure
 
 
-def render_reports(metrics, assessment, files, *, artifacts=None, calibration=None, output_dir=None):
+def _stereo_original(path, files):
+    directory, name = path.rsplit('/', 1)
+    if name.startswith('rectified_'):
+        candidate = directory + '/original_' + name[len('rectified_'):]
+    else:
+        return None
+    return candidate if candidate in files else None
+
+
+def render_reports(metrics, assessment, files, *, artifacts=None, calibration=None,
+                   output_dir=None, report_pairs=None):
     """Return a self-contained HTML document and a paginated PDF byte string."""
     import matplotlib
     from matplotlib.backends.backend_pdf import PdfPages
     import random
+    file_set = set(files)
     candidates = sorted(path for path in files if "visualizations/" in path
-                        and path.rsplit('/', 1)[-1].startswith('rectified_')
-                        and path.rsplit('/', 1)[0] + '/' + path.rsplit('/', 1)[1].replace('rectified_', 'original_', 1) in files
+                        and path.rsplit('/', 1)[-1].startswith(('alignment_', 'rectified_'))
+                        and _stereo_original(path, file_set) is not None
                         and path.endswith((".jpg", ".png")))
-    images = sorted(random.Random(0).sample(candidates, min(5, len(candidates))))
+    legacy_images = sorted(random.Random(0).sample(candidates, min(5, len(candidates))))
+    images = list(report_pairs or [])
+    if not images:
+        images = [{"alignment_path": path,
+                   "original_path": _stereo_original(path, file_set)}
+                  for path in legacy_images]
 
     status = assessment.get("status", "unavailable")
     grade = assessment.get("reference_grading", {}).get("status", "unavailable")
@@ -520,22 +536,38 @@ def render_reports(metrics, assessment, files, *, artifacts=None, calibration=No
         if output_dir is not None:
             from .reporting import _child
             import matplotlib.image as mpimg
-            for number, path in enumerate(images, 1):
-                original = path.rsplit('/', 1)[0] + '/' + path.rsplit('/', 1)[1].replace('rectified_', 'original_', 1)
+            for number, item in enumerate(images, 1):
+                path = item["alignment_path"]
+                if item.get("original_jpeg") is not None:
+                    import cv2
+                    original = cv2.imdecode(
+                        np.frombuffer(item["original_jpeg"], dtype=np.uint8),
+                        cv2.IMREAD_COLOR)
+                    if original is None:
+                        raise ReportingError("embedded stereo report image is invalid")
+                    original = cv2.cvtColor(original, cv2.COLOR_BGR2RGB)
+                else:
+                    original = mpimg.imread(_child(output_dir, item["original_path"]))
                 figure = stereo_comparison_page(
-                    mpimg.imread(_child(output_dir, original)),
+                    original,
                     mpimg.imread(_child(output_dir, path)),
                     'Stereo comparison {} / {} - {}'.format(number, len(images), path.rsplit('/', 1)[-1]))
                 pdf.savefig(figure)
                 figure.clear()
     if images:
         document.append('<section><h2>Epipolar alignment · original and rectified</h2><p>Up to five random samples, sorted by frame order. Each group shows original stereo images above the rectified pair. Green guide lines: 3 pixels.</p><div class="stereo-comparisons">')
-        for number, path in enumerate(images, 1):
-            original = path.rsplit('/', 1)[0] + '/' + path.rsplit('/', 1)[1].replace('rectified_', 'original_', 1)
+        for number, item in enumerate(images, 1):
+            path = item["alignment_path"]
             document.append('<article class="stereo-comparison"><h3>Sample {}</h3>'.format(number))
-            for image_path, label in ((original, 'Original stereo pair'), (path, 'Epipolar alignment')):
-                safe = html.escape(image_path, quote=True)
-                document.append('<figure><figcaption>{0}</figcaption><a href="{1}"><img loading="lazy" src="{1}" alt="{0}"></a></figure>'.format(label, safe))
+            if item.get("original_jpeg") is not None:
+                source = "data:image/jpeg;base64," + base64.b64encode(
+                    item["original_jpeg"]).decode("ascii")
+                document.append('<figure><figcaption>Original stereo pair</figcaption><img loading="lazy" src="{}" alt="Original stereo pair"></figure>'.format(source))
+            else:
+                original = html.escape(item["original_path"], quote=True)
+                document.append('<figure><figcaption>Original stereo pair</figcaption><a href="{0}"><img loading="lazy" src="{0}" alt="Original stereo pair"></a></figure>'.format(original))
+            safe = html.escape(path, quote=True)
+            document.append('<figure><figcaption>Epipolar alignment</figcaption><a href="{0}"><img loading="lazy" src="{0}" alt="Epipolar alignment"></a></figure>'.format(safe))
             document.append('</article>')
         document.append('</div></section>')
     if files:

@@ -155,6 +155,7 @@ class NativeRunArtifactsTest(unittest.TestCase):
             frames = context.artifacts["cameras"][0]["frames"]
             self.assertEqual([f["detection_status"] for f in frames],
                              ["succeeded", "failed", "succeeded"])
+            self.assertEqual(frames[0]["target_corner_count"], 4)
             self.assertEqual(context.frame(observations[1])["source_index"], 2)
             self.assertEqual(context.frame(observations[1])["source_timestamp_ns"],
                              1700000000000000002)

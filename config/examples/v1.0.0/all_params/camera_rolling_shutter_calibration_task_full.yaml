@@ -74,6 +74,9 @@ output:
     max_frames_per_camera: 30 # 每目展示上限，正整数；不改变统计总体。
     max_pairs: 30 # 双目展示上限，正整数。
     sampling: uniform # 确定性均匀抽样。
+    undistortion:
+      enabled: true # 默认true；父级enabled=true时生成每目独立普通光学去畸变图，不补偿逐行运动。
+      crop: false # 默认false；布尔值；false保留最大视场且可能有黑边，true缩放裁去无效边，输出像素尺寸不变。
   rectification:
     balance: 0.0 # [0,1]；fisheye普通光学校正视场平衡。
     fov_scale: 1.0 # >0；OpenCV fisheye校正视场倍率。

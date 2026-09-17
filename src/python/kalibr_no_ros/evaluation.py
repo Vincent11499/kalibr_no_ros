@@ -65,7 +65,8 @@ def validate_output_options(options=None):
     if result["archive_selection_history"] and not result["archive_observations"]:
         raise ReportingError("archive_selection_history requires archive_observations")
     visual = _mapping(options.get("visualizations", {}), "visualizations",
-                      {"enabled", "max_frames_per_camera", "max_pairs", "sampling"})
+                      {"enabled", "max_frames_per_camera", "max_pairs",
+                       "sampling", "undistortion"})
     if type(visual.get("enabled", False)) is not bool:
         raise ReportingError("visualizations.enabled must be boolean")
     result["visualizations"] = {"enabled": visual.get("enabled", False), "sampling": "uniform"}
@@ -76,6 +77,15 @@ def validate_output_options(options=None):
         if type(value) is not int or value < 1:
             raise ReportingError("visualizations.{} must be a positive integer".format(key))
         result["visualizations"][key] = value
+    undistortion = _mapping(
+        visual.get("undistortion", {}), "visualizations.undistortion",
+        {"enabled", "crop"})
+    for key, default in (("enabled", True), ("crop", False)):
+        value = undistortion.get(key, default)
+        if type(value) is not bool:
+            raise ReportingError(
+                "visualizations.undistortion.{} must be boolean".format(key))
+        result["visualizations"].setdefault("undistortion", {})[key] = value
     rect = _mapping(options.get("rectification", {}), "rectification", {"balance", "fov_scale", "size"})
     result["rectification"] = {
         "balance": _number(rect.get("balance", 0.0), "rectification.balance", 0.0, 1.0),
@@ -349,6 +359,41 @@ def rectification_maps(geometry, side):
     if camera["alpha"]:
         map_x += (camera["K"][0, 1] / camera["K"][1, 1]) * (
             map_y - camera["K"][1, 2])
+    return map_x, map_y
+
+
+def undistortion_maps(camera, crop=False):
+    """Build a same-size per-camera undistortion map.
+
+    ``crop=False`` keeps the widest OpenCV field of view and may retain black
+    invalid borders. ``crop=True`` chooses the tight OpenCV view that removes
+    as much invalid border as possible without changing the output dimensions.
+    """
+    import cv2
+
+    if type(crop) is not bool:
+        raise ReportingError("undistortion crop must be boolean")
+    geometry = camera_geometry(camera)
+    size = geometry["size"]
+    identity = np.eye(3, dtype=np.float64)
+    if geometry["family"] == "fisheye":
+        projection = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
+            geometry["K_no_skew"], geometry["D"], size, identity,
+            balance=0.0 if crop else 1.0, new_size=size, fov_scale=1.0)
+        function = cv2.fisheye.initUndistortRectifyMap
+    else:
+        projection, _ = cv2.getOptimalNewCameraMatrix(
+            geometry["K_no_skew"], geometry["D"], size,
+            0.0 if crop else 1.0, size)
+        function = cv2.initUndistortRectifyMap
+    if not np.all(np.isfinite(projection)):
+        raise ReportingError("undistortion produced a non-finite projection")
+    map_x, map_y = function(
+        geometry["K_no_skew"], geometry["D"], identity, projection,
+        size, cv2.CV_32FC1)
+    if geometry["alpha"]:
+        map_x += (geometry["K"][0, 1] / geometry["K"][1, 1]) * (
+            map_y - geometry["K"][1, 2])
     return map_x, map_y
 
 

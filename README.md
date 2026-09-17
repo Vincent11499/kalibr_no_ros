@@ -78,6 +78,7 @@ kalibr-noros calibrate imu-camera
 kalibr-noros calibrate imu-camera-rs
 kalibr-noros validate
 kalibr-noros evaluate
+kalibr-noros verify cameras
 kalibr-noros convert camera
 kalibr-noros convert job
 ```
@@ -85,6 +86,11 @@ kalibr-noros convert job
 `convert camera` 提供 OpenCV/Kalibr 参数转换；`evaluate` 只利用已有观测证据重算
 指标、判定和报告，不重新检测或优化。九参数 fisheye 的 alpha/skew 无损转换使用
 `kalibr-noros convert camera --full-fisheye ...`。
+
+需要在新的目录测试集上固定已有双目 K/D/T 计算每目 RMS、双目综合 RMS 和
+Alignment RMS 时，使用 `kalibr-noros verify cameras`。该命令会重新检测测试图像，
+但不调用标定优化器；参数、公式和输出见
+[固定参数验证与标定诊断](docs/FIXED_CAMERA_VALIDATION_ZH.md)。
 
 滚动快门相机＋IMU 使用独立任务 `camera_imu_rolling_shutter_calibration` 和
 `calibrate imu-camera-rs`，逐目联合估计行时间；配置和架构见

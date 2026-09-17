@@ -58,7 +58,10 @@ output: # 后处理与证据保存，不反馈修改求解问题或最终观测�
     max_frames_per_camera: 30 # 每相机最大可视化帧数，正整数；不影响统计总体。
     max_pairs: 30 # 最大双目可视化对数，正整数；统计仍用全部最终共同角点。
     sampling: uniform # 当前唯一支持的确定性均匀抽样方法。
-  rectification: # 仅评价与OpenCV导出；改变会影响像素极线误差，不影响标定结果。
+    undistortion:
+      enabled: true # 默认true；父级enabled=true时生成每目独立去畸变图，不改变标定或指标。
+      crop: false # 默认false；布尔值；false保留最大视场且可能有黑边，true缩放裁去无效边，输出像素尺寸不变。
+  rectification: # 双目评价、对齐图及OpenCV双目标定导出共用；不影响求解结果。
     balance: 0.0 # 无量纲，[0,1]；fisheye校正视场平衡参数。
     fov_scale: 1.0 # 无量纲，>0；OpenCV fisheye校正视场倍率。
     size: null # null沿用源尺寸；也可显式[正整数宽,正整数高]，单位像素。

@@ -14,7 +14,10 @@ output: # 只能改变后处理、可视化或判定，不改原运行目录。
     max_frames_per_camera: 30 # 每相机均匀采样上限，正整数。
     max_pairs: 30 # 双目图对均匀采样上限，正整数。
     sampling: uniform # 确定性采样，不影响总体指标。
-  rectification: # 改变校正设置需要从归档角点重算极线误差。
+    undistortion:
+      enabled: true # 默认true；父级enabled=true时生成每目独立去畸变图。
+      crop: false # 默认false；布尔值；false保留最大视场且可能有黑边，true缩放裁去无效边，输出像素尺寸不变。
+  rectification: # 改变设置会重算极线误差、双目对齐图及OpenCV双目校正矩阵。
     balance: 0.0 # 无量纲，[0,1]；fisheye视场平衡。
     fov_scale: 1.0 # 无量纲，>0；校正视场倍率。
     size: null # null使用源分辨率，或填写[宽,高]像素。

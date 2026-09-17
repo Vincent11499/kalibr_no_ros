@@ -20,6 +20,7 @@ from .evaluation import (
     ReportingError, assess_metrics, camera_geometry, compute_metrics,
     merged_cameras, paired_frames, stereo_geometry, validate_output_options,
     vector, prepare_evaluation_artifacts, rectification_maps,
+    undistortion_maps,
 )
 
 
@@ -394,12 +395,53 @@ def _uniform(items, maximum):
     return [items[int(i)] for i in np.linspace(0, len(items) - 1, maximum).round().astype(int)]
 
 
-def create_images(artifacts, calibration, output_dir, options=None, input_dir=None, dataset=None):
+def _corner_count_label(frame):
+    corners = frame.get("corners", [])
+    detected = frame.get("detected_corner_count")
+    if type(detected) is not int or detected < 0:
+        detected = len(corners)
+    retained = sum(corner.get("used", True) is True for corner in corners)
+    target = frame.get("target_corner_count")
+    target = str(target) if type(target) is int and target >= 0 else "?"
+    return "detected: {} | retained: {} | target: {}".format(
+        detected, retained, target)
+
+
+def _alignment_label(statistics):
+    statistics = statistics if isinstance(statistics, dict) else {}
+    value = statistics.get("rms_px")
+    count = statistics.get("count")
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not np.isfinite(value)):
+        return "Alignment RMS: unavailable"
+    suffix = " | corners: {}".format(count) if type(count) is int else ""
+    return "Alignment RMS: {:.6f} px{}".format(value, suffix)
+
+
+def _draw_image_label(pixels, label):
+    import cv2
+
+    font, scale, thickness, margin = cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2, 8
+    (width, height), baseline = cv2.getTextSize(label, font, scale, thickness)
+    cv2.rectangle(pixels, (0, 0),
+                  (min(pixels.shape[1] - 1, width + margin * 2),
+                   min(pixels.shape[0] - 1, height + baseline + margin * 2)),
+                  (0, 0, 0), cv2.FILLED)
+    cv2.putText(pixels, label, (margin, margin + height), font, scale,
+                (255, 255, 255), thickness, cv2.LINE_AA)
+
+
+def _draw_corner_count_label(pixels, frame):
+    _draw_image_label(pixels, _corner_count_label(frame))
+
+
+def create_images(artifacts, calibration, output_dir, options=None, input_dir=None,
+                  dataset=None, metrics=None):
     import cv2
 
     options = validate_output_options(options)
     cameras = merged_cameras(artifacts, calibration)
-    files, problems = [], []
+    files, problems, report_candidates, report_pairs = [], [], [], []
 
     def save(relative, pixels):
         success, data = cv2.imencode(Path(relative).suffix, pixels)
@@ -435,10 +477,19 @@ def create_images(artifacts, calibration, output_dir, options=None, input_dir=No
                     frame["copied_image"] = relative
             if not visual["enabled"]:
                 continue
+            undistortion = visual["undistortion"]
+            maps = None
+            if undistortion["enabled"]:
+                try:
+                    maps = undistortion_maps(camera, crop=undistortion["crop"])
+                except (ReportingError, cv2.error) as error:
+                    problems.append({"camera": camera["id"],
+                                     "reason": "undistortion unavailable: {}".format(error)})
             for frame in _uniform(frames, visual["max_frames_per_camera"]):
-                pixels = read(images, camera, frame)
-                if pixels is None:
+                source = read(images, camera, frame)
+                if source is None:
                     continue
+                pixels = source
                 if pixels.ndim == 2:
                     pixels = cv2.cvtColor(pixels, cv2.COLOR_GRAY2BGR)
                 pixels = pixels.copy()
@@ -450,13 +501,26 @@ def create_images(artifacts, calibration, output_dir, options=None, input_dir=No
                         cv2.circle(pixels, tuple(np.rint(measurement).astype(int)), 3, color, 1)
                     if measurement is not None and prediction is not None:
                         cv2.line(pixels, tuple(np.rint(measurement).astype(int)), tuple(np.rint(prediction).astype(int)), (255, 100, 0), 1)
-                save("visualizations/{}/corners_{}.jpg".format(camera["id"], frame["source_index"]), pixels)
+                _draw_corner_count_label(pixels, frame)
+                save("visualizations/{}_det/corners_{}.jpg".format(
+                    camera["id"], frame["source_index"]), pixels)
+                if maps is not None:
+                    corrected = cv2.remap(source, *maps, interpolation=cv2.INTER_LINEAR)
+                    save("visualizations/{}_dist/undistorted_{}.jpg".format(
+                        camera["id"], frame["source_index"]), corrected)
         if visual["enabled"]:
             for left, right in zip(cameras, cameras[1:]):
+                pair_id = left["id"] + "_" + right["id"]
+                pair_metrics = (metrics or {}).get("stereo_pairs", {}).get(pair_id, {})
+                pair_statistics = {
+                    (record.get("left_frame_id"), record.get("right_frame_id")):
+                    record.get("alignment")
+                    for record in pair_metrics.get("pairs", [])
+                }
                 try:
                     geometry = stereo_geometry(left, right, options["rectification"])
                 except (ReportingError, cv2.error) as error:
-                    problems.append({"pair": left["id"] + "_" + right["id"], "reason": str(error)})
+                    problems.append({"pair": pair_id, "reason": str(error)})
                     continue
                 maps = [rectification_maps(geometry, side) for side in ("left", "right")]
                 pairs = sorted(paired_frames(artifacts, left, right),
@@ -466,9 +530,6 @@ def create_images(artifacts, calibration, output_dir, options=None, input_dir=No
                     if any(p is None for p in originals):
                         continue
                     originals = [cv2.cvtColor(p, cv2.COLOR_GRAY2BGR) if p.ndim == 2 else p for p in originals]
-                    height = max(p.shape[0] for p in originals)
-                    raw_pair = np.hstack([np.pad(p, ((0, height - p.shape[0]), (0, 0), (0, 0))) for p in originals])
-                    save("visualizations/{}_{}/original_{:04d}.jpg".format(left["id"], right["id"], index), raw_pair)
                     corrected = [cv2.remap(p, *mapping, interpolation=cv2.INTER_LINEAR) for p, mapping in zip(originals, maps)]
                     canvas = np.hstack(corrected)
                     if geometry["disparity_axis"] == "x":
@@ -479,8 +540,35 @@ def create_images(artifacts, calibration, output_dir, options=None, input_dir=No
                         for x in range(0, width, max(1, width // 12)):
                             for offset in (0, width):
                                 cv2.line(canvas, (x + offset, 0), (x + offset, canvas.shape[0] - 1), (0, 255, 0), 3)
-                    save("visualizations/{}_{}/rectified_{:04d}.jpg".format(left["id"], right["id"], index), canvas)
-    return files, problems
+                    _draw_image_label(canvas, _alignment_label(pair_statistics.get(
+                        (lf["frame_id"], rf["frame_id"]))))
+                    relative = "visualizations/{}_{}/alignment_{:04d}.jpg".format(
+                        left["id"], right["id"], index)
+                    save(relative, canvas)
+                    report_candidates.append((relative, left, right, lf, rf))
+        if report_candidates:
+            import random
+            selected = sorted(
+                random.Random(0).sample(
+                    report_candidates, min(5, len(report_candidates))),
+                key=lambda item: item[0])
+            for relative, left, right, lf, rf in selected:
+                originals = [read(images, left, lf), read(images, right, rf)]
+                if any(p is None for p in originals):
+                    continue
+                originals = [cv2.cvtColor(p, cv2.COLOR_GRAY2BGR)
+                             if p.ndim == 2 else p for p in originals]
+                height = max(p.shape[0] for p in originals)
+                raw_pair = np.hstack([
+                    np.pad(p, ((0, height - p.shape[0]), (0, 0), (0, 0)))
+                    for p in originals])
+                success, encoded = cv2.imencode(".jpg", raw_pair)
+                if not success:
+                    problems.append({"pair": relative, "reason": "report image encoding failed"})
+                    continue
+                report_pairs.append({"alignment_path": relative,
+                                     "original_jpeg": encoded.tobytes()})
+    return files, problems, report_pairs
 
 
 def _format(value):
@@ -542,14 +630,15 @@ def _summary(metrics, assessment):
 
 
 def _write_reports(metrics, assessment, output_dir, files, native_text=None, *,
-                   artifacts=None, calibration=None):
+                   artifacts=None, calibration=None, report_pairs=None):
     from .report_plots import render_reports
 
     summary = _summary(metrics, assessment)
     text = summary + ("\nNative solver results\n" + native_text if native_text else "")
     _atomic_bytes(_child(output_dir, "results.txt"), text.encode("utf-8"))
     document, pdf = render_reports(metrics, assessment, files,
-                                   artifacts=artifacts, calibration=calibration, output_dir=output_dir)
+                                   artifacts=artifacts, calibration=calibration,
+                                   output_dir=output_dir, report_pairs=report_pairs)
     _atomic_bytes(_child(output_dir, "report.pdf"), pdf)
     _atomic_bytes(_child(output_dir, "report.html"), document.encode("utf-8"))
     return ["results.txt", "report.html", "report.pdf"]
@@ -568,13 +657,15 @@ def generate_report(artifacts, calibration, output_dir, options=None, *, input_d
             camera["frames"] = [dict(frame) for frame in camera["frames"]]
     artifacts = prepare_evaluation_artifacts(artifacts, options)
     metrics = compute_metrics(artifacts, calibration, options)
-    files, diagnostics = [], []
+    files, diagnostics, report_pairs = [], [], []
     if options["export_opencv"]:
         generated, statuses = export_opencv(artifacts, calibration, output, options)
         files.extend(generated)
         diagnostics.extend(status for status in statuses if status["status"] != "written")
     if options["copy_used_images"] or options["visualizations"]["enabled"]:
-        generated, problems = create_images(artifacts, calibration, output, options, input_dir=input_dir, dataset=dataset)
+        generated, problems, report_pairs = create_images(
+            artifacts, calibration, output, options, input_dir=input_dir,
+            dataset=dataset, metrics=metrics)
         files.extend(generated)
         diagnostics.extend(problems)
     if options["archive_observations"]:
@@ -590,7 +681,8 @@ def generate_report(artifacts, calibration, output_dir, options=None, *, input_d
     native_path = _child(output, "results.txt")
     native_text = native_path.read_text(encoding="utf-8") if native_path.is_file() else None
     files.extend(_write_reports(metrics, assessment, output, files, native_text=native_text,
-                                artifacts=artifacts, calibration=calibration))
+                                artifacts=artifacts, calibration=calibration,
+                                report_pairs=report_pairs))
     return {"metrics": metrics, "assessment": assessment, "files": sorted(files)}
 
 

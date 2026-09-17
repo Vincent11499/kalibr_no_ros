@@ -14,6 +14,7 @@
 | [滚动快门相机标定](ROLLING_SHUTTER_CAMERA_CALIBRATION_ZH.md) | 单目／多目纯视觉RS任务、原生单目对照、时间基准与指标 |
 | [源码导读](SOURCE_CODE_DEEP_DIVE_ZH.md) | 输入、求解、输出调用链与维护边界 |
 | [输入输出代码修改指南](IO_CODE_MAINTENANCE_ZH.md) | 文件与函数定位、常见修改步骤、报告重生成、构建与验证 |
+| [固定参数验证与标定诊断](FIXED_CAMERA_VALIDATION_ZH.md) | 独立测试集 K/D/T 验证、shuffle、可观性与异常点过滤 |
 
 先按[工程 README](../README.md)构建 `release`，再复制
 [配置示例](../config/examples/v1.0.0/README_ZH.md)。运行时先完成相机标定，

@@ -153,17 +153,36 @@ Camera–IMU task 省略 `camera_calibration` 时，先在 `--output-dir` 根目
 Azimuthal error 与 Reprojection errors。图形使用已有最终观测，不重跑求解；缺证据明确
 标为不可用。上述统计图内嵌 HTML/PDF；启用可视化时两种报告使用相同的随机选取的最多
 5 组图，随机选取后按原始帧顺序排列。每组上方为左右双目原图，下方为同一对图像的
-极线对齐结果；不引用角点检测图或单目去畸变图。抽样使用固定随机种子以便复查，
+极线对齐结果；原图直接嵌入报告，不另存原图目录，也不引用角点检测图或单目去畸变图。抽样使用固定随机种子以便复查，
 极线辅助线为绿色、3 像素宽。PDF 每组单独一页，上原图、下对齐图，图像内嵌且可放大查看，
 分享 PDF 无需附加图片。HTML 分享这些引用图时需一并保留对应的可视化子目录。
 
-以下文件按需保存到 `<名称>/` 子目录。`output.save_diagnostics: true` 保存日志、
-输入校验、可观性、初值报告、判定、运行清单及 task 快照，默认 false；
-`output.save_metrics: true` 单独保留 metrics.json 供离线摘要评价，默认 false。
-`output.export_opencv` 默认 false；观测归档和原图可视化默认 false，各自独立配置。
-`output.export_text: true` 额外交付 `<名称>.results.txt`。内部求解始终执行所需输入校验
-和可观性检查，这些开关只控制保存文件。失败时默认返回错误；启用诊断时保存到
-`<名称>_failed/`，不会覆盖已有成功结果。
+以下文件按需保存到 `<名称>/` 子目录。各开关只控制生成或交付，不改变求解问题：
+
+| output 配置 | 直接控制的交付文件／行为 |
+|---|---|
+| `save_diagnostics` | 保留本次已经产生的 `assessment.json`、`task_resolved.yaml`、`validation.json`、`stdout.log`、`stderr.log`、`initialization_report.yaml`、`observability.yaml`、`run_manifest.json` 等可用诊断；具体文件取决于任务和到达的阶段；它不生成观测、图片或 OpenCV 导出 |
+| `save_metrics` | `<名称>/metrics.json`；关闭且 `save_diagnostics: false` 时不交付该文件 |
+| `export_text` | `<名称>.results.txt`；结果 YAML、HTML、PDF 不受此开关影响 |
+| `archive_observations` | `<名称>/observations/` 下可重算的帧、view、角点、残差与清单；不创建 `visualizations/` |
+| `archive_selection_history` | 在观测归档中增加筛选／拒绝证据和 `selection_events.csv.gz`；必须同时开启 `archive_observations` |
+| `copy_used_images` | `<名称>/images/<相机ID>/<源序号>.png`；复制最终使用的原图 |
+| `export_opencv` | `<名称>/opencv/<相机ID>.yaml`；多目时另有相邻双目 `<左ID>_<右ID>.yaml` |
+| `export_poses` | 任务支持且有位姿证据时交付 `<名称>/poses.csv` |
+| `visualizations.enabled` | `<名称>/visualizations/` 下的角点、单目去畸变和双目对齐图；报告所需双目原图直接嵌入 HTML/PDF，不另存目录；生成时仍需原始图片可读取或已复制 |
+| `verbose` | 原生入口详细终端输出；不对应一个独立文件，只有保存诊断时日志才会被交付 |
+| `show_extraction` / `extraction_stepping` | 角点提取窗口与逐帧交互行为；不对应输出文件，并会改变运行方式和耗时 |
+| `interactive_report` | 是否弹出报告交互图窗；HTML/PDF 始终生成 |
+| `evaluation_pairing_tolerance_s` | 仅 Camera–IMU 后处理建立左右观测配对，可能改变相关 metrics、结果质量字段和报告；不单独生成文件 |
+| `rectification` | 后处理共用的双目校正设置，影响 Alignment RMS、双目对齐图及双目 OpenCV 的 R1/R2/P1/P2/Q；不影响求解和每目 OpenCV K/D |
+| `assessment` | 参考评级和业务规则写入 HTML/PDF、文本摘要和内存评价结果；`assessment.json` 仅在保存诊断时单独交付；结果 YAML 的 RMS/alignment 质量字段不依赖业务判定规则 |
+
+`export_opencv` 与 `rectification` 有部分关联：每目 K/D 文件只由最终相机参数决定；相邻
+双目文件中的 R1/R2/P1/P2/Q 使用 `rectification`。关闭 `export_opencv` 后，Alignment RMS
+和双目对齐图仍使用同一组 `rectification` 参数。`archive_observations` 与
+`visualizations.enabled` 相互独立；前者保存数值证据，后者读取图片并渲染 JPG。
+内部求解始终执行所需输入校验和可观性检查，这些开关只控制保存文件。失败时默认返回
+错误；启用诊断时保存到 `<名称>_failed/`，不会覆盖已有成功结果。
 
 离线评价示例：
 
@@ -175,24 +194,28 @@ kalibr-noros evaluate --run output/camera_calibration_cam0_cam1.yaml --output-di
 不能改变角点配对或校正参数。两者都未保存时明确提示缺少证据。证据子目录中的
 `.inventory.json` 仅用于检查安全覆盖；不要手工添加文件后强制覆盖整个子目录。
 
+`evaluate` 不读取一组新的测试图像。要用独立目录测试集固定验证已有双目 K/D/T，使用
+`kalibr-noros verify cameras`；它输出每目 RMS、双目综合 RMS、Alignment RMS、基线、
+参考评级及逐帧证据。详见[固定参数验证与标定诊断](FIXED_CAMERA_VALIDATION_ZH.md)。
+
 ### 可选文件含义
 
 | 文件 | 含义与使用场景 |
 |---|---|
 | <名称>.yaml | 最终数值参数；双目包含内参、畸变和相机间变换，Camera–IMU 另含 T_cam_imu、时间偏移和 IMU 参数；下游读取此文件 |
-| results.txt | 人可读的标定结果和误差摘要 |
-| metrics.json | 可量化的重投影、双目校正、IMU 残差、bias 及可用优化状态；包含总体和逐帧统计 |
-| assessment.json | 根据显式规则判定 pass/fail/not_evaluated；参考评级独立保存，不能等同生产验收 |
-| report.html | 浏览器查看的汇总、指标及图像链接；移动时保留相邻文件夹 |
-| report.pdf | 可分享的 PDF 结果报告 |
-| validation.json | 本次标定前的输入结构、分辨率和时间覆盖校验；不是标定精度验收 |
-| task_resolved.yaml | 本次任务快照，含解析后的路径和执行配置 |
-| run_manifest.json | 运行状态、软件版本、输入文档哈希和受管输出清单，用于追溯与安全覆盖 |
-| stdout.log / stderr.log | 内部求解、检测工作进程的标准输出和错误日志；输入早期失败可能没有 |
-| initialization_report.yaml | 使用初值时的初值来源、策略与初始化诊断 |
-| observability.yaml | 启用相应分析时的秩和可观性诊断；不可用不能写成通过 |
-| poses.csv | 显式请求时导出的标定板位姿序列 |
-| timing.json | profile 构建且显式请求时的阶段计时 |
+| <名称>.results.txt | 人可读的标定结果和误差摘要 |
+| <名称>/metrics.json | 可量化的重投影、双目校正、IMU 残差、bias 及可用优化状态；包含总体和逐帧统计 |
+| <名称>/assessment.json | 根据显式规则判定 pass/fail/not_evaluated；参考评级独立保存，不能等同生产验收 |
+| <名称>.report.html | 浏览器查看的汇总、指标及图像链接；移动时保留相邻文件夹 |
+| <名称>.report.pdf | 可分享的 PDF 结果报告 |
+| <名称>/validation.json | 本次标定前的输入结构、分辨率和时间覆盖校验；不是标定精度验收 |
+| <名称>/task_resolved.yaml | 本次任务快照，含解析后的路径和执行配置 |
+| <名称>/run_manifest.json | 运行状态、软件版本、输入文档哈希和受管输出清单，用于追溯与安全覆盖 |
+| <名称>/stdout.log / stderr.log | 内部求解、检测工作进程的标准输出和错误日志；输入早期失败可能没有 |
+| <名称>/initialization_report.yaml | 使用初值时的初值来源、策略与初始化诊断 |
+| <名称>/observability.yaml | 启用相应分析时的秩和可观性诊断；不可用不能写成通过 |
+| <名称>/poses.csv | 显式请求时导出的标定板位姿序列 |
+| <名称>/timing.json | profile 构建且显式请求时的阶段计时 |
 
 ## 5. observations/：可重算的观测证据
 
@@ -220,12 +243,14 @@ CSV，每个单元格按 JSON 编码，保留整数纳秒、数组、布尔值�
 
 | 路径 | 含义 |
 |---|---|
-| visualizations/cam0/corners_N.jpg | cam0 第 N 个源索引对应的角点叠加图：绿色圆为使用角点，红色圆为保留在历史中的未使用角点，蓝色线段连接测量点和预测点，表示像素残差 |
-| visualizations/cam1/corners_N.jpg | cam1 对应的角点与残差图 |
-| visualizations/cam0_cam1/rectified_NNNN.jpg | 去畸变并双目校正后的左右拼接图；绿色、3 像素宽参考线帮助目视检查极线对齐，同一空间点应落在相同极线上 |
+| visualizations/cam0_det/corners_N.jpg | cam0 第 N 个源索引对应的角点叠加图：绿色圆为最终保留角点，红色圆为历史中未使用角点，蓝色线段为测量到预测的像素残差；左上角依次显示检测角点数、过滤后保留角点数、标定板理论总角点数 |
+| visualizations/cam1_det/corners_N.jpg | cam1 对应的角点、残差和三个角点数量 |
+| visualizations/cam0_dist/undistorted_N.jpg | cam0 独立去畸变图；默认 `crop: false` 保留最大视场，可能出现无效黑边 |
+| visualizations/cam1_dist/undistorted_N.jpg | cam1 独立去畸变图；`crop: true` 时缩放到较紧视场，仍保持源图像像素尺寸 |
+| visualizations/cam0_cam1/alignment_NNNN.jpg | 去畸变并双目校正后的左右拼接图；该目录只存对齐结果，绿色、3 像素宽参考线帮助目视检查极线对齐；左上角显示该图对共同有效角点的 Alignment RMS 和角点数 |
 | images/camX/N.png | copy_used_images 显式开启时复制的最终使用图像，便于离线移交；不等于上述带叠加的 JPG |
 | opencv/cam0.yaml、cam1.yaml | OpenCV FileStorage 可读的相机矩阵 K、畸变 D 和模型信息 |
-| opencv/cam0_cam1.yaml | 双目 R/T、R1/R2、P1/P2、Q 等；由 export_opencv 控制 |
+| opencv/cam0_cam1.yaml | 双目 R/T、R1/R2、P1/P2、Q 等；由 `export_opencv` 控制，其中校正矩阵使用 `rectification` |
 
 九参数 `pinhole-opencv-fisheye` 的导出 K 保留 `K[0,1] = fu * alpha`。
 极线指标和校正图按同一 alpha 处理角点与原图，非零 skew 不会被丢弃；
@@ -234,6 +259,10 @@ CSV，每个单元格按 JSON 编码，保留整数纳秒、数组、布尔值�
 radtan 系列的角点反畸变采用最多 100 次迭代、收敛容差 1e-12，避免 OpenCV
 默认五次迭代在强 rational 畸变的边缘点上留下反解误差而污染极线指标。
 这只影响输出评价，不改变标定优化或图像重映射的正向模型。
+
+`visualizations.undistortion.enabled` 默认 true，但只有父级 `visualizations.enabled: true`
+时才生效。`crop` 默认 false；这里的裁剪是通过新相机矩阵缩放视场，输出宽高不变，且
+只影响 `camX_dist` 图，不影响 Alignment RMS、双目对齐图或 OpenCV 导出。
 
 默认展示每相机最多 30 帧、最多 30 对，均匀抽样。展示数量不限制标定或指标的计算
 总体，文件名索引也不是“第 N 张入选图”。Camera–IMU 下图像 RMS 还受连续时间

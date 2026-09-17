@@ -205,6 +205,7 @@ class RunContext:
         camera.setdefault("resolution", frame["resolution"])
         corner_ids = [int(value) for value in observation.getCornersIdx()]
         frame["detected_corner_count"] = len(corner_ids)
+        frame["target_corner_count"] = int(observation.target().size())
         if self.capture_history:
             frame["corners"] = [_corner(observation, index) for index in corner_ids]
         # Keep the object alive: Python ids must not be reused during this run.

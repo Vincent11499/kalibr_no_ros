@@ -36,11 +36,16 @@ flowchart LR
     Evidence --> Report
     Evidence --> Evaluate[离线 evaluate]
     Result --> Evaluate
+    TestData[独立测试集] --> Verify[固定 K/D/T verify cameras]
+    Result --> Verify
 ```
 
 `task.py` 处理路径与执行参数，`validation.py` 检查输入契约；`artifacts.py`
 收集已发生的观测与筛选事件；`evaluation.py` 计算指标和规则判定；`reporting.py`
 生成报告和图像。正式输出不依赖性能诊断开关。
+
+`fixed_camera_validation.py` 处理独立测试集验证。它重新运行标定板检测和逐帧 PnP，
+固定结果中的 K/D/T，不进入 `task.run_task()`，也不调用标定优化器。
 
 ## 2. 坐标、时间与输入
 

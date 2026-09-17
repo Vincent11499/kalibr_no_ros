@@ -431,3 +431,20 @@ ID 表或其他 AprilTag family。
 | `decode_*` | OpenCV `imdecode` 与灰度/位深转换 |
 
 因此报告中的 `bag_read` 是跨后端兼容名称，不表示目录输入内部存在 rosbag。
+
+## 11. 用独立测试集验证固定双目参数
+
+已有双目标定结果需要在另一组目录数据上验证时，使用：
+
+```bash
+kalibr-noros verify cameras \
+  --calibration candidate=/data/result/camera_calibration.yaml \
+  --dataset /data/stereo_test_YYMMDD_hhmm \
+  --target /data/config/aprilgrid.yaml \
+  --output-dir /data/result/verification
+```
+
+该命令固定结果中的内参、畸变和相邻外参，只重新检测测试图像并估计逐帧标定板位姿；
+它不会重新标定相机。可重复传入 `--calibration 标签=路径` 比较多套参数。输出包含每目
+RMS、双目综合 RMS、Alignment RMS、基线、参考评级和逐帧证据。完整公式、参数和
+诊断方法见[固定参数验证与标定诊断](FIXED_CAMERA_VALIDATION_ZH.md)。

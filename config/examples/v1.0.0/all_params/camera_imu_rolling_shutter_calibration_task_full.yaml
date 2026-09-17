@@ -40,15 +40,29 @@ execution: # 运行预算与编译job限制是不同接口。
 output: # 默认交付按新job及传感器ID命名的结果YAML与HTML/PDF。
   save_diagnostics: false # 默认false；true保留输入校验、日志和可观性等诊断。
   save_metrics: false # 默认false；true独立保存metrics.json。
+  export_text: false # 默认false；按需另存人可读results.txt。
   archive_observations: true # 默认false；本例保存逐角点时间、位姿、预测与残差，用于只读重评估。
   archive_selection_history: false # 默认false；启用时需要archive_observations。
+  copy_used_images: false # 默认false；不复制最终使用原图。
   export_opencv: false # 默认false；仅导出光学参数，OpenCV普通校正不补偿逐行运动。
+  export_poses: false # 默认false；按需保存目标位姿CSV。
+  verbose: false # 默认false；关闭原生详细打印。
+  show_extraction: false # 默认false；不显示检测窗口。
+  extraction_stepping: false # 默认false；不逐帧交互检测。
+  interactive_report: false # 默认false；生成报告但不弹出交互图窗。
   evaluation_pairing_tolerance_s: 0.0001 # >=0秒；本例100μs，仅用于输出配对，不改变优化。
   visualizations: # 图片为原图的光学校正，不能标为消除滚动快门后的图像。
     enabled: false # 默认false；按需开启。
     max_frames_per_camera: 30 # 正整数；可视化上限，不限制统计总体。
     max_pairs: 30 # 正整数；双目可视化上限。
     sampling: uniform # 确定性均匀抽样。
+    undistortion:
+      enabled: true # 默认true；父级enabled=true时生成每目独立普通光学去畸变图，不补偿逐行运动。
+      crop: false # 默认false；布尔值；false保留最大视场且可能有黑边，true缩放裁去无效边，输出像素尺寸不变。
+  rectification: # 双目光学评价、对齐图及OpenCV双目标定导出共用；不补偿逐行运动，不影响求解结果。
+    balance: 0.0 # 无量纲，[0,1]；fisheye普通光学校正视场平衡参数。
+    fov_scale: 1.0 # 无量纲，>0；OpenCV fisheye校正视场倍率。
+    size: null # null沿用源尺寸；也可显式[正整数宽,正整数高]，单位像素。
   assessment: # 参考评级与业务判定分开。
     reference_grading: true # 显示参考评级；alignment仍为未补偿行运动的一维光学诊断。
     rules: [] # 空表示未配置生产验收规则。

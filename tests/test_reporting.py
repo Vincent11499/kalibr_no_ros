@@ -6,6 +6,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 import cv2
 import numpy as np
@@ -17,12 +18,14 @@ sys.path.insert(0, str(ROOT / "src" / "python"))
 
 from kalibr_no_ros.evaluation import (
     ReportingError, assess_metrics, compute_metrics, prepare_evaluation_artifacts,
-    rectification_maps, rectified_points, stereo_geometry, validate_output_options,
+    rectification_maps, rectified_points, stereo_geometry, undistortion_maps,
+    validate_output_options,
 )
 from kalibr_no_ros.artifacts import RunContext
 from kalibr_no_ros import opencv_fisheye_io
 from kalibr_no_ros.reporting import (
-    evaluate_run, export_opencv, generate_report, load_archive, write_archive,
+    _alignment_label, _corner_count_label, _draw_image_label, evaluate_run,
+    export_opencv, generate_report, load_archive, write_archive,
 )
 from kalibr_no_ros.version import SCHEMA_VERSION
 
@@ -51,6 +54,7 @@ def synthetic_stereo():
                  "source_timestamp_ns": stamp + index * 1000, "record_timestamp_ns": stamp + index * 1000,
                  "observation_timestamp_ns": stamp + index * 1000,
                  "source_path": "/nonexistent/calibration/image.png", "detection_status": "succeeded",
+                 "detected_corner_count": 4, "target_corner_count": 320,
                  "used": True, "view_id": "view0", "T_camera_target": np.eye(4).tolist(), "corners": corners}
         cameras.append(dict(result, model="pinhole-equi", topic="/cam{}/image_raw".format(index), frames=[frame]))
         results.append(result)
@@ -92,6 +96,17 @@ def synthetic_nine_parameter_stereo(alphas=(0.17, -0.11)):
 
 
 class ReportingTest(unittest.TestCase):
+    def test_corner_count_label_distinguishes_detected_retained_and_target(self):
+        frame = {"detected_corner_count": 9, "target_corner_count": 320,
+                 "corners": [{"used": True}, {"used": False}, {"used": True}]}
+        self.assertEqual(_corner_count_label(frame),
+                         "detected: 9 | retained: 2 | target: 320")
+
+    def test_alignment_label_uses_per_pair_rms_and_corner_count(self):
+        self.assertEqual(_alignment_label({"rms_px": 0.123456789, "count": 40}),
+                         "Alignment RMS: 0.123457 px | corners: 40")
+        self.assertEqual(_alignment_label({}), "Alignment RMS: unavailable")
+
     def test_rational_rectified_points_invert_strong_edge_distortion(self):
         matrix = np.array([[2360., 0., 1920.], [0., 2360., 1080.], [0., 0., 1.]])
         distortion = np.array([6.1, 1.9, 0.00001, -0.00008, -0.03, 6.55, 4.4, 0.2])
@@ -154,6 +169,16 @@ class ReportingTest(unittest.TestCase):
         for side in ("left", "right"):
             for actual, expected in zip(rectification_maps(extended, side), rectification_maps(original, side)):
                 np.testing.assert_array_equal(actual, expected)
+
+    def test_undistortion_maps_are_same_size_and_crop_is_explicit(self):
+        artifacts, _ = synthetic_nine_parameter_stereo()
+        camera = artifacts["cameras"][0]
+        wide = undistortion_maps(camera, crop=False)
+        tight = undistortion_maps(camera, crop=True)
+        for mapping in wide + tight:
+            self.assertEqual(mapping.shape, (480, 640))
+            self.assertTrue(np.all(np.isfinite(mapping)))
+        self.assertFalse(np.array_equal(wide[0], tight[0]))
 
     def test_nine_parameter_managed_opencv_export_roundtrips_skew_and_stereo(self):
         artifacts, calibration = synthetic_nine_parameter_stereo()
@@ -365,6 +390,8 @@ class ReportingTest(unittest.TestCase):
             {"evaluation_pairing_tolerance_s": -1}, {"rectification": {"balance": 1.1}},
             {"rectification": {"fov_scale": 0}}, {"rectification": {"size": [640, True]}},
             {"visualizations": {"max_pairs": 0}}, {"visualizations": {"sampling": "random"}},
+            {"visualizations": {"undistortion": {"enabled": 1}}},
+            {"visualizations": {"undistortion": {"crop": "false"}}},
             {"assessment": {"rules": [{"metric": "cameras.cam0.rms", "max": float("nan")}] }},
             {"assessment": {"rules": [{"metric": "cameras.cam0.rms", "min": 2, "max": 1}] }},
         ]
@@ -490,15 +517,27 @@ class ReportingTest(unittest.TestCase):
             original = root / "run"
             original.mkdir()
             (original / "calibration.yaml").write_text(yaml.safe_dump(calibration))
-            result = generate_report(artifacts, calibration, original,
-                                     {"archive_observations": True, "copy_used_images": True,
-                                      "visualizations": {"enabled": True}, "export_opencv": False})
+            with mock.patch("kalibr_no_ros.reporting._draw_image_label",
+                            wraps=_draw_image_label) as labels:
+                result = generate_report(
+                    artifacts, calibration, original,
+                    {"archive_observations": True, "copy_used_images": True,
+                     "visualizations": {"enabled": True}, "export_opencv": False})
+            self.assertIn("Alignment RMS: 0.000000 px | corners: 4",
+                          [call.args[1] for call in labels.call_args_list])
             self.assertIn("images/cam0/7.png", result["files"])
-            self.assertIn("visualizations/cam0_cam1/rectified_0000.jpg", result["files"])
-            original_pair = cv2.imread(str(original / 'visualizations/cam0_cam1/original_0000.jpg'))
-            self.assertEqual(original_pair.shape, (480, 1280, 3))
-            self.assertTrue(np.all(original_pair == 120))
-            aligned = cv2.imread(str(original / 'visualizations/cam0_cam1/rectified_0000.jpg'))
+            self.assertIn("visualizations/cam0_det/corners_7.jpg", result["files"])
+            self.assertIn("visualizations/cam0_dist/undistorted_7.jpg", result["files"])
+            self.assertIn("visualizations/cam0_cam1/alignment_0000.jpg", result["files"])
+            self.assertTrue(all("/alignment_" in path for path in result["files"]
+                                if path.startswith("visualizations/cam0_cam1/")))
+            self.assertFalse(any("cam0_cam1_raw" in path or "/original_" in path
+                                 for path in result["files"]))
+            self.assertFalse((original / "visualizations/cam0_cam1_raw").exists())
+            report_html = (original / "report.html").read_text()
+            self.assertIn("data:image/jpeg;base64,", report_html)
+            self.assertNotIn("cam0_cam1_raw", report_html)
+            aligned = cv2.imread(str(original / 'visualizations/cam0_cam1/alignment_0000.jpg'))
             # Solid gray input isolates the rendered green guide; test image output,
             # allowing JPEG quantization rather than mirroring drawing calls.
             green = aligned[:, 100, 1].astype(int)
@@ -509,7 +548,7 @@ class ReportingTest(unittest.TestCase):
             image.unlink()
             evaluated = evaluate_run(original, root / "evaluated",
                                      {"visualizations": {"enabled": True}, "export_opencv": False})
-            self.assertIn("camera_calibration_cam0_cam1/visualizations/cam0/corners_7.jpg", evaluated["files"])
+            self.assertIn("camera_calibration_cam0_cam1/visualizations/cam0_det/corners_7.jpg", evaluated["files"])
             self.assertFalse(evaluated["metrics"]["output_diagnostics"])
 
     def test_offline_dataset_override_checks_exact_frame_timestamp(self):
@@ -542,7 +581,7 @@ class ReportingTest(unittest.TestCase):
             (dataset / "dataset.yaml").write_text(yaml.safe_dump(manifest))
             result = evaluate_run(original, root / "evaluated", {"export_opencv": False,
                                   "visualizations": {"enabled": True}}, dataset=dataset)
-            self.assertIn("camera_calibration_cam0_cam1/visualizations/cam0/corners_7.jpg", result["files"])
+            self.assertIn("camera_calibration_cam0_cam1/visualizations/cam0_det/corners_7.jpg", result["files"])
             self.assertFalse(result["metrics"]["output_diagnostics"])
             manifest["dataset_id"] = "wrong_device_260909_1200"
             (dataset / "dataset.yaml").write_text(yaml.safe_dump(manifest))

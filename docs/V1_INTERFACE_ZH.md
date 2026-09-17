@@ -156,7 +156,9 @@ rad/s，accel bias 单位为 m/s²。`axes.x/y/z` 给出采样值的均值、标
 | visualizations.max_frames_per_camera | 30，正整数 | 每相机展示上限，不裁剪指标总体 |
 | visualizations.max_pairs | 30，正整数 | 双目展示上限，不裁剪指标总体 |
 | visualizations.sampling | uniform | 确定性均匀抽样 |
-| rectification.balance | 0.0，无量纲，[0,1] | 校正视场设置；改变可影响像素极线误差 |
+| visualizations.undistortion.enabled | true，布尔 | 父级开启时生成每目独立去畸变图；不影响角点图、标定和指标 |
+| visualizations.undistortion.crop | false，布尔 | false 保留最大视场且允许黑边；true 缩放裁去无效边；输出像素尺寸不变 |
+| rectification.balance | 0.0，无量纲，[0,1] | 双目校正视场设置；共同影响 Alignment RMS、双目对齐图和 OpenCV 双目校正矩阵 |
 | rectification.fov_scale | 1.0，无量纲，>0 | fisheye 校正视场倍率 |
 | rectification.size | null 或 [宽,高] 正整数 px | null 使用源尺寸；改变后不能直接混比像素误差 |
 | assessment.reference_grading | true，布尔 | 独立参考显示等级，不作生产验收 |

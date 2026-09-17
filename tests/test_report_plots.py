@@ -83,9 +83,12 @@ class ReportPlotsTest(unittest.TestCase):
                      "distortion_coeffs": [0., 0., 0., 0.], "reprojection": {"count": 0},
                      "frames": []}}, "stereo_pairs": {}, "imus": {}}
         assessment = {"status": "not_configured", "reference_grading": {"status": "unavailable"}, "rules": []}
+        # Legacy saved pairs remain readable, while new reports receive raw
+        # originals in memory and no longer publish an original-image folder.
         files = ['visualizations/cam0_cam1/rectified_{:04d}.jpg'.format(i) for i in range(12)]
         files += ['visualizations/cam0_cam1/original_{:04d}.jpg'.format(i) for i in range(12)]
-        files += ['visualizations/cam0/corners_0.jpg', 'images/undistorted.jpg']
+        files += ['visualizations/cam0_det/corners_0.jpg',
+                  'visualizations/cam0_dist/undistorted_0.jpg']
         document, pdf = render_reports(metrics, assessment, files)
         import re
         referenced = re.findall(r'<img[^>]+src="(visualizations/[^\"]+)"', document)
@@ -93,7 +96,8 @@ class ReportPlotsTest(unittest.TestCase):
         self.assertEqual(len(set(referenced)), 10)
         self.assertEqual(referenced[1::2], sorted(referenced[1::2]))
         self.assertTrue(all('/rectified_' in path for path in referenced[1::2]))
-        self.assertEqual(referenced[::2], [p.replace('/rectified_', '/original_') for p in referenced[1::2]])
+        self.assertEqual(referenced[::2], [
+            p.replace('/rectified_', '/original_') for p in referenced[1::2]])
         self.assertNotIn('corners_0.jpg', document)
         self.assertNotIn('undistorted.jpg', document)
         self.assertTrue(pdf.startswith(b"%PDF"))
@@ -106,10 +110,12 @@ class ReportPlotsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for i in range(12):
-                for kind, offset in [('original', 0), ('rectified', 30)]:
-                    path = root / 'visualizations/cam0_cam1' / ('{}_{:04d}.jpg'.format(kind, i))
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    cv2.imwrite(str(path), np.full((12, 48, 3), i + offset, dtype=np.uint8))
+                original = root / 'visualizations/cam0_cam1' / ('original_{:04d}.jpg'.format(i))
+                aligned = root / 'visualizations/cam0_cam1' / ('rectified_{:04d}.jpg'.format(i))
+                original.parent.mkdir(parents=True, exist_ok=True)
+                aligned.parent.mkdir(parents=True, exist_ok=True)
+                cv2.imwrite(str(original), np.full((12, 48, 3), i, dtype=np.uint8))
+                cv2.imwrite(str(aligned), np.full((12, 48, 3), i + 30, dtype=np.uint8))
             with mock.patch('kalibr_no_ros.report_plots.stereo_comparison_page', wraps=stereo_comparison_page) as pages:
                 html_with_images, pdf_with_images = render_reports(metrics, assessment, files, output_dir=root)
             self.assertEqual(pages.call_count, 5)

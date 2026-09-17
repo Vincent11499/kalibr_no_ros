@@ -9,6 +9,14 @@
 当前是**按职责分层**，没有物理拆成 `input/`、`solver/`、`output/` 三个目录。
 输入与输出主要在同一个 Python 包中，`task.py` 负责跨层调度。
 
+`src/python` 下三个正式包的边界如下：
+
+| 包 | 职能边界 |
+|---|---|
+| `kalibr_no_ros` | 面向用户的应用层：CLI、task/schema、输入校验、初始化适配、调用原生求解器、收集最终观测，以及结果 YAML、指标、可视化、HTML/PDF 和受管交付 |
+| `kalibr_bag_io` | 数据访问层：在无 ROS 运行环境中识别和读取 ROS1/ROS2 bag 或目录数据集，解码图像、保留整数纳秒时间戳、按 `dataset.yaml` 将传感器 ID 映射到流；不负责标定数学和报告 |
+| `kalibr_runtime` | 执行支持层：detector/optimizer 线程预算、阶段计时与 profile 内存采样；不定义输入 schema、标定残差或输出格式 |
+
 | 部分 | 主要源码位置 | 职责 |
 |---|---|---|
 | 输入 | [kalibr_no_ros](../src/python/kalibr_no_ros/)、[kalibr_bag_io](../src/python/kalibr_bag_io/) | 任务与辅助 YAML、初始化、数据校验、目录/bag 读取、传入原生入口的参数 |
@@ -34,6 +42,7 @@
 | 结果 YAML 的 `rms`、`alignment` | `delivery.py::enrich_result()` | 指标来源在 `evaluation.py`；结果读取在 `validation.py` |
 | YAML 数字精度、数组/矩阵排版 | `task.py::dump_yaml()` 及其 dumper | 序列化往返，不能只比较文本外观 |
 | 指标计算公式或合格判定 | `evaluation.py` | 缺失证据不得作为零值或通过 |
+| 独立测试集固定 K/D/T 验证 | `fixed_camera_validation.py` | CLI 在 `cli.py`；复用 `evaluation.py` 的校正与参考评级 |
 | 角点图、去畸变/极线校正图、绿色线宽 | `reporting.py::create_images()` | 几何计算在 `evaluation.py` |
 | HTML 样式、PDF 排版、报告选哪 5 组图 | `report_plots.py` | HTML/PDF 共用选图，不能分别随机抽取 |
 | 输出开关、哪些文件交给用户 | `evaluation.py::validate_output_options()`、`delivery.py::_destinations()` | 生成文件与保留文件是两个步骤 |
@@ -60,12 +69,16 @@ flowchart TD
     N --> O
     P[已有结果 YAML 与观测归档] --> Q[reporting.evaluate_run]
     Q --> K
+    R[已有结果 YAML 与独立测试集] --> S[fixed_camera_validation.verify_fixed_cameras]
+    S --> T[固定参数验证 JSON 与中文汇总]
 ```
 
 `run_delivery()` 先确定结果名称、检查输出位置，必要时为 Camera–IMU 查找相机结果；
 求解和报告先在临时工作区完成，再由 `publish()` 写入用户输出目录。
 `evaluate_run()` 是独立后处理入口，不调用检测器或优化器，也不重写原标定结果数值。
 图中 `enrich_result()` 是标定运行回填质量字段的步骤；离线评价保留原结果 YAML 字节。
+`verify_fixed_cameras()` 会在新测试集上重新检测角点，但固定已有 K/D/T；它与只读旧证据的
+`evaluate_run()` 不是同一个入口。
 
 ## 3. 输入代码怎样找、怎样改
 
@@ -176,7 +189,7 @@ Camera–IMU 没给 `camera_calibration.path` 时，在输出目录找到唯一�
 | [evaluation.py](../src/python/kalibr_no_ros/evaluation.py) | `compute_metrics()`、`assess_metrics()`、`distribution()` | 重投影、对齐误差、统计量及规则判定，不回馈求解 |
 | 同上 | `stereo_geometry()`、`rectified_points()`、`rectification_maps()` | 双目校正几何、角点变换及图像映射 |
 | [reporting.py](../src/python/kalibr_no_ros/reporting.py) | `write_archive()`、`load_archive()` | 观测 CSV/压缩文件与清单的序列化和读取 |
-| 同上 | `create_images()`、`export_opencv()` | 角点图、原始双目图、校正图及 OpenCV 导出 |
+| 同上 | `create_images()`、`export_opencv()` | `camX_det` 角点图、`camX_dist` 独立去畸变图、双目对齐图、报告内嵌原图及 OpenCV 导出 |
 | 同上 | `generate_report()`、`evaluate_run()` | 标定后输出编排、已有证据的离线评价 |
 | [report_plots.py](../src/python/kalibr_no_ros/report_plots.py) | `report_figures()`、`render_reports()` | Camera system、Estimated poses、Polar/Azimuthal error、Reprojection errors 等图表及 HTML/PDF |
 | 同上 | `_STYLE`、`_summary_sections()`、`_pdf_table_page()`、`stereo_comparison_page()` | HTML 样式、摘要表格、PDF 表格与上下双目图排版 |
@@ -239,7 +252,7 @@ K/D/T 的 `alignment` 不是同一指标。
 当前链路是：
 
 ```text
-create_images(): 生成 original_XXXX 与 rectified_XXXX 图像
+create_images(): 生成 <pair>/alignment_XXXX；最多 5 组原图只在内存中编码
     → render_reports(): 固定随机种子选最多 5 组，再排序
     → HTML: 每组上方双目原图、下方校正图
     → PDF: stereo_comparison_page() 每组一页，上原图、下校正图
@@ -260,8 +273,8 @@ create_images(): 生成 original_XXXX 与 rectified_XXXX 图像
 当前从可用候选中随机抽取并按文件序号排序；单个双目相机对的图像生成序号对应帧顺序。
 如果扩展到多个相机对，要明确按相机对分组还是跨组按时间排序，不能假设路径排序等于全局时间排序。
 
-HTML 的统计图内嵌，但双目原图/校正图使用相对路径引用，转交 HTML 时应保留对应证据目录。
-PDF 内嵌所选图像，可单独转交；保留高分辨率图像会使文件变大。
+HTML/PDF 都内嵌所选双目原图；对齐图仍引用 `<pair>/alignment_XXXX`，转交 HTML 时应
+保留对应可视化目录。PDF 内嵌原图和对齐图，可单独转交；高分辨率图像会使文件变大。
 当前公开报告应改 `report_plots.py`，而非只改原生 `CameraUtils.py` 中旧报告函数。
 
 ### 5.5 示例：新增输出开关或文件

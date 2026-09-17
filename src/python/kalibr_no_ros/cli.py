@@ -70,6 +70,31 @@ def build_parser():
     evaluate.add_argument("--output-dir", required=True)
     evaluate.add_argument("--force", action="store_true")
 
+    verify = commands.add_parser(
+        "verify", help="validate fixed calibration parameters on a new dataset")
+    verification_commands = verify.add_subparsers(
+        dest="verification", required=True)
+    verify_cameras = verification_commands.add_parser(
+        "cameras", help="validate fixed stereo K/D/T on a directory dataset")
+    verify_cameras.add_argument(
+        "--calibration", action="append", required=True,
+        help="repeatable LABEL=calibration-result.yaml (LABEL= may be omitted)")
+    verify_cameras.add_argument("--dataset", required=True)
+    verify_cameras.add_argument("--target", required=True)
+    verify_cameras.add_argument("--output-dir", required=True)
+    verify_cameras.add_argument("--window-half-size-px", type=int, default=2)
+    verify_cameras.add_argument(
+        "--max-displacement-px", type=float, default=1.5 ** 0.5)
+    verify_cameras.add_argument(
+        "--synchronization-tolerance-s", type=float, default=0.0002)
+    verify_cameras.add_argument(
+        "--rectification-balance", type=float, default=0.0)
+    verify_cameras.add_argument(
+        "--rectification-fov-scale", type=float, default=1.0)
+    verify_cameras.add_argument(
+        "--detector-opencv-threads", type=_positive_integer, default=1)
+    verify_cameras.add_argument("--force", action="store_true")
+
     calibrate = commands.add_parser("calibrate", help="run calibration")
     calibration_commands = calibrate.add_subparsers(dest="calibration", required=True)
     cameras = calibration_commands.add_parser("cameras", help="camera calibration")
@@ -262,6 +287,25 @@ def main(argv=None, prefix=None):
                     raise TaskError("evaluation output must be separate from the relocated dataset")
             output = destination
             evaluate_run(source, output, options, dataset=arguments.dataset, force=arguments.force)
+            print(output)
+            return 0
+        if arguments.group == "verify" and arguments.verification == "cameras":
+            from .fixed_camera_validation import verify_fixed_cameras
+            output = Path(arguments.output_dir).expanduser().resolve()
+            verify_fixed_cameras(
+                arguments.calibration,
+                arguments.dataset,
+                arguments.target,
+                output,
+                window_half_size_px=arguments.window_half_size_px,
+                max_displacement_px=arguments.max_displacement_px,
+                synchronization_tolerance_s=(
+                    arguments.synchronization_tolerance_s),
+                rectification_balance=arguments.rectification_balance,
+                rectification_fov_scale=arguments.rectification_fov_scale,
+                detector_opencv_threads=arguments.detector_opencv_threads,
+                force=arguments.force,
+            )
             print(output)
             return 0
         if arguments.group == "calibrate":
