@@ -441,10 +441,22 @@ kalibr-noros verify cameras \
   --calibration candidate=/data/result/camera_calibration.yaml \
   --dataset /data/stereo_test_YYMMDD_hhmm \
   --target /data/config/aprilgrid.yaml \
-  --output-dir /data/result/verification
+  --output-dir /data/result/verification \
+  --visualizations \
+  --max-frames-per-camera 30 \
+  --max-pairs 30
 ```
 
 该命令固定结果中的内参、畸变和相邻外参，只重新检测测试图像并估计逐帧标定板位姿；
 它不会重新标定相机。可重复传入 `--calibration 标签=路径` 比较多套参数。输出包含每目
 RMS、双目综合 RMS、Alignment RMS、基线、参考评级和逐帧证据。完整公式、参数和
 诊断方法见[固定参数验证与标定诊断](FIXED_CAMERA_VALIDATION_ZH.md)。
+
+每次验证同时保留 `fixed_camera_validation.json`，并生成
+`fixed_camera_validation.csv`。CSV 包含每张图像的角点数与重投影 RMS/P95/Max，以及
+每个同步双目图对的综合重投影 RMS/P95/Max 和 Alignment RMS/P95/Max。
+
+开启 `--visualizations` 后，每套 `--calibration` 标签分别输出
+`visualizations/<标签>/cam0_det`、`cam0_dist`、`cam1_det`、`cam1_dist` 和
+`cam0_cam1`。图片仅用于复核测试集角点、单目去畸变和双目极线对齐，不反馈修改固定
+参数或评价指标。

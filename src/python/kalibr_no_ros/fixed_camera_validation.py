@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+import csv
 import json
 import math
 import os
@@ -20,7 +21,13 @@ import time
 
 import numpy as np
 
-from .evaluation import assess_metrics, rectified_points, stereo_geometry
+from .evaluation import (
+    assess_metrics,
+    rectification_maps,
+    rectified_points,
+    stereo_geometry,
+    undistortion_maps,
+)
 from .task import load_yaml, require_document_version
 from .validation import load_cameras, load_target
 from .version import SCHEMA_VERSION, VERSION
@@ -39,8 +46,12 @@ class FixedCameraValidationError(ValueError):
 _SAFE_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}")
 _OUTPUT_FILES = {
     "fixed_camera_validation.json",
+    "fixed_camera_validation.csv",
     "README_ZH.md",
     "run_manifest.json",
+}
+_LEGACY_REQUIRED_OUTPUT_FILES = _OUTPUT_FILES - {
+    "fixed_camera_validation.csv",
 }
 
 
@@ -80,6 +91,19 @@ def combined_reprojection_rms(camera_rows):
     squared_error = sum(float(row["squared_error_px2"]) for row in camera_rows)
     corners = sum(int(row["corner_count"]) for row in camera_rows)
     return math.sqrt(squared_error / corners) if corners else None
+
+
+def _distribution(values):
+    values = np.asarray(values, dtype=float).reshape(-1)
+    values = values[np.isfinite(values)]
+    return {
+        "count": int(values.size),
+        "rms_px": (float(np.sqrt(np.mean(values * values)))
+                   if values.size else None),
+        "p95_px": (float(np.percentile(values, 95))
+                   if values.size else None),
+        "max_px": float(np.max(values)) if values.size else None,
+    }
 
 
 def _native_model(camera):
@@ -186,13 +210,19 @@ def _detect_camera(dataset_path, target_path, camera, window_half_size_px,
                         "native detector returned inconsistent corners for {}"
                         .format(frame["frame_id"]))
                 residual = predicted - measured
+                residual_norms = np.linalg.norm(residual, axis=1)
                 squared = float(np.sum(residual * residual))
                 count = int(measured.shape[0])
+                statistics = _distribution(residual_norms)
                 frame.update(
                     corner_count=count,
-                    rms_px=(math.sqrt(squared / count) if count else None),
+                    rms_px=statistics["rms_px"],
+                    p95_px=statistics["p95_px"],
+                    max_px=statistics["max_px"],
+                    target_corner_count=int(observation.target().size()),
                 )
                 frame["_squared_error_px2"] = squared
+                frame["_residual_norms_px"] = residual_norms
                 frame["_points"] = {
                     int(identifier): point
                     for identifier, point in zip(corner_ids, measured)
@@ -273,6 +303,11 @@ def _stereo_metrics(cameras, detected, tolerance_s, rectification):
             valid &= (points[:, 1] >= 0) & (points[:, 1] < height)
         pair_errors = np.abs(
             (lp[valid] - rp[valid])[:, 1 - disparity_axis])
+        alignment_statistics = _distribution(pair_errors)
+        reprojection_statistics = _distribution(np.concatenate([
+            left_frame["_residual_norms_px"],
+            right_frame["_residual_norms_px"],
+        ]))
         errors.extend(pair_errors.tolist())
         valid_count += int(np.sum(valid))
         outside += int(np.sum(~valid))
@@ -282,11 +317,17 @@ def _stereo_metrics(cameras, detected, tolerance_s, rectification):
             "timestamp_difference_ns": difference_ns,
             "common_corners": len(common),
             "valid_rectified_corners": int(np.sum(valid)),
-            "alignment_rms_px": (
-                float(np.sqrt(np.mean(pair_errors * pair_errors)))
-                if pair_errors.size else None),
+            "stereo_reprojection": reprojection_statistics,
+            "alignment": alignment_statistics,
+            "alignment_rms_px": alignment_statistics["rms_px"],
         })
     values = np.asarray(errors, dtype=float)
+    alignment = _distribution(values)
+    alignment["status"] = (
+        "available" if values.size else "unavailable")
+    alignment["unit"] = "px"
+    alignment["mean_abs_px"] = (
+        float(np.mean(values)) if values.size else None)
     return {
         "status": "available" if values.size else "unavailable",
         "used_pairs": len(pairs),
@@ -296,15 +337,7 @@ def _stereo_metrics(cameras, detected, tolerance_s, rectification):
         "baseline_m": geometry["baseline_m"],
         "translation_m": geometry["T"].tolist(),
         "disparity_axis": geometry["disparity_axis"],
-        "alignment": {
-            "status": "available" if values.size else "unavailable",
-            "count": int(values.size),
-            "unit": "px",
-            "mean_abs_px": float(np.mean(values)) if values.size else None,
-            "rms_px": (
-                float(np.sqrt(np.mean(values * values)))
-                if values.size else None),
-        },
+        "alignment": alignment,
         "pairs": pairs,
     }
 
@@ -408,7 +441,7 @@ def _safe_replace_directory(stage, destination, force):
             }
             if (any(path.is_symlink() for path in entries)
                     or actual != registered | {".inventory.json"}
-                    or registered != _OUTPUT_FILES):
+                    or not _LEGACY_REQUIRED_OUTPUT_FILES.issubset(registered)):
                 raise FixedCameraValidationError(
                     "refusing to replace output with unmanaged entries")
         shutil.rmtree(destination)
@@ -464,6 +497,240 @@ def _readme(report):
     return "\n".join(lines) + "\n"
 
 
+_CSV_FIELDS = [
+    "calibration_label", "record_type", "camera_id", "source_index",
+    "timestamp_ns", "paired_camera_id", "paired_source_index",
+    "paired_timestamp_ns", "timestamp_difference_ns", "corner_count",
+    "paired_corner_count", "reprojection_count", "reprojection_rms_px",
+    "reprojection_p95_px", "reprojection_max_px", "common_corners",
+    "alignment_count", "alignment_rms_px", "alignment_p95_px",
+    "alignment_max_px",
+]
+
+
+def _csv_rows(label, cameras, detected, stereo):
+    rows = []
+    frames_by_id = {}
+    for camera in cameras:
+        camera_id = camera["id"]
+        for frame in detected[camera_id]["frames"]:
+            frames_by_id[frame["frame_id"]] = frame
+            rows.append({
+                "calibration_label": label,
+                "record_type": "camera_frame",
+                "camera_id": camera_id,
+                "source_index": frame["source_index"],
+                "timestamp_ns": frame["source_timestamp_ns"],
+                "corner_count": frame["corner_count"],
+                "reprojection_count": frame["corner_count"],
+                "reprojection_rms_px": frame.get("rms_px"),
+                "reprojection_p95_px": frame.get("p95_px"),
+                "reprojection_max_px": frame.get("max_px"),
+            })
+    for pair in sorted(
+            stereo["pairs"],
+            key=lambda row: (
+                frames_by_id[row["left_frame_id"]]["source_index"],
+                frames_by_id[row["right_frame_id"]]["source_index"])):
+        left = frames_by_id[pair["left_frame_id"]]
+        right = frames_by_id[pair["right_frame_id"]]
+        reprojection = pair["stereo_reprojection"]
+        alignment = pair["alignment"]
+        rows.append({
+            "calibration_label": label,
+            "record_type": "stereo_pair",
+            "camera_id": cameras[0]["id"],
+            "source_index": left["source_index"],
+            "timestamp_ns": left["source_timestamp_ns"],
+            "paired_camera_id": cameras[1]["id"],
+            "paired_source_index": right["source_index"],
+            "paired_timestamp_ns": right["source_timestamp_ns"],
+            "timestamp_difference_ns": pair["timestamp_difference_ns"],
+            "corner_count": left["corner_count"],
+            "paired_corner_count": right["corner_count"],
+            "reprojection_count": reprojection["count"],
+            "reprojection_rms_px": reprojection["rms_px"],
+            "reprojection_p95_px": reprojection["p95_px"],
+            "reprojection_max_px": reprojection["max_px"],
+            "common_corners": pair["common_corners"],
+            "alignment_count": alignment["count"],
+            "alignment_rms_px": alignment["rms_px"],
+            "alignment_p95_px": alignment["p95_px"],
+            "alignment_max_px": alignment["max_px"],
+        })
+    return rows
+
+
+def _write_csv(path, rows):
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=_CSV_FIELDS,
+                                extrasaction="raise")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({
+                field: "" if row.get(field) is None else row.get(field)
+                for field in _CSV_FIELDS
+            })
+
+
+def _uniform(items, maximum):
+    if len(items) <= maximum:
+        return list(items)
+    indices = np.linspace(0, len(items) - 1, maximum).round().astype(int)
+    return [items[int(index)] for index in indices]
+
+
+def _draw_label(image, label):
+    import cv2
+
+    font, scale, thickness, margin = cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2, 8
+    (width, height), baseline = cv2.getTextSize(
+        label, font, scale, thickness)
+    cv2.rectangle(
+        image, (0, 0),
+        (min(image.shape[1] - 1, width + margin * 2),
+         min(image.shape[0] - 1, height + baseline + margin * 2)),
+        (0, 0, 0), cv2.FILLED)
+    cv2.putText(image, label, (margin, margin + height), font, scale,
+                (255, 255, 255), thickness, cv2.LINE_AA)
+
+
+def _write_jpeg(stage, relative, image):
+    import cv2
+
+    destination = stage / relative
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    success, encoded = cv2.imencode(".jpg", image)
+    if not success:
+        raise FixedCameraValidationError(
+            "failed to encode visualization: {}".format(relative))
+    destination.write_bytes(encoded.tobytes())
+    return relative
+
+
+def _color(image):
+    import cv2
+
+    return (cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+            if image.ndim == 2 else image.copy())
+
+
+def _create_visualizations(dataset_path, cameras, detected, stereo, stage,
+                           label, rectification, max_frames_per_camera,
+                           max_pairs, undistortion_crop,
+                           synchronization_tolerance_s):
+    """Save deterministic validation evidence without changing any metric."""
+    import cv2
+    from .datasets import BagImageDatasetReader
+
+    files = []
+    readers = {
+        camera["id"]: BagImageDatasetReader(
+            str(dataset_path), camera["id"])
+        for camera in cameras
+    }
+
+    def read(camera_id, frame):
+        _, image = readers[camera_id].getImage(frame["source_index"])
+        return image
+
+    try:
+        for camera in cameras:
+            camera_id = camera["id"]
+            frames = sorted(
+                (frame for frame in detected[camera_id]["frames"]
+                 if frame["detected"]),
+                key=lambda frame: frame["source_index"])
+            maps = undistortion_maps(camera, crop=undistortion_crop)
+            for frame in _uniform(frames, max_frames_per_camera):
+                source = read(camera_id, frame)
+                corners = _color(source)
+                for point in frame.get("_points", {}).values():
+                    cv2.circle(
+                        corners, tuple(np.rint(point).astype(int)),
+                        3, (0, 200, 0), 1)
+                count = frame["corner_count"]
+                target = frame.get("target_corner_count", "?")
+                _draw_label(
+                    corners,
+                    "detected: {} | retained: {} | target: {}".format(
+                        count, count, target))
+                files.append(_write_jpeg(
+                    stage,
+                    "visualizations/{}/{}_det/corners_{}.jpg".format(
+                        label, camera_id, frame["source_index"]),
+                    corners))
+                corrected = cv2.remap(
+                    source, *maps, interpolation=cv2.INTER_LINEAR)
+                files.append(_write_jpeg(
+                    stage,
+                    "visualizations/{}/{}_dist/undistorted_{}.jpg".format(
+                        label, camera_id, frame["source_index"]),
+                    corrected))
+
+        left, right = cameras
+        geometry = stereo_geometry(left, right, rectification)
+        maps = [
+            rectification_maps(geometry, side)
+            for side in ("left", "right")
+        ]
+        pair_statistics = {
+            (row["left_frame_id"], row["right_frame_id"]): row
+            for row in stereo["pairs"]
+        }
+        tolerance_ns = round(float(synchronization_tolerance_s) * 1e9)
+        pairs = sorted(
+            _paired_frames(
+                detected[left["id"]]["frames"],
+                detected[right["id"]]["frames"], tolerance_ns),
+            key=lambda row: (row[1]["source_index"], row[2]["source_index"]))
+        pairs = [row for row in pairs if (
+            row[1]["frame_id"], row[2]["frame_id"]) in pair_statistics]
+        for index, (_, left_frame, right_frame) in enumerate(
+                _uniform(pairs, max_pairs)):
+            sources = [
+                read(left["id"], left_frame),
+                read(right["id"], right_frame),
+            ]
+            corrected = [
+                cv2.remap(source, *mapping, interpolation=cv2.INTER_LINEAR)
+                for source, mapping in zip(sources, maps)
+            ]
+            canvas = np.hstack([_color(image) for image in corrected])
+            if geometry["disparity_axis"] == "x":
+                step = max(1, canvas.shape[0] // 12)
+                for coordinate in range(0, canvas.shape[0], step):
+                    cv2.line(canvas, (0, coordinate),
+                             (canvas.shape[1] - 1, coordinate),
+                             (0, 255, 0), 3)
+            else:
+                width = geometry["size"][0]
+                step = max(1, width // 12)
+                for coordinate in range(0, width, step):
+                    for offset in (0, width):
+                        cv2.line(canvas, (coordinate + offset, 0),
+                                 (coordinate + offset,
+                                  canvas.shape[0] - 1),
+                                 (0, 255, 0), 3)
+            statistics = pair_statistics[
+                (left_frame["frame_id"], right_frame["frame_id"])]
+            value = statistics["alignment_rms_px"]
+            text = ("Alignment RMS: {:.6f} px | corners: {}".format(
+                value, statistics["valid_rectified_corners"])
+                if value is not None else "Alignment RMS: unavailable")
+            _draw_label(canvas, text)
+            files.append(_write_jpeg(
+                stage,
+                "visualizations/{}/{}_{}"
+                "/alignment_{:04d}.jpg".format(
+                    label, left["id"], right["id"], index),
+                canvas))
+    finally:
+        for reader in readers.values():
+            reader.close()
+    return files
+
+
 def verify_fixed_cameras(calibrations, dataset, target, output_dir, *,
                          window_half_size_px=2,
                          max_displacement_px=math.sqrt(1.5),
@@ -471,6 +738,10 @@ def verify_fixed_cameras(calibrations, dataset, target, output_dir, *,
                          rectification_balance=0.0,
                          rectification_fov_scale=1.0,
                          detector_opencv_threads=1,
+                         visualizations=False,
+                         max_frames_per_camera=30,
+                         max_pairs=30,
+                         undistortion_crop=False,
                          force=False):
     """Validate one or more saved stereo calibrations on a new dataset."""
     dataset_path = Path(dataset).expanduser().resolve()
@@ -501,6 +772,18 @@ def verify_fixed_cameras(calibrations, dataset, target, output_dir, *,
     if type(detector_opencv_threads) is not int or detector_opencv_threads < 1:
         raise FixedCameraValidationError(
             "detector_opencv_threads must be a positive integer")
+    if type(visualizations) is not bool:
+        raise FixedCameraValidationError("visualizations must be boolean")
+    if (type(max_frames_per_camera) is not int
+            or max_frames_per_camera < 1):
+        raise FixedCameraValidationError(
+            "max_frames_per_camera must be a positive integer")
+    if type(max_pairs) is not int or max_pairs < 1:
+        raise FixedCameraValidationError(
+            "max_pairs must be a positive integer")
+    if type(undistortion_crop) is not bool:
+        raise FixedCameraValidationError(
+            "undistortion_crop must be boolean")
 
     import cv2
     cv2.setNumThreads(detector_opencv_threads)
@@ -527,10 +810,18 @@ def verify_fixed_cameras(calibrations, dataset, target, output_dir, *,
                 "size": None,
             },
             "detector_opencv_threads": detector_opencv_threads,
+            "visualizations": {
+                "enabled": visualizations,
+                "max_frames_per_camera": max_frames_per_camera,
+                "max_pairs": max_pairs,
+                "undistortion_crop": undistortion_crop,
+            },
         },
         "camera_ids": None,
         "results": {},
     }
+    visualization_inputs = {}
+    csv_rows = []
     for label, calibration_path in calibration_specs:
         _, cameras = _load_calibration(calibration_path, dataset_path)
         camera_ids = [camera["id"] for camera in cameras]
@@ -573,19 +864,39 @@ def verify_fixed_cameras(calibrations, dataset, target, output_dir, *,
             "cameras": public_cameras,
             "stereo_combined_rms_px": combined_reprojection_rms(
                 detected.values()),
+            "stereo_reprojection": _distribution(np.concatenate([
+                frame["_residual_norms_px"]
+                for camera in cameras
+                for frame in detected[camera["id"]]["frames"]
+                if frame["detected"]
+            ])),
             "stereo": stereo,
             "assessment": assessment,
         }
+        csv_rows.extend(_csv_rows(label, cameras, detected, stereo))
+        if visualizations:
+            visualization_inputs[label] = (cameras, detected)
     report["wall_seconds"] = time.monotonic() - started
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(
         prefix="." + destination.name + ".", dir=destination.parent))
     try:
+        output_files = set(_OUTPUT_FILES)
+        if visualizations:
+            for label, _ in calibration_specs:
+                cameras, detected = visualization_inputs[label]
+                result = report["results"][label]
+                output_files.update(_create_visualizations(
+                    dataset_path, cameras, detected, result["stereo"],
+                    stage, label, report["method"]["rectification"],
+                    max_frames_per_camera, max_pairs,
+                    undistortion_crop, synchronization_tolerance_s))
         (stage / "fixed_camera_validation.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=2,
                        allow_nan=False) + "\n",
             encoding="utf-8")
+        _write_csv(stage / "fixed_camera_validation.csv", csv_rows)
         (stage / "README_ZH.md").write_text(
             _readme(report), encoding="utf-8")
         manifest = {
@@ -599,14 +910,14 @@ def verify_fixed_cameras(calibrations, dataset, target, output_dir, *,
             },
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "status": "completed",
-            "files": sorted(_OUTPUT_FILES - {"run_manifest.json"}),
+            "files": sorted(output_files - {"run_manifest.json"}),
         }
         (stage / "run_manifest.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2,
                        allow_nan=False) + "\n",
             encoding="utf-8")
         (stage / ".inventory.json").write_text(
-            json.dumps(sorted(_OUTPUT_FILES), indent=2) + "\n",
+            json.dumps(sorted(output_files), indent=2) + "\n",
             encoding="utf-8")
         _safe_replace_directory(stage, destination, force)
     finally:

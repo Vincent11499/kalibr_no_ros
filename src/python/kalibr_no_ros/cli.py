@@ -93,6 +93,16 @@ def build_parser():
         "--rectification-fov-scale", type=float, default=1.0)
     verify_cameras.add_argument(
         "--detector-opencv-threads", type=_positive_integer, default=1)
+    verify_cameras.add_argument(
+        "--visualizations", action="store_true",
+        help="save detected corners, undistorted images, and rectified stereo pairs")
+    verify_cameras.add_argument(
+        "--max-frames-per-camera", type=_positive_integer, default=30)
+    verify_cameras.add_argument(
+        "--max-pairs", type=_positive_integer, default=30)
+    verify_cameras.add_argument(
+        "--undistortion-crop", action="store_true",
+        help="crop invalid borders in per-camera undistorted images")
     verify_cameras.add_argument("--force", action="store_true")
 
     calibrate = commands.add_parser("calibrate", help="run calibration")
@@ -304,6 +314,10 @@ def main(argv=None, prefix=None):
                 rectification_balance=arguments.rectification_balance,
                 rectification_fov_scale=arguments.rectification_fov_scale,
                 detector_opencv_threads=arguments.detector_opencv_threads,
+                visualizations=arguments.visualizations,
+                max_frames_per_camera=arguments.max_frames_per_camera,
+                max_pairs=arguments.max_pairs,
+                undistortion_crop=arguments.undistortion_crop,
                 force=arguments.force,
             )
             print(output)

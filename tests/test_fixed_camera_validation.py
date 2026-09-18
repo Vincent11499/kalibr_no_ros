@@ -5,6 +5,7 @@ from pathlib import Path
 
 from kalibr_no_ros.fixed_camera_validation import (
     FixedCameraValidationError,
+    _distribution,
     _paired_frames,
     _safe_replace_directory,
     combined_reprojection_rms,
@@ -13,6 +14,13 @@ from kalibr_no_ros.fixed_camera_validation import (
 
 
 class FixedCameraValidationTest(unittest.TestCase):
+    def test_distribution_reports_rms_p95_and_max_of_point_norms(self):
+        statistics = _distribution([1.0, 2.0, 3.0, 4.0])
+        self.assertEqual(statistics["count"], 4)
+        self.assertAlmostEqual(statistics["rms_px"], (30.0 / 4.0) ** 0.5)
+        self.assertAlmostEqual(statistics["p95_px"], 3.85)
+        self.assertEqual(statistics["max_px"], 4.0)
+
     def test_combined_rms_uses_corner_weighted_squared_error(self):
         rows = [
             {"squared_error_px2": 4.0, "corner_count": 4},
@@ -66,7 +74,7 @@ class FixedCameraValidationTest(unittest.TestCase):
                 (destination / "user.txt").read_text(encoding="utf-8"),
                 "keep")
 
-    def test_force_replaces_only_exact_managed_inventory(self):
+    def test_force_replaces_legacy_managed_inventory_without_csv(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             destination = root / "output"
@@ -78,6 +86,32 @@ class FixedCameraValidationTest(unittest.TestCase):
             }
             for name in managed:
                 (destination / name).write_text("old", encoding="utf-8")
+            (destination / ".inventory.json").write_text(
+                json.dumps(sorted(managed)), encoding="utf-8")
+            stage = root / "stage"
+            stage.mkdir()
+            (stage / "marker").write_text("new", encoding="utf-8")
+            _safe_replace_directory(stage, destination, True)
+            self.assertEqual(
+                (destination / "marker").read_text(encoding="utf-8"),
+                "new")
+
+    def test_force_accepts_registered_visualization_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "output"
+            image = "visualizations/reference/cam0_det/corners_0.jpg"
+            managed = {
+                "fixed_camera_validation.json",
+                "fixed_camera_validation.csv",
+                "README_ZH.md",
+                "run_manifest.json",
+                image,
+            }
+            for name in managed:
+                path = destination / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("old", encoding="utf-8")
             (destination / ".inventory.json").write_text(
                 json.dumps(sorted(managed)), encoding="utf-8")
             stage = root / "stage"

@@ -30,6 +30,10 @@ class TaskCliTest(unittest.TestCase):
             "--output-dir", "/data/verification",
             "--window-half-size-px", "7",
             "--max-displacement-px", "1",
+            "--visualizations",
+            "--max-frames-per-camera", "12",
+            "--max-pairs", "8",
+            "--undistortion-crop",
         ])
         self.assertEqual(arguments.group, "verify")
         self.assertEqual(arguments.verification, "cameras")
@@ -37,6 +41,10 @@ class TaskCliTest(unittest.TestCase):
             "first=/data/first.yaml", "second=/data/second.yaml"])
         self.assertEqual(arguments.window_half_size_px, 7)
         self.assertEqual(arguments.max_displacement_px, 1.0)
+        self.assertTrue(arguments.visualizations)
+        self.assertEqual(arguments.max_frames_per_camera, 12)
+        self.assertEqual(arguments.max_pairs, 8)
+        self.assertTrue(arguments.undistortion_crop)
 
     def test_result_yaml_renders_matrix_rows_inline(self):
         document = {

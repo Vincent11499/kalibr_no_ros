@@ -18,15 +18,48 @@ kalibr-noros verify cameras \
   --output-dir /path/to/verification \
   --window-half-size-px 7 \
   --max-displacement-px 1 \
-  --synchronization-tolerance-s 0.0001
+  --synchronization-tolerance-s 0.0001 \
+  --visualizations \
+  --max-frames-per-camera 30 \
+  --max-pairs 30
 ```
 
 `--calibration` 可重复。推荐写成 `标签=结果YAML`；省略标签时使用文件名。输出包括：
 
 - `fixed_camera_validation.json`：汇总指标、逐帧 RMS、配对和共同角点数量；
+- `fixed_camera_validation.csv`：每张图像及每个同步双目图对的误差明细；
 - `README_ZH.md`：便于人工检查的汇总表；
 - `run_manifest.json`：软件版本和运行状态；
 - `.inventory.json`：受管输出清单，供 `--force` 安全覆盖时核对。
+
+CSV 使用 `record_type` 区分两类行：
+
+- `camera_frame`：每张相机图像的 `corner_count`，以及二维重投影误差范数的
+  `reprojection_rms_px`、`reprojection_p95_px`、`reprojection_max_px`；检测失败的图像
+  仍保留一行，角点数为 0，误差字段为空。
+- `stereo_pair`：同步左右图的各自角点数、合并两目独立 PnP 重投影残差后的 RMS/P95/Max，
+  以及共同角点在校正域非视差方向上的 Alignment RMS/P95/Max。
+
+P95 使用所有有限逐角点误差范数的线性 95 百分位；Max 为最大逐角点误差。多套参数由
+`calibration_label` 区分。CSV 是 JSON 的表格化明细，原有 JSON 继续完整保留，并增加
+对应的 P95/Max 字段。
+
+`--visualizations` 显式开启测试集证据图，默认关闭，不影响检测、配对和指标。多套参数按
+`--calibration` 标签隔离，目录结构为：
+
+```text
+visualizations/<标签>/
+├── cam0_det/       # 原图角点；左上角显示检测、保留和标定板总角点数
+├── cam0_dist/      # cam0 单目去畸变图
+├── cam1_det/       # cam1 原图角点
+├── cam1_dist/      # cam1 单目去畸变图
+└── cam0_cam1/      # 固定该标签 K/D/T 后的双目极线对齐图及逐对 Alignment RMS
+```
+
+`--max-frames-per-camera` 和 `--max-pairs` 均为正整数，默认 30，采用稳定的时间顺序均匀
+抽样，只限制图片数量，不限制统计使用的数据。单目去畸变默认保留最大视场，可能有黑边；
+传入 `--undistortion-crop` 后缩放并裁去无效边。`cam0_cam1` 使用绿色 3 px 极线，左上角
+显示该图对的 Alignment RMS 和有效共同角点数。
 
 默认 `window_half_size_px=2`、`max_displacement_px=sqrt(1.5)`，保持原生检测默认值。
 验证训练标定时建议显式填写与训练任务相同的两个数值。同步容差默认 0.0002 s；单位是秒。

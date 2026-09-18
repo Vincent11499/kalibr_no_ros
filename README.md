@@ -89,7 +89,9 @@ kalibr-noros convert job
 
 需要在新的目录测试集上固定已有双目 K/D/T 计算每目 RMS、双目综合 RMS 和
 Alignment RMS 时，使用 `kalibr-noros verify cameras`。该命令会重新检测测试图像，
-但不调用标定优化器；参数、公式和输出见
+但不调用标定优化器；显式加入 `--visualizations` 可按参数标签输出测试集角点、单目
+去畸变和双目极线对齐图。验证同时输出 JSON 汇总和逐图像/逐双目图对的 CSV，包含
+重投影与对齐误差的 RMS/P95/Max。参数、公式和输出见
 [固定参数验证与标定诊断](docs/FIXED_CAMERA_VALIDATION_ZH.md)。
 
 滚动快门相机＋IMU 使用独立任务 `camera_imu_rolling_shutter_calibration` 和
