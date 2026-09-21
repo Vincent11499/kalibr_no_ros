@@ -1,0 +1,14 @@
+schema_version: "1.0.0"
+kind: camera_calibration_initialization
+cameras:
+  cam0:
+    intrinsics: [2400.0, 2400.0, 1919.5, 1079.5]
+    distortion_coeffs: [0.0, 0.0, 0.0, 0.0]
+  cam1:
+    intrinsics: [2400.0, 2400.0, 1919.5, 1079.5]
+    distortion_coeffs: [0.0, 0.0, 0.0, 0.0]
+    T_cn_cnm1:
+      - [1.0, 0.0, 0.0, -0.38]
+      - [0.0, 1.0, 0.0, 0.0]
+      - [0.0, 0.0, 1.0, 0.0]
+      - [0.0, 0.0, 0.0, 1.0]

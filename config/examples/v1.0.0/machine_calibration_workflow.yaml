@@ -1,0 +1,5 @@
+schema_version: "1.0.0"
+kind: machine_calibration_workflow
+machine_dir: /path/to/machine-directory
+camera_imu:
+  mode: standard

@@ -1,0 +1,41 @@
+schema_version: "1.0.0"
+kind: calibration_task
+job: camera_calibration
+dataset:
+  type: directory
+  path: __DATASET_PATH__
+target:
+  path: aprilgrid.yaml
+cameras:
+  - id: cam0
+    model: pinhole-equi
+  - id: cam1
+    model: pinhole-equi
+initialization:
+  path: initialization_pinhole_equi.yaml
+  strategy: refine
+calibration:
+  window_half_size_px: 7
+  max_displacement_px: 2.0
+  focal_initialization_min_visible_corner_ratio: 0.75
+  synchronization_tolerance_s: 0.0001
+  shuffle: true
+  freeze_intrinsics: false
+execution:
+  detector_processes: 4
+  optimizer_threads: 4
+  detector_inflight_per_worker: 2
+  detector_opencv_threads: 1
+  profiling_memory_sample_interval_s: 0.25
+output:
+  name: __OUTPUT_NAME__
+  save_diagnostics: true
+  save_metrics: true
+  visualizations:
+    enabled: true
+    sampling: uniform
+    max_frames_per_camera: 30
+    max_pairs: 30
+    undistortion:
+      enabled: true
+      crop: false

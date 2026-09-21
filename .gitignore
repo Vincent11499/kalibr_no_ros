@@ -10,3 +10,7 @@ __pycache__/
 *.egg-info/
 /config/*
 !/config/examples/
+!/config/mechine/
+/config/mechine/*
+!/config/mechine/workflow_v1.0.0/
+!/config/mechine/workflow_v1.0.0/**

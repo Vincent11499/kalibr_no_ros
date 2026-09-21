@@ -16,8 +16,10 @@ cmake --build --preset release --parallel 4
 cmake --install build/release
 ```
 
-默认安装入口为 `install/release/bin/kalibr-noros`。下面示例中的 `kalibr-noros`
-可替换为这个路径，也可将安装的 `bin` 目录加入 PATH 后直接使用。
+安装提供两个入口：产线机器级工作流使用
+`install/release/bin/kalibr-cedarobot`，研发维护与单任务运行使用
+`install/release/bin/kalibr-noros`。下面示例中的命令也可在将安装的 `bin` 目录加入
+PATH 后直接使用。
 
 只提供两种构建，最多使用 4 个并行 job：
 
@@ -43,6 +45,18 @@ cmake --build --preset project-profile --target check --parallel 4
 修改 Python 源码后重新执行对应 `cmake --preset ...`，使构建目录中的包同步。
 
 ## 运行
+
+产线常规操作由开发者提供 `user.yaml`，操作员只运行：
+
+```bash
+kalibr-cedarobot machine --config user.yaml
+```
+
+机器目录只有 `stereo_*` 时先完成双目标定并正常等待；以后加入 `stereo_imu_*` 后重复
+同一命令，程序复用双目结果并继续 Camera–IMU。数据发现、重名处理、revision 和输出
+位置见[机器级一键标定工作流](docs/MACHINE_CALIBRATION_WORKFLOW_ZH.md)。
+
+下面的 `kalibr-noros` 是研发维护与单任务接口。
 
 从[配置示例](config/examples/v1.0.0/README_ZH.md)复制单目、双目或 Camera–IMU
 任务，修改数据路径、标定板和 IMU 参数。示例根目录 YAML 无注释，完整参数说明位于
@@ -130,7 +144,9 @@ Alignment RMS 时，使用 `kalibr-noros verify cameras`。该命令会重新检
 | `config/examples` | 可移植任务与辅助配置 |
 | `tests` | 精简的输入、模型、初始化和输出正确性检查 |
 
-从[文档导航](docs/README_ZH.md)开始；使用见[使用指南](docs/USER_GUIDE_ZH.md)，
+从[文档导航](docs/README_ZH.md)开始；产线使用见
+[机器级一键标定](docs/MACHINE_CALIBRATION_WORKFLOW_ZH.md)和
+[标定 SOP](docs/CALIBRATION_SOP_ZH.md)，底层 task 使用见[使用指南](docs/USER_GUIDE_ZH.md)，
 输出文件见[数据与输出说明](docs/DATASET_WORKFLOW_ZH.md)，模型见
 [模型说明](docs/CAMERA_MODELS_ZH.md)，维护代码见
 [源码导读](docs/SOURCE_CODE_DEEP_DIVE_ZH.md)与

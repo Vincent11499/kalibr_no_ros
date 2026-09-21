@@ -522,7 +522,12 @@ def write_run_manifest(output, *, status, task=None, failure=None,
         if path.is_dir():
             document["directories"].append(relative)
         elif path.name != "run_manifest.json":
-            document["files"].append({"path": relative, "size_bytes": path.stat().st_size, "schema_version": SCHEMA_VERSION})
+            document["files"].append({
+                "path": relative,
+                "size_bytes": path.stat().st_size,
+                "sha256": _sha256(path),
+                "schema_version": SCHEMA_VERSION,
+            })
     destination = output / "run_manifest.json"
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=output, prefix=".manifest-", delete=False) as stream:
         json.dump(document, stream, ensure_ascii=False, indent=2, allow_nan=False)

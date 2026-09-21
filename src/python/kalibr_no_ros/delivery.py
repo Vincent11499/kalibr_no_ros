@@ -178,6 +178,138 @@ def locate_result(source):
     return candidates[0]
 
 
+def inspect_managed_delivery(output, name):
+    """Read-only integrity check for one successfully published delivery.
+
+    This does not decide whether the calibration is suitable for a caller.  It
+    only proves that the named YAML/reports and evidence directory form one
+    intact delivery whose run manifest says ``completed``.
+    """
+    from .task import TaskError, _sha256
+
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,159}', name):
+        raise TaskError('managed delivery name is not a safe filename')
+    output = Path(output).resolve()
+    paths = {
+        'result': output / (name + '.yaml'),
+        'html': output / (name + '.report.html'),
+        'pdf': output / (name + '.report.pdf'),
+        'sidecar': output / name,
+    }
+    for role in ('result', 'html', 'pdf'):
+        path = paths[role]
+        if not path.is_file() or path.is_symlink():
+            raise TaskError(
+                'completed delivery is missing {}: {}'.format(role, path))
+    side = paths['sidecar']
+    if not side.is_dir() or side.is_symlink():
+        raise TaskError('completed delivery sidecar is missing: {}'.format(side))
+    inventory = side / '.inventory.json'
+    if not inventory.is_file() or inventory.is_symlink():
+        raise TaskError('managed delivery inventory is missing: {}'.format(inventory))
+    try:
+        registered = json.loads(inventory.read_text(encoding='utf-8'))
+    except (OSError, ValueError) as error:
+        raise TaskError('invalid managed delivery inventory: {}'.format(error)) from error
+    if (not isinstance(registered, list)
+            or any(not isinstance(value, str) for value in registered)
+            or len(set(registered)) != len(registered)):
+        raise TaskError('managed delivery inventory must be a list of paths')
+    descendants = list(side.rglob('*'))
+    if any(path.is_symlink() for path in descendants):
+        raise TaskError('managed delivery must not contain symlinks: {}'.format(side))
+    actual = {
+        path.relative_to(side).as_posix()
+        for path in descendants if path != inventory
+    }
+    if actual != set(registered):
+        raise TaskError('managed delivery inventory does not match: {}'.format(side))
+
+    manifest_path = side / 'run_manifest.json'
+    task_path = side / 'task_resolved.yaml'
+    if (not manifest_path.is_file() or manifest_path.is_symlink()
+            or not task_path.is_file() or task_path.is_symlink()):
+        raise TaskError('completed delivery lacks workflow provenance')
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError) as error:
+        raise TaskError('invalid delivery run_manifest.json: {}'.format(error)) from error
+    if not isinstance(manifest, dict) or manifest.get('status') != 'completed':
+        raise TaskError('delivery run manifest is not completed')
+    file_records = manifest.get('files')
+    directory_records = manifest.get('directories')
+    delivery_records = manifest.get('delivery_files')
+    if (not isinstance(file_records, list)
+            or not isinstance(directory_records, list)
+            or not isinstance(delivery_records, list)):
+        raise TaskError('delivery run manifest lacks its file inventory')
+    expected_files = {
+        path.relative_to(side).as_posix(): path
+        for path in descendants
+        if path.is_file() and path not in {inventory, manifest_path}
+    }
+    recorded_files = {}
+    for record in file_records:
+        if (not isinstance(record, dict)
+                or not isinstance(record.get('path'), str)
+                or type(record.get('size_bytes')) is not int
+                or record.get('size_bytes') < 0
+                or not isinstance(record.get('sha256'), str)
+                or not re.fullmatch(r'[0-9a-f]{64}', record['sha256'])
+                or record['path'] in recorded_files):
+            raise TaskError('delivery run manifest has an invalid file record')
+        recorded_files[record['path']] = record
+    if set(recorded_files) != set(expected_files) or any(
+            (expected_files[name].stat().st_size != record['size_bytes']
+             or _sha256(expected_files[name]) != record['sha256'])
+            for name, record in recorded_files.items()):
+        raise TaskError('delivery files do not match the run manifest')
+    expected_directories = {
+        path.relative_to(side).as_posix()
+        for path in descendants if path.is_dir()
+    }
+    if (any(not isinstance(value, str) for value in directory_records)
+            or len(set(directory_records)) != len(directory_records)
+            or set(directory_records) != expected_directories):
+        raise TaskError('delivery directories do not match the run manifest')
+
+    expected_delivery = {
+        paths[role].name: paths[role]
+        for role in ('result', 'html', 'pdf')
+    }
+    optional_text = output / (name + '.results.txt')
+    if optional_text.exists() or optional_text.is_symlink():
+        if not optional_text.is_file() or optional_text.is_symlink():
+            raise TaskError(
+                'completed delivery has an invalid text result: {}'.format(
+                    optional_text))
+        expected_delivery[optional_text.name] = optional_text
+    recorded_delivery = {}
+    for record in delivery_records:
+        if (not isinstance(record, dict)
+                or not isinstance(record.get('path'), str)
+                or Path(record['path']).name != record['path']
+                or type(record.get('size_bytes')) is not int
+                or record.get('size_bytes') < 0
+                or not isinstance(record.get('sha256'), str)
+                or not re.fullmatch(r'[0-9a-f]{64}', record['sha256'])
+                or record['path'] in recorded_delivery):
+            raise TaskError(
+                'delivery run manifest has an invalid published file record')
+        recorded_delivery[record['path']] = record
+    if set(recorded_delivery) != set(expected_delivery) or any(
+            (expected_delivery[path].stat().st_size != record['size_bytes']
+             or _sha256(expected_delivery[path]) != record['sha256'])
+            for path, record in recorded_delivery.items()):
+        raise TaskError('published delivery files do not match the run manifest')
+    return {
+        **paths,
+        'manifest_path': manifest_path,
+        'task_resolved': task_path,
+        'manifest': manifest,
+    }
+
+
 def _destinations(stage, output, name, options, failed=False):
     files = {}
     main = {'calibration.yaml': name + '.yaml', 'report.html': name + '.report.html',
@@ -279,9 +411,19 @@ def publish(stage, output, name, options, force=False, failed=False):
             if manifest.is_file():
                 # Inventory is local to the optional evidence directory.
                 value = json.loads(manifest.read_text())
-                value['files'] = [{'path': p.relative_to(side).as_posix(), 'size_bytes': p.stat().st_size, 'schema_version': '1.0.0'}
+                from .task import _sha256
+                value['files'] = [{'path': p.relative_to(side).as_posix(), 'size_bytes': p.stat().st_size, 'sha256': _sha256(p), 'schema_version': '1.0.0'}
                                   for p in side.rglob('*') if p.is_file() and p != manifest]
                 value['directories'] = [p.relative_to(side).as_posix() for p in side.rglob('*') if p.is_dir()]
+                value['delivery_files'] = [
+                    {
+                        'path': p.name,
+                        'size_bytes': p.stat().st_size,
+                        'sha256': _sha256(p),
+                        'schema_version': '1.0.0',
+                    }
+                    for p in sorted(prepared.iterdir()) if p.is_file()
+                ]
                 manifest.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
             entries = sorted(p.relative_to(side).as_posix() for p in side.rglob('*'))
             (side / '.inventory.json').write_text(json.dumps(entries, indent=2) + '\n')

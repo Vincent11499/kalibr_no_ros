@@ -1,5 +1,10 @@
 # 数据输入、配置依赖与输出说明
 
+产线机器目录优先使用
+[`kalibr-cedarobot machine --config user.yaml`](MACHINE_CALIBRATION_WORKFLOW_ZH.md)。该入口
+根据直接子目录名称区分 `stereo_*`、`stereo_imu_*` 和 `stereo_test_*`，但数据流的
+真实映射仍以每个目录内的 `dataset.yaml` 为准。本文件其余部分说明底层数据与输出契约。
+
 ## 1. 目录相机如何选择
 
 目录任务只填写数据集根路径和相机 ID，不需要 topic，也不重复填写相机目录：
@@ -93,6 +98,18 @@ Kalibr 的目录读取、`validate` 和标定前输入校验只读取公共 `dat
 
 ## 4. 命名与精简交付
 
+机器级入口要求输入目录使用以下角色名称：
+
+| 目录名 | 角色 |
+|---|---|
+| `stereo_YYMMDD_hhmm` | 双目相机标定候选 |
+| `stereo_imu_YYMMDD_hhmm` | 双目＋IMU 标定候选 |
+| `stereo_test_YYMMDD_hhmm` | 独立验证数据，不参与自动标定 |
+
+它只扫描 `<设备目录>` 的直接子目录。同一角色只有一个候选时自动选择；多个候选必须由
+开发者在 `user.yaml` 指定，不能按时间戳或 mtime 猜测。只先准备 `stereo_*` 是合法的：
+完成双目后可在未来加入 `stereo_imu_*`，再次运行机器命令继续第二阶段。
+
 多个任务可以使用同一个 `--output-dir`。默认文件名由任务类型与 task 中按顺序排列的
 真实传感器 ID 组成；右目单目标定可以只写 `cameras: [{id: cam1, model: pinhole-equi}]`。
 
@@ -113,7 +130,8 @@ Kalibr 的目录读取、`validate` 和标定前输入校验只读取公共 `dat
       ...
 ```
 
-CLI 显式传入 `--output-dir <设备目录>/result`，各标定任务使用同一个结果根目录。
+机器入口自动使用 `<设备目录>/result`；直接使用底层 CLI 时才需要显式传入
+`--output-dir <设备目录>/result`。各标定任务使用同一个结果根目录。
 启用的观测、可视化、指标及诊断直接归入任务同名子目录，无需在工程内另存一份
 `result/<设备名>/`。目录建立和文件映射由 `delivery.py` 负责；`config/`、`execution/`
 等额外归档若由外层流程保存，也归入对应任务子目录，不代表 CLI 默认都会生成。

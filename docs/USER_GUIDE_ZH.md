@@ -1,10 +1,34 @@
 # Kalibr no-ROS 使用与配置指南
 
-本文只说明日常使用需要修改的内容：任务 YAML、目录数据集、相机模型和运行命令。
+本文说明底层 task YAML、目录数据集、相机模型和运行命令，主要供开发和维护使用。
+产线操作员不需要编辑这些 task，直接使用
+[`kalibr-cedarobot machine`](MACHINE_CALIBRATION_WORKFLOW_ZH.md)。
 算法原理与源码调用链见
 [`SOURCE_CODE_DEEP_DIVE_ZH.md`](SOURCE_CODE_DEEP_DIVE_ZH.md)。四类 calibration task 的全部可配置字段、默认值、
 有效范围和内部算法影响见
 [`TASK_PARAMETERS_ZH.md`](TASK_PARAMETERS_ZH.md)。
+
+## 0. 产线入口与底层入口的边界
+
+产线机器目录使用一条可续跑命令：
+
+```bash
+kalibr-cedarobot machine --config user.yaml
+```
+
+`user.yaml` 由开发者提供。工作流会发现唯一的 `stereo_*` 与 `stereo_imu_*`、生成 task、
+先完成或复用双目结果，再运行用户明确选择的普通或 RS Camera–IMU。当动态数据以后才
+采集时，重复同一命令即可继续。输出固定在机器目录的 `result/`。
+
+以下场景才直接使用本指南中的 `kalibr-noros`：
+
+- 开发者调试某个阶段或模型；
+- 单目、纯视觉 RS 或多目任务不属于当前双目产线 profile；
+- 独立 `verify cameras`、`evaluate` 或格式转换；
+- 根据已生成 task 复现失败。
+
+机器入口的完整数据发现、复用与冲突规则见
+[机器级一键标定工作流](MACHINE_CALIBRATION_WORKFLOW_ZH.md)。
 
 ## 1. 各类 YAML 不要混淆
 

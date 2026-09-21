@@ -25,6 +25,7 @@ cam0 表示左目、cam1 表示右目；单目示例只使用 cam0。
 | `initialization_stereo.yaml` | 双目初值，默认不启用 |
 | `initialization_imu.yaml` | Camera–IMU 初值，默认不启用 |
 | `evaluation.yaml` | 从已归档观测重新生成指标、判定和图像 |
+| `machine_calibration_workflow.yaml` | 机器级入口的最小 `user.yaml`；复制后填写机器目录和 Camera–IMU 模式 |
 
 `all_params/` 中的 `aprilgrid.yaml`、`imu.yaml`、`evaluation.yaml` 保留参数解释与规则示例。
 相机与 Camera–IMU 的 job 分开，不把完整相机标定嵌入 Camera–IMU 任务。

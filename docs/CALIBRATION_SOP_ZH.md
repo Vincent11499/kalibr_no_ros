@@ -1,6 +1,6 @@
 # 产线测试组标定 SOP：双目与双目＋IMU
 
-文档版本：1.0.0；日期：2026-09-11。适用软件：calib_capture 1.0.0、Kalibr no-ROS 1.0.0。
+文档版本：1.0.0；日期：2026-09-21。适用软件：calib_capture 1.0.0、Kalibr no-ROS 1.0.0。
 滚动快门功能对应标定软件 tag `v1.0.0-rolling-shutter`。
 
 适用对象：采集操作员、标定测试员、测试负责人。本文以 `mechine-00`、4K 双目、
@@ -16,12 +16,16 @@
 flowchart TD
     A[核对设备与工单配置] --> B[板端 probe 检查]
     B --> C[停稳采集 stereo 图像]
-    C --> D[固定标定板 整体运动设备 采集 stereo_imu]
-    D --> E[复制完整数据到 PC 并校验]
-    E --> F[双目内参与外参标定]
-    F --> G[检查相机报告与标定板参数]
-    G --> H[引用本机相机结果 运行 IMU 联合标定]
-    H --> I[查看参数 报告 可观性及原图]
+    C --> E[复制已有数据到 PC 并校验]
+    E --> F[运行机器级一键标定]
+    F --> G[检查双目报告与标定板参数]
+    G --> D{是否已有 stereo_imu 数据}
+    D -->|否| W[等待后续采集 不重复双目标定]
+    W --> H[固定标定板 整体运动设备 采集 stereo_imu]
+    D -->|是| R[复用双目结果]
+    H --> X[复制动态数据到 PC 并校验]
+    X --> R
+    R --> I[运行或继续同一命令 完成 IMU 联合标定]
     I --> J{正式限值与人工检查均符合}
     J -->|是| K[复核签字 归档交付]
     J -->|否或证据不足| L[保留本次数据 记录异常 复采或转研发]
@@ -30,13 +34,15 @@ flowchart TD
 | 步骤 | 执行端／责任人 | 完成后必须有 |
 |---|---|---|
 | 工位准备 | 工装维护／测试负责人 | 正确相机模式、软件版本、工单配置和验收限值 |
-| 两类采集 | 板端／操作员 | `stereo_*`、`stereo_imu_*` 正式会话及采集校验报告 |
-| 数据复制 | PC／操作员 | 完整数据目录，左右图像、CSV、`dataset.yaml`、`meta/` |
-| 相机标定 | PC WSL/Linux／测试员 | 本机双目结果 YAML 和 HTML/PDF |
-| IMU 联合标定 | PC WSL/Linux／测试员 | 引用上述双目结果的新结果 YAML 和 HTML/PDF |
+| 分阶段采集 | 板端／操作员 | 已准备阶段的正式会话及采集校验报告；允许先只有 `stereo_*` |
+| 数据复制 | PC／操作员 | 已采集会话的完整目录，图像、CSV、`dataset.yaml`、`meta/` |
+| 机器级标定 | PC WSL/Linux／测试员 | 自动生成并复用双目结果，数据齐全后继续 Camera–IMU |
 | 评估放行 | 测试员＋复核人 | 数值判定、图像检查、异常处置及签字记录 |
 
-仅需双目标定的工单不执行 IMU 采集和 IMU 联合标定。单目任务见第 7.4 节。
+仅需双目标定的工单不执行 IMU 采集和 IMU 联合标定。单目任务见第 8.4 节。
+
+常规产线标定只执行 `kalibr-cedarobot machine --config user.yaml`。本文第 7、8 节保留
+底层 task 与 `kalibr-noros` 命令，供维护人员排障和单阶段复现，不要求操作员逐项配置。
 
 ## 2. 开工前核对
 
@@ -54,7 +60,8 @@ flowchart TD
 
 `tagSpacing=0.3` 是间距与 tag 边长的比值，本文实体间隙为 `0.07×0.3=0.021 m`。
 不要把间隙的米数写入 `tagSpacing`。板尺寸填写错误时，即使重投影误差较小，外参尺度也可能错误。
-仓库通用 `aprilgrid.yaml` 与本文板参数不同，必须按第 6 节填写，不能直接照搬通用板模板。
+仓库通用 `aprilgrid.yaml` 与本文板参数不同，开发者必须在机型 profile 中核准；维护时
+参照第 7.2 节，不能直接照搬通用板模板。
 
 分辨率不同或传感器读出模式不同，应使用各自的机型配置和标定结果。
 `--resolution` **只核验已有输出，不改变相机分辨率**；不匹配时联系工位维护人员处理。
@@ -221,9 +228,34 @@ Kalibr 不检查 `meta/`，但采集追溯、采集端校验及 bag 导出仍需
 目录数据可直接标定，**不需要先导出 bag**。独立 `imu-continuous` 的 Allan 数据不能代替
 具有同步图像的 `camera-imu` 会话；Allan 分析也不会自动产生可直接放行的 IMU 噪声参数。
 
-## 6. PC 准备任务配置
+## 6. PC 运行机器级标定
 
-### 6.1 设置工作路径
+工位维护人员为本机提供 `user.yaml`，并确认其中 `machine_dir`、Camera–IMU 模式和本次
+工单数据选择正确。操作员不编辑 target、IMU 噪声、初始化或底层 task。执行：
+
+```bash
+CALIB_ROOT=/home/gs/kalibr_cedarobo/branch
+"$CALIB_ROOT/install/release/bin/kalibr-cedarobot" machine \
+  --config /path/to/user.yaml
+```
+
+- 只有 `stereo_*` 时，完成双目后显示 `waiting_for_dataset`，退出成功；不要为了等 IMU
+  数据一直保持进程运行。
+- 后续复制 `stereo_imu_*` 后重复同一命令，程序校验并复用双目结果，只执行第二阶段。
+- 同类目录超过一个时不会猜测，联系维护人员在 `user.yaml` 指定目录。
+- 已完成且来源一致时不会重新标定；来源变化时不会覆盖，联系维护人员增加 `revision`。
+- 普通或滚动快门 Camera–IMU 由 `user.yaml` 明确选择，操作员不得根据一次 RMS 切换。
+
+正式参数和报告位于 `DEVICE_DIR/result/`；私有状态和生成 task 位于
+`DEVICE_DIR/result/.kalibr-cedarobot/`。完整规则见
+[机器级一键标定工作流](MACHINE_CALIBRATION_WORKFLOW_ZH.md)。
+
+## 7. 维护接口：手工准备 task 并执行单阶段
+
+以下内容只用于开发者复现、旧工位迁移和排障。产线常规运行不手工复制 task，也不手工
+维护 `camera_calibration.path`。
+
+### 7.1 设置工作路径
 
 以下在 **PC WSL/Linux** 执行，不在板端容器执行：
 
@@ -244,7 +276,7 @@ mkdir -p "$TASK_DIR" "$RESULT_DIR"
 在 `TASK_DIR` 中保存本次配置。下文所有 YAML 中的示例日期和设备路径都必须填写为实际值；
 **YAML 不会展开 shell 的 `$DEVICE_DIR` 等变量**。相对路径以 YAML 所在目录为基准。
 
-### 6.2 标定板与 IMU 配置
+### 7.2 标定板与 IMU 配置
 
 `aprilgrid.yaml`（仅适用于本文实体板，换板必须重核参数）：
 
@@ -271,7 +303,7 @@ tagStartId: 0
 目录输入可省略 `rostopic`。不能将仓库 `imu.yaml` 示例中的数字当作每台设备的测量值；
 没有确认的噪声配置时先联系测试负责人。`model: calibrated` 并不表示程序不再估计 bias。
 
-### 6.3 双目任务
+### 7.3 双目任务
 
 保存为 `stereo_camera_calibration_task.yaml`：
 
@@ -299,10 +331,10 @@ execution:
   optimizer_threads: 4
 ```
 
-然后加入第 6.5 节的 `output` 块。本文的角点精修参数为窗口半径 7 px、最大位移 1 px，
+然后加入第 7.5 节的 `output` 块。本文的角点精修参数为窗口半径 7 px、最大位移 1 px，
 是显式工艺示例，不是软件省略配置时的默认值。操作员不根据某一次 RMS 自行反复调参。
 
-### 6.4 双目＋IMU：按工单选择一种任务
+### 7.4 双目＋IMU：按工单选择一种任务
 
 滚动快门任务保存为 `camera_imu_rolling_shutter_calibration_task.yaml`：
 
@@ -342,7 +374,7 @@ execution:
   optimizer_threads: 4
 ```
 
-加入第 6.5 节 `output` 块并使用本任务的名称。这里 8 μs/行是初值、20 μs/行是搜索上界，
+加入第 7.5 节 `output` 块并使用本任务的名称。这里 8 μs/行是初值、20 μs/行是搜索上界，
 仅为当前设备流程示例，不能通用于其他传感器模式，也不能当作验收区间。
 搜索边界触发或估计与工单范围不符时转研发，不随意扩大范围来获得“成功”。
 
@@ -351,7 +383,7 @@ execution:
 普通任务不能接收该块。两者均保持内参与畸变固定；此配置也固定上一阶段双目外参。
 不得因为普通任务误差较大，就未经机型流程确认切换模型作为放行依据。
 
-### 6.5 每个任务都启用产线复核所需输出
+### 7.5 每个任务都启用产线复核所需输出
 
 把以下块加入每个任务；已存在 `output` 时替换该块，不要创建重复 YAML 键。
 下列开关是本 SOP 显式开启的复核配置，不是软件默认设置。
@@ -382,11 +414,11 @@ output:
 | 滚动快门双目＋IMU | `camera_imu_rolling_shutter_calibration_cam0_cam1_imu0_pinhole_equi` |
 
 `rules: []` 表示尚未配置生产规则，报告会显示 `not_evaluated`；不是合格。
-测试负责人应把确认的数值规则加入配置，见第 9 节。60 仅限制可视化抽样数量，不限制指标统计总体。
+测试负责人应把确认的数值规则加入配置，见第 10 节。60 仅限制可视化抽样数量，不限制指标统计总体。
 
-## 7. PC 按顺序执行标定
+## 8. 维护接口：PC 按顺序执行标定
 
-### 7.1 输入校验与双目标定
+### 8.1 输入校验与双目标定
 
 ```bash
 "$CALIB_BIN" validate --config "$TASK_DIR/stereo_camera_calibration_task.yaml"
@@ -404,7 +436,7 @@ output:
 输入校验不检测角点、不优化，也不判断最终精度。标定成功后先看双目报告，确认板参数、
 内参、图像覆盖和双目几何没有异常，再进入 IMU 阶段。
 
-### 7.2 确认引用，然后执行 IMU 阶段
+### 8.2 确认引用，然后执行 IMU 阶段
 
 核对 `camera_calibration.path` 指向**本机、本次装配、同一分辨率/模式**的双目结果 YAML，
 不是 task、初始化文件或其他机器结果。本 SOP 显式指定路径，避免多个结果时选错。
@@ -430,7 +462,7 @@ output:
 每一步校验通过后才执行下一条。不要把两种 IMU 命令连续运行作为默认生产流程。
 `calibrate` 返回 0 表示任务执行及交付完成，不代表数值规则已经通过；仍须查看报告中的 Assessment。
 
-### 7.3 返工与失败处理
+### 8.3 返工与失败处理
 
 同名结果已存在时程序拒绝覆盖。返工创建新的任务配置目录，给 `output.name` 增加工单或返工
 后缀，并同步修改 IMU 任务引用；保留原结果，不在产线默认命令中添加 `--force`。
@@ -440,16 +472,18 @@ output:
 失败时先记下终端错误；启用本 SOP 的诊断后检查 `result/<任务名称>_failed/` 中实际生成的
 日志和运行状态。部分早期失败没有求解日志。保留失败证据，不能只保留“最好的一次”结果。
 
-### 7.4 可选：左右单目标定
+### 8.4 可选：左右单目标定
 
 复制双目 task，`cameras` 仅保留需要的 `cam0` 或 `cam1`，分别设置独立的 `output.name`
 如 `camera_calibration_cam0_pinhole_equi`、`camera_calibration_cam1_pinhole_equi`。
 运行入口仍是 `calibrate cameras`。单目结果不能替代 IMU 阶段要求的双目相机链结果。
 
-## 8. 在哪里看输出、按什么顺序看
+## 9. 在哪里看输出、按什么顺序看
 
 Windows 中打开：`Q:\File\machine_data\kalibr_no_ros\mechine-00\result`。
-每个任务有同名前缀，按第 6.5 节命名：
+机器入口按数据集、模式和 revision 命名，见
+[机器级一键标定工作流](MACHINE_CALIBRATION_WORKFLOW_ZH.md#5-输出状态与续跑)。
+直接运行底层 task 时按第 7.5 节命名。每个任务都有同名前缀：
 
 | 位置 | 用途 |
 |---|---|
@@ -459,8 +493,9 @@ Windows 中打开：`Q:\File\machine_data\kalibr_no_ros\mechine-00\result`。
 | `<任务名称>/metrics.json` | 总体／逐帧重投影、覆盖、配对、IMU 残差等数值 |
 | `<任务名称>/assessment.json` | 显式规则结果与独立的参考评级 |
 | `<任务名称>/observations/` | 使用了哪些帧、角点、预测、残差和时间；离线重评估证据 |
-| `<任务名称>/visualizations/cam0/`、`cam1/` | `corners_*.jpg`，检查角点位置；绿色圆为使用点，蓝色线段连接观测与预测 |
-| `<任务名称>/visualizations/cam0_cam1/` | 双目原图和去畸变＋极线校正图，具体文件名见目录 |
+| `<任务名称>/visualizations/cam0_det/`、`cam1_det/` | `corners_*.jpg`，检查角点位置；绿色圆为使用点，蓝色线段连接观测与预测 |
+| `<任务名称>/visualizations/cam0_dist/`、`cam1_dist/` | 各目独立去畸变图；是否缩放视场由 task 的 `crop` 控制 |
+| `<任务名称>/visualizations/cam0_cam1/` | 去畸变并极线校正后的左右拼接图；左上角显示该图对 Alignment RMS 和角点数 |
 | `<任务名称>/validation.json` | 标定输入校验；与采集会话的 `meta/validation.json` 不是同一份检查 |
 | `<任务名称>/task_resolved.yaml`、`run_manifest.json` | 本次实际配置、输入来源、软件信息和文件清单 |
 | `<任务名称>/observability.yaml` | 按任务生成的可观性诊断；滚动快门任务执行此分析，普通无初值任务不保证生成 |
@@ -469,7 +504,7 @@ Windows 中打开：`Q:\File\machine_data\kalibr_no_ros\mechine-00\result`。
 子目录由程序管理，不在其中手工塞入签字表或其他文件。人工记录放到设备的独立
 `inspection/<工单号>/` 目录；保留 `.inventory.json` 等受管清单。
 
-### 8.1 先检查结果身份与参数
+### 9.1 先检查结果身份与参数
 
 - 相机 ID、分辨率、模型、输入设备和标定板版本必须正确。
 - 每目 `rms` 为二维重投影 RMS，单位 px；不是米或相对误差百分比。
@@ -479,7 +514,7 @@ Windows 中打开：`Q:\File\machine_data\kalibr_no_ros\mechine-00\result`。
 - 滚动快门 `shutter.line_delay_s` 为带符号秒/行；`first_to_last_row_span_s=(H−1)×abs(line_delay_s)`。
   2160 行的参考行为 1079.5；首末行跨度不是曝光持续时间、帧周期或包含消隐的完整传感器读出周期。
 
-### 8.2 再看完整报告与图像
+### 9.2 再看完整报告与图像
 
 | 报告内容 | 检查方法 |
 |---|---|
@@ -488,20 +523,20 @@ Windows 中打开：`Q:\File\machine_data\kalibr_no_ros\mechine-00\result`。
 | Estimated poses | 检查姿态是否多样、覆盖是否集中；它是估计结果，需结合原图判断 |
 | Polar error／Azimuthal error | 看边缘视角或特定方向是否集中出现大误差 |
 | 五组原图／极线图 | 按帧顺序显示，上方双目原图、下方同一对极线图；看共同角点是否沿同一极线，水平双目不是要求左右 x 相同 |
-| 角点图 | 在 `visualizations/camN` 看标签角点是否贴合，检查模糊、反光、边缘点和异常帧 |
+| 角点图 | 在 `visualizations/camN_det` 看标签角点是否贴合，检查模糊、反光、边缘点和异常帧 |
 | IMU 残差 | gyro 为 rad/s，accel 为 m/s²；核对单位、峰值、时间段及工单限值 |
 | Local observability（若有） | `weakly_observable` 表示仍有弱约束方向，数值满秩不代表所有外参可靠 |
 
 HTML/PDF 不内嵌角点检测图作为五组样本；角点图另在子目录查看。
 极线辅助线为绿色、3 个源图像像素宽。最多五组抽样只是人工辅助，若不足五组，需检查实际
-配对与图像输出状态，不能据此替代全量指标。当前不单独输出每目 `undistorted_*.jpg`，
-去畸变与双目几何校正体现在双目 `rectified_*` 图中。
+配对与图像输出状态，不能据此替代全量指标。启用去畸变可视化时，每目的
+`undistorted_*.jpg` 位于 `camN_dist/`；双目 `cam0_cam1/` 只保存极线对齐结果。
 
 **滚动快门联合标定的重投影使用逐角点时刻；普通极线图仅做光学／双目几何校正，
 没有补偿运动引起的逐行变形。** 固定双目内外参时，联合重投影 RMS 改善而 alignment 不变是可能的，
 两项不能互相代替，也不能用历史某台设备的 7–8 μs 行时间作为所有设备的放行值。
 
-### 8.3 timeshift_cam_imu 怎么解释
+### 9.3 timeshift_cam_imu 怎么解释
 
 `timeshift_cam_imu` 单位为秒，在滚动快门任务中对应**参考行**的整体时间偏移：
 
@@ -534,9 +569,9 @@ HTML/PDF 不内嵌角点检测图作为五组样本；角点图另在子目录�
 不要根据显示的小数位推断时间精度，也不要把 8～9 ms 写成通用放行阈值。
 完整推导、时刻表及边界见[滚动快门时间偏移说明](../docs/ROLLING_SHUTTER_ZH.md#timeshift-cam-imu)。
 
-## 9. 怎么评估与放行
+## 10. 怎么评估与放行
 
-### 9.1 区分三种“通过”
+### 10.1 区分三种“通过”
 
 | 位置 | 状态与含义 | 是否足够放行 |
 |---|---|---|
@@ -559,7 +594,7 @@ Assessment 各状态：`pass`＝所配置规则通过；`fail`＝存在越界；
 总体参考等级取上述项中最差者，缺项显示 incomplete。第二行使用的是 `mean_abs_px`，
 而结果 YAML 的 `alignment` 是 `rms_px`，二者不要混用。
 
-### 9.2 配置正式数值规则
+### 10.2 配置正式数值规则
 
 测试负责人在 task 的 `output.assessment.rules` 或单独 evaluation 配置中填写确认的限值。
 规则字段为 `metric`、`min/max`、`required`；等于 min/max 允许通过。常用指标路径：
@@ -592,7 +627,7 @@ rules:
 物理外参尺寸公差、装配偏差、可观性弱方向等，未被明确配置为数值规则的项目仍需单独检查，
 不能假设 `Assessment: pass` 已覆盖这些内容。
 
-### 9.3 用保存的证据重新评估
+### 10.3 用保存的证据重新评估
 
 在 `TASK_DIR` 保存 `evaluation.yaml`；这是未填写产线规则时可运行的复查配置：
 
@@ -627,7 +662,7 @@ output:
 仅有 `save_metrics` 时只能基于摘要重新判定，不能改配对或校正设置；两种证据都没有则不能离线评价。
 改变参考阈值或删除异常图像后“得到更好等级”不代表硬件精度改善。
 
-### 9.4 工单验收记录表
+### 10.4 工单验收记录表
 
 | 检查项 | 机型正式限值／依据 | 实测值或证据位置 | 结论／复核 |
 |---|---|---|---|
@@ -645,7 +680,7 @@ output:
 
 正式限值未确认时可完成采集、标定和技术复核，记录“待判定”，不能签为产线合格。
 
-## 10. 常见异常处理
+## 11. 常见异常处理
 
 | 现象 | 优先检查与动作 |
 |---|---|
@@ -660,7 +695,7 @@ output:
 | 图像缺失／报告不足五组 | 检查原图路径、配对数、`visualizations.enabled` 与 output diagnostics；缺失不是零误差 |
 | evaluate 没有证据或配置被拒绝 | 检查 observations/metrics、schema 字符串版本及目标文件；有配置文件不等于有观测证据 |
 
-## 11. 交付与封存
+## 12. 交付与封存
 
 1. 保留两套完整原始数据和采集 `meta/`，不得只保留最终 YAML。
 2. 保存本次 task、aprilgrid、IMU 配置、软件 tag/commit、设备信息、采集参数与工单号。
@@ -669,7 +704,7 @@ output:
 5. 确认下游使用的是复核通过版本，并记录实际使用的文件名；固件写入或设备参数下发按独立工序执行。
 6. 封存后不覆盖原记录。采集校验、程序成功和参考等级均在验收表中分别记录。
 
-## 12. 维护与接口依据
+## 13. 维护与接口依据
 
 本 SOP 根据采集工程实际脚本及当前标定代码编写；本次编写未连接板端、部署或执行真实采集。
 具体工位硬件状态需由开工时的探测确认。以下供测试负责人和维护人员查阅，操作员按上文步骤执行即可。
