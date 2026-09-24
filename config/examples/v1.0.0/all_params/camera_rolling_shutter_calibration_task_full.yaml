@@ -64,7 +64,7 @@ output:
   copy_used_images: false # 默认不复制原图。
   export_opencv: false # 只导出静态K/D/T；OpenCV校正不包含逐行运动补偿。
   export_poses: false # 可选保存首行时间参考的目标位姿CSV。
-  verbose: false # 关闭原生详细日志。
+  verbose: false # 默认false；开启后增加终端阶段、参数与耗时信息，不启用原生交互绘图。
   show_extraction: false # 默认不打开检测窗口。
   interactive_report: false # 生成HTML/PDF但不弹窗。
   evaluation_pairing_tolerance_s: 0.0001 # 秒，>=0；只用于输出评价配对。

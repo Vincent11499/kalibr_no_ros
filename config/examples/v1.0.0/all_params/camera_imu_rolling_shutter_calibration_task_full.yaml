@@ -46,7 +46,7 @@ output: # 默认交付按新job及传感器ID命名的结果YAML与HTML/PDF。
   copy_used_images: false # 默认false；不复制最终使用原图。
   export_opencv: false # 默认false；仅导出光学参数，OpenCV普通校正不补偿逐行运动。
   export_poses: false # 默认false；按需保存目标位姿CSV。
-  verbose: false # 默认false；关闭原生详细打印。
+  verbose: false # 默认false；开启后增加终端阶段、参数与耗时信息，不启用原生交互绘图。
   show_extraction: false # 默认false；不显示检测窗口。
   extraction_stepping: false # 默认false；不逐帧交互检测。
   interactive_report: false # 默认false；生成报告但不弹出交互图窗。

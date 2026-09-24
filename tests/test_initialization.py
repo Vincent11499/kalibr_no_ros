@@ -1116,6 +1116,19 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
         self.assertEqual(
             arguments[arguments.index("--solver-mode") + 1], "incremental")
 
+    def test_output_verbose_uses_managed_status_without_native_gui_mode(self):
+        task = {
+            "dataset": {},
+            "cameras": [
+                {"topic": "/cam0", "model": "pinhole-radtan"},
+                {"topic": "/cam1", "model": "pinhole-radtan"},
+            ],
+            "output": {"verbose": True, "interactive_report": False},
+        }
+        arguments = _camera_arguments(task, "bag", "target", {})
+        self.assertNotIn("--verbose", arguments)
+        self.assertIn("--dont-show-report", arguments)
+
     def test_partial_focal_initialization_ratio_is_forwarded_and_validated(self):
         task = {
             "dataset": {},

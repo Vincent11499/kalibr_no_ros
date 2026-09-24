@@ -734,7 +734,8 @@ def _camera_arguments(task, bag, target, overrides, initialization_config=None):
     _flag(arguments, calibration.get("remove_outliers") is False, "--no-outliers-removal")
     _flag(arguments, calibration.get("final_filtering") is False, "--no-final-filtering")
     _flag(arguments, bool(calibration.get("blake_zisserman")), "--use-blakezisserman")
-    _flag(arguments, bool((task.get("output") or {}).get("verbose")), "--verbose")
+    # output.verbose belongs to the managed status channel.  Native --verbose
+    # also opens detector/graph windows and changes extraction threading.
     _flag(arguments, bool((task.get("output") or {}).get("show_extraction")), "--show-extraction")
     _flag(arguments, bool((task.get("output") or {}).get("export_poses")), "--export-poses")
     _flag(arguments, freeze_intrinsics, "--freeze-intrinsics")
@@ -865,7 +866,6 @@ def _rs_camera_arguments(task, bag, target, temporary, overrides,
           "--no-final-filtering")
     _flag(arguments, bool(calibration.get("blake_zisserman")),
           "--use-blakezisserman")
-    _flag(arguments, bool((task.get("output") or {}).get("verbose")), "--verbose")
     _flag(arguments, bool((task.get("output") or {}).get("show_extraction")),
           "--show-extraction")
     _flag(arguments, bool((task.get("output") or {}).get("export_poses")),
@@ -950,7 +950,6 @@ def _native_rs_camera_arguments(task, bag, target, temporary, overrides,
     _append_corner_refinement(arguments, calibration)
     arguments.extend([
         "--max-iter", str(calibration.get("max_iterations", 80))])
-    _flag(arguments, bool((task.get("output") or {}).get("verbose")), "--verbose")
     _flag(arguments, bool((task.get("output") or {}).get("show_extraction")),
           "--show-extraction")
     _flag(arguments, bool(calibration.get("freeze_intrinsics")),
@@ -1035,7 +1034,6 @@ def _imu_arguments(task, bag, target, temporary, overrides,
     _flag(arguments, calibration.get("calibrate_time_offset") is False, "--no-time-calibration")
     _flag(arguments, bool(calibration.get("recover_covariance")), "--recover-covariance")
     _flag(arguments, bool(calibration.get("recompute_camera_chain_extrinsics")), "--recompute-camera-chain-extrinsics")
-    _flag(arguments, bool((task.get("output") or {}).get("verbose")), "--verbose")
     _flag(arguments, bool((task.get("output") or {}).get("show_extraction")), "--show-extraction")
     _flag(arguments, bool((task.get("output") or {}).get("extraction_stepping")), "--extraction-stepping")
     _flag(arguments, bool((task.get("output") or {}).get("export_poses")), "--export-poses")

@@ -48,7 +48,7 @@ output: # 后处理与证据保存，不反馈修改求解问题或最终观测�
   copy_used_images: false # 不复制原图；重新可视化时需要可访问的源数据。
   export_opencv: false # 默认false；按需另存OpenCV相机参数及可用双目校正矩阵。
   export_poses: false # 可选poses.csv；启用后增加序列化。
-  verbose: false # 关闭原生详细打印。
+  verbose: false # 默认false；开启后增加终端阶段、参数与耗时信息，不启用原生交互绘图。
   show_extraction: false # 默认不显示检测窗口，启用会影响运行方式与耗时。
   extraction_stepping: false # 默认不逐帧交互检测。
   interactive_report: false # 生成报告但不弹出交互图窗。
