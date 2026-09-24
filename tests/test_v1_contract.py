@@ -108,6 +108,20 @@ class V1ContractTest(unittest.TestCase):
         self.assertEqual(actual[actual.index('--topics') + 1], 'cam0')
         self.assertEqual(validate_task(self.task_path)['status'], 'passed')
 
+    def test_shuffle_seed_is_removed_and_solver_mode_is_strict(self):
+        self.task["calibration"] = {"shuffle": True, "solver_mode": "incremental"}
+        self.write_inputs()
+        self.assertEqual(validate_task(self.task_path)["status"], "passed")
+        for calibration in (
+                {"shuffle": True, "shuffle_seed": 17},
+                {"solver_mode": "batch"},
+                {"solver_mode": True},
+                {"solver_mode": "full_batch"}):
+            self.task["calibration"] = calibration
+            self.write_inputs()
+            with self.subTest(calibration=calibration):
+                self.assertEqual(validate_task(self.task_path)["status"], "failed")
+
     def test_directory_id_is_checked_even_when_a_topic_is_supplied(self):
         self.manifest['cameras'][0]['id'] = 'different_camera'
         self.write_inputs()
@@ -309,7 +323,7 @@ class V1ContractTest(unittest.TestCase):
         cli_seed["imus"]["imu0"]["gyroscope_bias_rad_s"] = [0.1, -0.2, 0.3]
         cli_seed_path = inputs / "cli_seed.yaml"
         dump_yaml(cli_seed, cli_seed_path)
-        self.task["initialization"] = {"path": "configuration/task_seed.yaml", "strategy": "refine"}
+        self.task["initialization"] = {"path": "configuration/task_seed.yaml"}
         self.task["output"] = {"save_diagnostics": True}
         self.write_inputs()
         task_bytes = self.task_path.read_bytes()
@@ -320,7 +334,7 @@ class V1ContractTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "snapshot boundary"):
                 run_task(self.root / "unused_prefix", self.task_path, output,
                          "camera_imu_calibration", initialization=cli_seed_path,
-                         initialization_strategy="direct", optimizer_threads=2)
+                         optimizer_threads=2)
         relocated = self.root / "relocated" / "task.yaml"
         relocated.parent.mkdir()
         relocated.write_bytes((output / "camera_imu_calibration_cam0_imu0_failed/task_resolved.yaml").read_bytes())
@@ -330,7 +344,7 @@ class V1ContractTest(unittest.TestCase):
         self.assertEqual(load_cameras(task)[0]["topic"], "/cam0/image_raw")
         seed = resolve_initialization(task)
         self.assertEqual(seed["path"], cli_seed_path.resolve())
-        self.assertEqual(seed["strategy"], "direct")
+        self.assertNotIn("strategy", seed)
         self.assertEqual(seed["document"]["camera_imu"]["timeshift_cam_imu_s"]["cam0"], 0.0123)
         self.assertEqual(task["execution"]["optimizer_threads"], 2)
         for value in (task["dataset"]["path"], task["target"]["path"],

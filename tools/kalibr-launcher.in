@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Relocatable entry point for the ROS-free Kalibr application."""
+"""Relocatable entry point for an installed Kalibr no-ROS command."""
 
 import os
 from pathlib import Path
@@ -30,7 +30,7 @@ for candidate in (
     if candidate.is_dir():
         sys.path.insert(0, str(candidate))
 
-from kalibr_no_ros.cli import main
+from @KALIBR_ENTRY_MODULE@ import main
 
 
 if __name__ == "__main__":

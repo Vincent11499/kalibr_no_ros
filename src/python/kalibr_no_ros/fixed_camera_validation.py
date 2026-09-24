@@ -23,6 +23,7 @@ import numpy as np
 
 from .evaluation import (
     assess_metrics,
+    distribution,
     rectification_maps,
     rectified_points,
     stereo_geometry,
@@ -31,6 +32,7 @@ from .evaluation import (
 from .task import load_yaml, require_document_version
 from .validation import load_cameras, load_target
 from .version import SCHEMA_VERSION, VERSION
+from .visualization import draw_image_label, uniform_sample
 
 try:
     from ._build_info import GIT_COMMIT, SOURCE_VARIANT
@@ -94,15 +96,12 @@ def combined_reprojection_rms(camera_rows):
 
 
 def _distribution(values):
-    values = np.asarray(values, dtype=float).reshape(-1)
-    values = values[np.isfinite(values)]
+    statistics = distribution(np.asarray(values, dtype=float).reshape(-1))
     return {
-        "count": int(values.size),
-        "rms_px": (float(np.sqrt(np.mean(values * values)))
-                   if values.size else None),
-        "p95_px": (float(np.percentile(values, 95))
-                   if values.size else None),
-        "max_px": float(np.max(values)) if values.size else None,
+        "count": statistics["count"],
+        "rms_px": statistics["rms_px"],
+        "p95_px": statistics["p95"],
+        "max_px": statistics["max"],
     }
 
 
@@ -573,26 +572,8 @@ def _write_csv(path, rows):
             })
 
 
-def _uniform(items, maximum):
-    if len(items) <= maximum:
-        return list(items)
-    indices = np.linspace(0, len(items) - 1, maximum).round().astype(int)
-    return [items[int(index)] for index in indices]
-
-
-def _draw_label(image, label):
-    import cv2
-
-    font, scale, thickness, margin = cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2, 8
-    (width, height), baseline = cv2.getTextSize(
-        label, font, scale, thickness)
-    cv2.rectangle(
-        image, (0, 0),
-        (min(image.shape[1] - 1, width + margin * 2),
-         min(image.shape[0] - 1, height + baseline + margin * 2)),
-        (0, 0, 0), cv2.FILLED)
-    cv2.putText(image, label, (margin, margin + height), font, scale,
-                (255, 255, 255), thickness, cv2.LINE_AA)
+_uniform = uniform_sample
+_draw_label = draw_image_label
 
 
 def _write_jpeg(stage, relative, image):

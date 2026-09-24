@@ -6,7 +6,6 @@ from contextlib import ExitStack
 import copy
 import csv
 import gzip
-import hashlib
 import io
 import json
 import os
@@ -16,6 +15,8 @@ import tempfile
 import numpy as np
 
 from .version import SCHEMA_VERSION, VERSION
+from .filesystem import atomic_write_bytes, file_sha256
+from .visualization import draw_image_label, uniform_sample
 from .evaluation import (
     ReportingError, assess_metrics, camera_geometry, compute_metrics,
     merged_cameras, paired_frames, stereo_geometry, validate_output_options,
@@ -54,17 +55,7 @@ def _json(value):
     return json.dumps(value, ensure_ascii=False, allow_nan=False, default=_json_default)
 
 
-def _atomic_bytes(path, payload):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix="." + path.name + ".", dir=str(path.parent))
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(payload)
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+_atomic_bytes = atomic_write_bytes
 
 
 def _write_json(path, value):
@@ -99,12 +90,7 @@ def _read_csv_gzip(path):
         return [{key: json.loads(value) for key, value in row.items()} for row in csv.DictReader(stream)]
 
 
-def _sha256(path):
-    digest = hashlib.sha256()
-    with open(path, "rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+_sha256 = file_sha256
 
 
 _FRAME_COLUMNS = ["camera_id", "frame_id", "source_index", "source_timestamp_ns",
@@ -330,20 +316,20 @@ def export_opencv(artifacts, calibration, output_dir, options=None):
     return files, status
 
 
-class _Images:
+class _ImageSource:
     def __init__(self, artifacts, input_dir=None, dataset=None):
-        self.stack = ExitStack()
+        self.contexts = ExitStack()
         self.input_dir = Path(input_dir).resolve() if input_dir else None
         self.dataset = dataset or (artifacts.get("dataset") or {}).get("path")
         self.override = dataset is not None
-        self.reader = None
-        self.streams = {}
+        self.dataset_reader = None
+        self.image_streams = {}
 
     def __enter__(self):
         return self
 
     def __exit__(self, *args):
-        return self.stack.__exit__(*args)
+        return self.contexts.__exit__(*args)
 
     def read(self, camera, frame):
         import cv2
@@ -365,18 +351,20 @@ class _Images:
             return None
         from kalibr_bag_io.factory import open_dataset
 
-        if self.reader is None:
-            self.reader = open_dataset(self.dataset)
+        if self.dataset_reader is None:
+            self.dataset_reader = open_dataset(self.dataset)
         expected_id = frame.get("dataset_id")
-        if expected_id is not None and getattr(self.reader, "dataset_id", None) != expected_id:
+        if (expected_id is not None
+                and getattr(self.dataset_reader, "dataset_id", None) != expected_id):
             raise ReportingError("replacement dataset_id differs from archived observation")
         topic = camera.get("topic", camera.get("rostopic"))
         from kalibr_bag_io.directory import DirectoryReader
-        if isinstance(self.reader, DirectoryReader):
-            topic = self.reader.sensor_topic(camera["id"], "camera")
-        if topic not in self.streams:
-            self.streams[topic] = self.stack.enter_context(self.reader.index_images(topic, grayscale=False))
-        stream = self.streams[topic]
+        if isinstance(self.dataset_reader, DirectoryReader):
+            topic = self.dataset_reader.sensor_topic(camera["id"], "camera")
+        if topic not in self.image_streams:
+            self.image_streams[topic] = self.contexts.enter_context(
+                self.dataset_reader.index_images(topic, grayscale=False))
+        stream = self.image_streams[topic]
         index = frame.get("source_index")
         timestamp = frame.get("source_timestamp_ns")
         if type(index) is not int or index < 0 or index >= len(stream.index):
@@ -389,10 +377,7 @@ class _Images:
         return stream.get(index).image
 
 
-def _uniform(items, maximum):
-    if len(items) <= maximum:
-        return items
-    return [items[int(i)] for i in np.linspace(0, len(items) - 1, maximum).round().astype(int)]
+_uniform = uniform_sample
 
 
 def _corner_count_label(frame):
@@ -418,17 +403,7 @@ def _alignment_label(statistics):
     return "Alignment RMS: {:.6f} px{}".format(value, suffix)
 
 
-def _draw_image_label(pixels, label):
-    import cv2
-
-    font, scale, thickness, margin = cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2, 8
-    (width, height), baseline = cv2.getTextSize(label, font, scale, thickness)
-    cv2.rectangle(pixels, (0, 0),
-                  (min(pixels.shape[1] - 1, width + margin * 2),
-                   min(pixels.shape[0] - 1, height + baseline + margin * 2)),
-                  (0, 0, 0), cv2.FILLED)
-    cv2.putText(pixels, label, (margin, margin + height), font, scale,
-                (255, 255, 255), thickness, cv2.LINE_AA)
+_draw_image_label = draw_image_label
 
 
 def _draw_corner_count_label(pixels, frame):
@@ -464,7 +439,8 @@ def create_images(artifacts, calibration, output_dir, options=None, input_dir=No
         return image
 
     visual = options["visualizations"]
-    with _Images(artifacts, input_dir=input_dir, dataset=dataset) as images:
+    with _ImageSource(
+            artifacts, input_dir=input_dir, dataset=dataset) as images:
         for camera in cameras:
             frames = [frame for frame in camera.get("frames", []) if frame.get("used")]
             if options["copy_used_images"]:

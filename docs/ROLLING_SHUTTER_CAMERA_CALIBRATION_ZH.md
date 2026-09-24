@@ -67,7 +67,259 @@ task schema，并不表示任一具体 YAML 中的后端专用参数都可直接
 求解路径。正式单目／双目／多目 RS 任务使用 `cameras-rs`；只有明确做上游单目
 对照时才使用 `native-rs-cameras`。
 
-## 2. 时间语义
+## 2. `validate` 与 `evaluate` 的作用和边界
+
+### 2.1 `validate`：求解前检查输入
+
+```bash
+kalibr-noros validate \
+  --config camera_rolling_shutter_calibration_task.yaml
+```
+
+`validate` 读取 task、标定板、初始化文件和数据集，但不检测 AprilGrid 角点、不建立
+重投影问题，也不启动任一 RS 优化器。它检查：
+
+- `schema_version`、`kind`、`job` 和字段集合；
+- `dataset.type/path` 与实际 reader 类型是否一致；
+- 目录数据集中的相机 ID、图像路径和时间戳，或 bag 的 topic；
+- 每目是否有入选图像、图像分辨率是否一致、显式分辨率是否匹配；
+- `rolling_shutter` 的键集合是否与 `cameras[].id` 完全一致；
+- `line_delay_s`、`estimate`、`max_abs_line_delay_s` 的类型、范围和关系；
+- 正式 system 后端的 `time_padding_s` 是否覆盖允许的首末行跨度；
+- 初始化文件的版本、模型、相机数量和必要字段。
+
+校验结果打印为 `kind: input_validation` 的 JSON；需要留档时可以使用：
+
+```bash
+kalibr-noros validate \
+  --config camera_rolling_shutter_calibration_task.yaml \
+  --output validation.json
+```
+
+退出码 0 表示结构和时序检查通过，2 表示检查失败。通过不代表能够检测到标定板，也不代表
+运动足以辨识行时间，更不代表优化会收敛、可观性为满秩或结果达到精度要求。
+
+公开的独立 `validate` 命令没有 `--backend` 参数，因此对
+`camera_rolling_shutter_calibration` 按正式 `cameras-rs` 的公共结构和样条支持做检查；它
+不会提前应用 `native-rs-cameras` 的“必须单目、禁止 `export_poses`、只允许部分
+`calibration` 字段”等限制。实际执行 `calibrate native-rs-cameras` 时，CLI 会在解码图像和
+运行求解器之前补做这些 native 专用检查。因此，“独立 `validate` 通过”不等于“同一份
+完整 system 配置可以直接交给 native 后端”。
+
+### 2.2 `evaluate`：利用已有证据重新评价和生成报告
+
+```bash
+kalibr-noros evaluate \
+  --run result/camera_rolling_shutter_calibration_cam0.yaml \
+  --config evaluation.yaml \
+  --dataset /new/location/of/the/same/dataset \
+  --output-dir evaluated
+```
+
+`evaluate` 不重新检测角点、不重新初始化样条、不重新估计 K/D/行时间，也不调用
+`SystemRsCalibrator` 或 `RsCalibrator`。它接受具名结果 YAML，或能够唯一定位结果的运行
+目录，并要求评价输出目录与源结果、替代数据集相互独立。
+
+它有两种证据模式：
+
+| 标定时保存的证据 | `evaluate` 能做什么 | 不能做什么 |
+|---|---|---|
+| `output.archive_observations: true` | 校验归档 checksum；读取最终使用帧、角点、预测、残差、逐角点 RS 时刻和位姿；重新计算指标、判定、HTML/PDF、普通去畸变和双目图 | 不能修改最终预测、轨迹、K/D 或行时间 |
+| 只有 `output.save_metrics: true` | 读取已有 `metrics.json`，修改验收规则并重新生成汇总报告 | 不能改变校正参数和配对容差，不能生成需要角点或原图的可视化 |
+
+`--dataset` 只在原数据移动后为可视化提供**同一数据集**的图像。程序会核对归档中的
+`dataset_id`、帧索引和整数纳秒时间戳，不能用另一组数据替换后冒充离线重评价。
+
+对 RS 结果，归档充分时可以重新汇总：
+
+- 每目最终二维重投影 RMS；
+- 普通光学 Alignment；
+- 双目／多目存在共同角点时的 `rs_compensated_pair_residual`；
+- 新的业务 `assessment.rules` 和参考等级；
+- 报告中的已保存行时间、首末行跨度、可观性摘要和求解器信息。
+
+`evaluate` 复用的是求解时保存的逐角点预测，因此不能用它测试新的行时间初值、固定
+$\tau=0$、反向扫描、不同 knot 密度或另一个 RS 后端。做这些算法对照必须创建新的标定
+运行。
+
+## 3. 两条 RS 命令的实际调用链
+
+`cameras-rs` 与 `native-rs-cameras` 使用相同的公开 job：
+
+```yaml
+job: camera_rolling_shutter_calibration
+```
+
+后端由 CLI 子命令选择，不写入 task：
+
+```text
+kalibr-noros calibrate cameras-rs
+  → cli.py
+  → task.run_task(..., solver_backend=system)
+  → task._rs_camera_arguments()
+  → kalibr_calibrate_rs_camera_system
+  → SystemRsCalibrator
+  → 联合 LM、可观性检查、正式结果
+
+kalibr-noros calibrate native-rs-cameras
+  → cli.py 设置 _rs_solver_backend=native
+  → task.run_task(..., solver_backend=native)
+  → task._native_rs_camera_arguments()
+  → kalibr_calibrate_rs_cameras
+  → RsCalibrator
+  → 原生 DogLeg、adaptive knot、单目对照结果
+```
+
+所以答案是：**是，`native-rs-cameras` 直接调用项目源码中的
+`src/kalibr/calibration/kalibr/python/kalibr_calibrate_rs_cameras`**。CLI 适配层把公开
+task 转换成该脚本的原生参数，包括实际入选帧率、模型、行时间 seed、是否估计行时间、
+检测参数、线程预算和初始化文件；它没有重新实现一套名字相似的求解器。
+
+正式 system 后端对应另一支独立实现
+`kalibr_calibrate_rs_camera_system`/`SystemRsCalibrator`。两者共享底层 aslam 相机表达式、
+连续时间 spline 和 Optimizer2 基础设施，但状态参数化、误差权重、轨迹节点策略、信赖域
+算法和多目能力不同。
+
+## 4. `pinhole-equi` 与 `pinhole-radtan` 单目投影
+
+两种后端对公开模型的映射相同：
+
+| task 模型 | 原生 RS geometry | 内参 | 畸变 |
+|---|---|---|---|
+| `pinhole-equi` | `EquidistantPinholeRs` | $[f_x,f_y,c_x,c_y]$ | $[k_1,k_2,k_3,k_4]$ |
+| `pinhole-radtan` | `DistortedPinholeRs` | $[f_x,f_y,c_x,c_y]$ | $[k_1,k_2,p_1,p_2]$ |
+
+设目标角点在自己的坐标系中为 $\mathbf P_j$，该角点时刻的相机位姿将其转换为：
+
+$$
+\begin{bmatrix}X\\Y\\Z\end{bmatrix}
+= {}^{cam}_{target}\mathbf T(t_{ij})\mathbf P_j,
+\qquad x=\frac XZ,\quad y=\frac YZ.
+$$
+
+`pinhole-radtan` 令 $r^2=x^2+y^2$：
+
+$$
+L(r)=1+k_1r^2+k_2r^4,
+$$
+
+$$
+\begin{aligned}
+x_d &=xL(r)+2p_1xy+p_2(r^2+2x^2),\\
+y_d &=yL(r)+p_1(r^2+2y^2)+2p_2xy.
+\end{aligned}
+$$
+
+`pinhole-equi` 令 $r=\sqrt{x^2+y^2}$、$\theta=\arctan(r)$：
+
+$$
+\theta_d=\theta(1+k_1\theta^2+k_2\theta^4+k_3\theta^6+k_4\theta^8),
+$$
+
+$$
+\begin{bmatrix}x_d\\y_d\end{bmatrix}
+=
+\begin{cases}
+\dfrac{\theta_d}{r}\begin{bmatrix}x\\y\end{bmatrix},&r>0,\\[5pt]
+\begin{bmatrix}x\\y\end{bmatrix},&r=0.
+\end{cases}
+$$
+
+最后都投影为：
+
+$$
+u=f_xx_d+c_x,\qquad v=f_yy_d+c_y.
+$$
+
+Rolling Shutter 并没有改变以上光学投影公式；它改变的是计算
+${}^{cam}_{target}\mathbf T$ 时使用的时间。检测角点为
+$\mathbf z_{ij}=[u_{ij},v_{ij}]^\mathsf T$，两种后端的物理像素残差都可以写成：
+
+$$
+\mathbf e_{ij}
+=\mathbf z_{ij}-
+\pi\!\left(K,D,
+{}^{cam}_{target}\mathbf T(t_{ij})\mathbf P_j\right),
+$$
+
+$$
+t_{ij}=t_i+v_{ij}\tau.
+$$
+
+因此 `pinhole-equi` 与 `pinhole-radtan` 的 RS 求解架构相同，区别只在 $\pi(K,D,\cdot)$
+内部采用角度多项式还是径向－切向畸变。模型选择应由镜头成像特性和独立测试决定，不能
+根据哪个模型把训练 RMS 压得更低就直接认定。
+
+### 4.1 单目 `pinhole-equi` task
+
+```yaml
+schema_version: "1.0.0"
+kind: calibration_task
+job: camera_rolling_shutter_calibration
+dataset:
+  type: directory
+  path: /data/mono_rs_YYMMDD_hhmm
+target:
+  path: aprilgrid.yaml
+cameras:
+  - id: cam0
+    model: pinhole-equi
+rolling_shutter:
+  cam0:
+    line_delay_s: 8.0e-6
+    estimate: true
+    max_abs_line_delay_s: 2.0e-5
+calibration:
+  window_half_size_px: 7
+  max_displacement_px: 1.0
+  max_iterations: 80
+  feature_sigma_px: 1.0
+output:
+  archive_observations: true
+  export_poses: false
+```
+
+正式求解：
+
+```bash
+kalibr-noros calibrate cameras-rs --config mono_equi_rs.yaml --output-dir result
+```
+
+原生对照可直接使用以上精简 task：
+
+```bash
+kalibr-noros calibrate native-rs-cameras --config mono_equi_rs.yaml --output-dir result
+```
+
+### 4.2 单目 `pinhole-radtan` task
+
+配置结构相同，只把模型改为：
+
+```yaml
+cameras:
+  - id: cam0
+    model: pinhole-radtan
+```
+
+如果提供初始化，`distortion_coeffs` 必须严格使用四参数顺序：
+
+```yaml
+cameras:
+  cam0:
+    intrinsics: [fx, fy, cx, cy]
+    distortion_coeffs: [k1, k2, p1, p2]
+```
+
+分别运行：
+
+```bash
+kalibr-noros calibrate cameras-rs --config mono_radtan_rs.yaml --output-dir result
+kalibr-noros calibrate native-rs-cameras --config mono_radtan_rs.yaml --output-dir result
+```
+
+同一输出根目录中，native 对照结果会增加 `native_` 前缀，不覆盖正式 system 结果。
+
+## 5. 时间语义
 
 纯视觉 RS 任务把相机时间戳定义为原图第 0 行的曝光结束时刻。原图角点坐标为
 $(x,y)$，每行时间为 $\tau$，角点使用的时刻为：
@@ -99,7 +351,7 @@ t_center = t_row0 + y_c × tau
 定义一致。Camera–IMU RS 任务还包含跨传感器整体时移，使用它自己的参考行约定，不能把
 两类任务的 timeshift 数字直接互换。
 
-## 3. 正式多目联合模型
+## 6. 正式 `cameras-rs` 的实现原理
 
 `cameras-rs` 为所有相机建立一条共享的连续标定板轨迹，同时联合优化：
 
@@ -158,23 +410,94 @@ knot 网格相对观测的相位，可能使行时间与轨迹出现数值共振
 完整字段、默认值、单位和范围见
 [完整注释示例](../config/examples/v1.0.0/all_params/camera_rolling_shutter_calibration_task_full.yaml)。
 
-## 4. 初始化
+## 7. 初始化
 
 RS 相机任务复用 `camera_calibration_initialization`：
 
 ```yaml
 initialization:
   path: initialization_stereo.yaml
-  strategy: refine
 ```
 
 相机块按 task 列表映射到 cam0、cam1……，相邻外参仍使用 `T_cn_cnm1`，表示前一相机
-到当前相机。`refine` 可只提供部分 K/D 或外参；`direct` 要求每目完整 K/D 和全部相邻
-外参。`freeze_intrinsics: true` 另行控制最终联合求解是否固定 K/D，并要求至少双目与
+到当前相机。可以只提供部分 K/D 或外参，所有值都作为联合求解的起点。
+`freeze_intrinsics: true` 另行控制最终联合求解是否固定 K/D，并要求至少双目与
 完整 K/D seed。初始化文件不包含行时间；行时间只在 task 的 `rolling_shutter` 中配置，
 便于用同一光学初值执行 0、固定和自由行时间对照。
 
-## 5. 与 Kalibr 原生 RS 单目求解器的区别
+## 8. 原生 Kalibr RS 单目实现与异同
+
+### 8.1 正式 `cameras-rs` 的状态与目标函数
+
+单目时，正式 system 问题的活动状态为：
+
+```text
+K、D、有界行时间 latent q、目标位姿 spline 控制点
+```
+
+双目／多目时再增加相邻 `T_cn_cnm1`。标定板三维角点固定，不作为自由 landmark。行时间
+使用：
+
+$$
+\tau=\tau_{max}\tanh(q),
+$$
+
+因此整个优化过程中都有 $|\tau|<\tau_{max}$，且对 $q$ 的 Jacobian 连续。像素协方差固定
+为 `feature_sigma_px² I`，可选 Blake–Zisserman M-estimator。目标函数概念上为：
+
+$$
+J_{system}
+=\sum_{i,j}\rho\!\left(
+\frac{\|\mathbf e_{ij}\|^2}{\sigma_{feature}^2}
+\right)
++J_{motion}^{(2)}.
+$$
+
+$J_{motion}^{(2)}$ 是 spline 的二阶平移和旋转运动先验，用于约束图像间隔和端部，而不是
+行时间先验。求解器使用 Optimizer2、Schur complement、Block Cholesky 和
+Levenberg–Marquardt。可选最终四倍标准差角点过滤会重建问题并重新求解。
+
+完成后，正式后端还会在最终状态上执行只读可观性分析。报告的物理块包括 K、D、相邻
+外参以及 active 的行时间 latent；hard rank 失败不发布成功结果，行时间达到配置范围
+99.5% 也作为不可信边界解拒绝。
+
+### 8.2 原生 `kalibr_calibrate_rs_cameras` 的状态与目标函数
+
+原生单目后端的活动状态为：
+
+```text
+K、D、原生 shutter lineDelay、相机/目标位姿 spline 控制点
+```
+
+它直接使用 RS camera geometry 的 `shutterDesignVariable`。公开包装器总是把 task 中的
+`line_delay_s` 显式传给原生脚本；若绕过包装器且不提供 seed，上游默认才会用
+`1 / (实际入选帧率 × 图像高度)` 初始化。
+
+原生行时间是无界标量。`max_abs_line_delay_s` 只在求解完成后检查：
+
+$$
+|\hat\tau|\leq\tau_{max}.
+$$
+
+它不等价于 system 后端的 $\tau_{max}\tanh(q)$，优化中的 DogLeg 试探值可能越过最终
+允许范围。为保证时间表达式稀疏模式和 spline 端部支持，包装器保留固定时间 buffer 和
+padding，但不向 $\tau$ 增加先验。
+
+原生每个 RS 角点使用 `reprojectionErrorAdaptiveCovariance`。该误差项根据连续轨迹下的
+局部图像运动调整有效协方差；目标函数仍包含 spline motion prior，但权重、误差标准化和
+正式 system 后端不同。求解器使用 Optimizer2、Schur complement、Block Cholesky 和
+DogLeg。初次联合求解后，`ReprojectionErrorKnotSequenceUpdateStrategy` 根据残差决定是否
+重排 spline knot；每次变化后重建完整问题并再次求解，直至无需更新或达到次数限制。
+
+原生后端没有 system 后端等价的多目外参状态、最终角点四倍标准差过滤、Blake–Zisserman
+开关和 reduced-Fisher 可观性输出。它仍会重新计算未加权二维像素残差，用于与正式后端
+统一报告：
+
+$$
+RMS=\sqrt{\frac1N\sum_{i,j}\|\mathbf e_{ij}\|^2}.
+$$
+
+### 8.3 共同点与差异
 
 | 项目 | `cameras-rs` | `native-rs-cameras` |
 |---|---|---|
@@ -184,6 +507,35 @@ initialization:
 | 像素误差 | 固定 `feature_sigma_px`，可选鲁棒核 | 保留原生随运动自适应协方差 |
 | 轨迹 | 观测率感知的共享样条，分段二阶运动先验 | 原生自适应 knot、运动先验与 DogLeg |
 | 输出 | 多目正式结果、真实逐角点残差和可观性 | 单目结构化 K/D/tau/RMS；原生 Hessian 秩报告不可用 |
+
+共同点包括：
+
+- 同一公开 task schema、目录/bag reader、AprilGrid 和亚像素检测参数；
+- 同一 `pinhole-equi`/`pinhole-radtan` 底层光学投影与解析 Jacobian；
+- 每个角点用自己的 $t_i+v\tau$ 查询连续轨迹；
+- K、D、行时间和轨迹在同一个非线性问题中联合调整；
+- 均使用 Optimizer2 基础设施并在输出时重算未加权物理像素 RMS；
+- 都可以固定行时间，并可从相同 K/D seed 开始联合优化。当前公开 task 只允许至少双目时
+  使用 `freeze_intrinsics: true`；单目 system/native 对照不能通过公开 CLI 固定 K/D。
+
+不能直接逐数值比较的原因包括：
+
+- LM 与 DogLeg 的更新路径不同；
+- 固定像素协方差与 adaptive covariance 的代价权重不同；
+- system 使用观测率感知的固定 spline 网格，native 会 adaptive knot；
+- 行时间有界 latent 与原生无界标量的参数化不同；
+- 运动先验、端部支持和异常点处理不同。
+
+因此两者相同输入下得到不同的 K/D/$\tau$/RMS，并不自动表示某个实现错误。严谨的公开
+单目对照必须固定帧集合、角点参数、相机模型、K/D seed、行时间 seed，并让两边使用相同
+的活动参数；当前两边的 K/D 都参与联合估计。随后同时检查：
+
+1. 最终使用帧与角点数；
+2. K、D 和 $\tau$ 差异；
+3. 未加权逐角点 RMS，而不只比较内部 objective；
+4. 行时间是否依赖 knot 密度、时间段或初值；
+5. 留出数据和独立动态序列，而不只看训练集；
+6. system 的可观性和 native 的范围/收敛状态。
 
 临时入口直接包装
 `src/kalibr/calibration/kalibr/python/kalibr_calibrate_rs_cameras`。本工程只移除了它对
@@ -205,7 +557,7 @@ RMS = sqrt(mean(dx² + dy²))
 单目对照应固定相同帧、角点检测参数、K/D seed 和行时间 seed，并同时比较 K/D、tau、RMS、
 使用帧数及范围状态。
 
-## 6. 输出指标如何解释
+## 9. 输出指标如何解释
 
 每目结果包含真实 `rms` 和 `shutter`；相邻外参包含 `alignment`。其中：
 
@@ -235,7 +587,7 @@ Camera–IMU 可以从纯视觉 RS 结果读取 K/D/T 和相邻外参，但结�
 保持全局快门残差；需要逐行时间模型时必须选择 `imu-camera-rs`，并在它自己的 task 中
 显式配置完整 `rolling_shutter`。这样不会因引用了带快门元数据的结果而静默切换算法。
 
-## 7. 数据要求和结论边界
+## 10. 数据要求和结论边界
 
 静止数据适合建立稳定 K/D/T 参考，却几乎不能单独辨识行时间。RS 数据应包含不同方向的
 平移和旋转、充分的图像行覆盖、距离与倾角变化，并尽量避免严重运动模糊。低频保存或再次

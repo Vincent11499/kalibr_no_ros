@@ -19,7 +19,6 @@ cameras: # 列表顺序定义 cam0、cam1…及相邻外参方向。
 
 # initialization: # 与普通相机任务共用 camera_calibration_initialization。
 #   path: ../initialization_stereo.yaml # 可包含每目K/D及相邻T_cn_cnm1。
-#   strategy: refine # 默认refine；direct要求完整K/D和全部相邻外参。
 
 rolling_shutter: # 键必须与 cameras[].id 完全一致。
   cam0:

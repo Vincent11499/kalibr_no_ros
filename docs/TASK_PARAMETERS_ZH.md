@@ -12,7 +12,7 @@ CLI 映射、作用阶段、内部算法和有效范围。字段校验以当前 
 |---|---|---:|
 | 数据选择 | `time_range_s`、`frequency_hz` | 是 |
 | 算法超参数 | `information_gain_tolerance`、`reprojection_sigma_px` | 是 |
-| 显式物理初值 | `initialization.path`、`initialization.strategy` | 是；改变前置阶段和初始点 |
+| 显式物理初值 | `initialization.path` | 是；改变前置阶段的初始点，所有 seed 均继续 refinement |
 | 参数活动策略 | `freeze_intrinsics`、`recompute_camera_chain_extrinsics` | 是；改变进入优化器的 active 物理参数块 |
 | 执行资源 | `detector_processes`、`optimizer_threads` | 理论算法不变，但并行浮点归约可能造成末位差异 |
 | 显示与输出 | `verbose`、`export_poses`、`interactive_report` | 不应改变目标函数，但会明显影响耗时，部分选项会关闭多进程检测 |
@@ -48,6 +48,7 @@ cameras:
   - {topic: /cam1/image_raw, model: pinhole-radtan5}
 
 calibration:
+  solver_mode: incremental
   freeze_intrinsics: false
   window_half_size_px: 2
   max_displacement_px: 1.224744871391589
@@ -138,7 +139,7 @@ execution:
 | `job` | 四种公开 calibration job 之一 | 选择普通/RS相机或普通/RS Camera–IMU任务，并决定允许的顶层字段 |
 | `dataset` | mapping，必填 | 数据来源和数据裁剪参数 |
 | `target` | mapping，必填 | 标定板配置 |
-| `initialization` | mapping，可省略 | 独立物理初值文件与 `refine`/`direct` 策略 |
+| `initialization` | mapping，可省略 | 独立物理初值文件；seed 始终作为可优化起点 |
 | `calibration` | mapping，可省略 | 当前 job 支持的算法参数 |
 | `output` | mapping，可省略 | 日志、显示、观测归档、结果导出和评估控制；完整字段见 [v1.0.0 接口](V1_INTERFACE_ZH.md) |
 | `execution` | mapping，可省略 | 进程、线程、队列和 profiling 配置 |
@@ -153,16 +154,14 @@ execution:
 ```yaml
 initialization:
   path: camera_calibration_initialization.yaml
-  strategy: refine
 ```
 
 | 字段 | 默认值 | 范围与路径语义 | 作用 |
 |---|---:|---|---|
 | `path` | 无，配置该块时必填 | 非空路径；task 内相对路径以 task YAML 所在目录为基准 | 选择与当前 job 匹配的 schema 1.0.0 物理 seed |
-| `strategy` | `refine` | `refine` 或 `direct` | 控制 seed 是进入原生前置 refinement，还是直接跳过已完整提供的初值阶段 |
 
-CLI 的 `--initialization` 和 `--initialization-strategy` 分别覆盖对应字段；CLI seed
-相对路径以当前工作目录为基准。只给策略而 task/CLI 都没有路径会被拒绝。
+CLI 的 `--initialization` 覆盖 task 路径；CLI seed 相对路径以当前工作目录为基准。
+旧 `initialization.strategy` 和 `--initialization-strategy` 已删除，显式填写会报错。
 
 两类初值文件字段很多，且涉及严格坐标方向、相机模型维数和 IMU 模型门控，完整格式
 见 [`INITIALIZATION_ZH.md`](INITIALIZATION_ZH.md)。需要特别注意：seed 不是 fixed
@@ -256,9 +255,9 @@ cameras:
 目录输入推荐仅写 `id/model`；省略 topic 时必须显式提供 id，通过 dataset.yaml
 定位相机目录和时间戳表。若同时填写 topic，则核验其与该 ID 的数据流一致。
 未配置 `initialization` 时，内参、畸变、每帧 target pose 和相邻相机 baseline 仍全部
-由原生路径自动初始化。配置后，`refine` 可给部分内参/畸变/baseline 并保留相应前置
-优化；相机 `direct` 要求每台相机内参和畸变、以及所有相邻 baseline 完整，然后跳过
-这些前置初值优化。两种策略的最终增量标定参数仍按原生活动集合优化，详见
+由原生路径自动初始化。配置后，可给部分内参/畸变/baseline：K/D 进入单目 LM，完整
+baseline 可跳过相机对初始化，S3 full-batch 始终执行。参数是否固定由
+`freeze_intrinsics` 独立控制，详见
 [`INITIALIZATION_ZH.md`](INITIALIZATION_ZH.md)。
 
 `pinhole-radtan8` 的畸变顺序固定为
@@ -270,6 +269,7 @@ cameras:
 
 | 字段 | 默认值 | 程序接受/算法有效范围 | 作用阶段与影响 |
 |---|---:|---|---|
+| `solver_mode` | `incremental` | `incremental` 或 `full_batch`；后者要求至少两台普通相机 | 选择最终结果来自原生 S4 增量估计器，或来自使用全部同步 view 的 S3 full-batch |
 | `freeze_intrinsics` | `false` | 严格布尔值；`true` 要求至少两台相机，且每台有完整内参和畸变 initialization seed | 同时固定 projection/intrinsics 与 distortion；跳过单相机内参 LM，后续只放开 baseline 和 target pose |
 | `window_half_size_px` | `2` px | 强制整数 `>= 1` | AprilGrid `cornerSubPix` 半窗口；实际搜索区域为 $(2w+1)\times(2w+1)$ |
 | `max_displacement_px` | $\sqrt{1.5}\approx1.224745$ px | 强制有限数 `> 0` | AprilGrid 亚像素角点相对原始检测的最大允许位移 |
@@ -283,6 +283,16 @@ cameras:
 | `final_filtering` | `true` | 布尔值 | 所有 view 处理完后是否再检查全部已接受 batch |
 | `blake_zisserman` | `false` | 布尔值 | 是否对每个二维重投影误差启用 Blake–Zisserman M-estimator |
 
+#### `solver_mode`
+
+`incremental` 保留 S3 后的原生增量接受、信息增益、回滚和异常点语义。
+`full_batch` 只支持普通双目/多目，直接采用 S3 终值，使用全部同步 view 和全部检测成功
+角点，不创建增量估计器。该模式下 `shuffle`、`qr_tolerance`、
+`information_gain_tolerance`、`min_views_for_outlier_statistics`、`remove_outliers`、
+`final_filtering` 和 `blake_zisserman` 可被模板读取，但不会应用，终端会列出这些字段。
+终值协方差与可观性由只读重线性化产生，不再次更新参数。完整阶段表见
+[普通多目标定求解模式](MULTICAMERA_SOLVER_MODES_AND_FULL_BATCH_PLAN_ZH.md)。
+
 #### `freeze_intrinsics`
 
 该字段只属于 `camera_calibration`：
@@ -290,7 +300,6 @@ cameras:
 ```yaml
 initialization:
   path: camera_calibration_initialization.yaml
-  strategy: refine
 
 calibration:
   freeze_intrinsics: true
@@ -301,8 +310,7 @@ calibration:
 - 必须提供初始化文件，且每台相机都必须完整包含 `intrinsics` 和
   `distortion_coeffs`；空畸变模型也必须显式写 `distortion_coeffs: []`；
 - 至少配置两台相机；单目任务没有相机间外参可优化，会在运行前拒绝该组合；
-- `refine` 仍允许缺少 baseline，由相机对 stereo LM 使用固定内参估计；
-- `direct` 保持原有完整性要求，必须同时给出所有相邻 baseline；
+- 允许缺少 baseline，由相机对 stereo LM 使用固定内参估计；
 - 单相机内参 LM 被跳过；stereo、full-batch、最终增量以及异常点删除后的问题重建
   都保持内参和畸变 fixed；
 - 相邻 baseline $\mathbf B$ 和每帧标定板位姿 $\mathbf P$ 仍 active。因此“只优化
@@ -393,6 +401,10 @@ $$
 它并不是无条件 `force=true`，无效或严重不收敛的 batch 仍可能被拒绝。
 
 #### `shuffle`
+
+`shuffle: true` 会在最终原生增量阶段打乱 target view 的加入顺序。项目不提供
+`shuffle_seed`；要固定加入顺序应使用 `shuffle: false`。它不改变角点检测顺序，也不
+改变单目初始化、stereo 初始化或 full-batch refinement。
 
 该字段只打乱**已完成角点检测后的 target view 加入顺序**，不打乱图像读取或标定板
 检测顺序。由于信息增益、当前秩、异常值统计都依赖已经接受的 batch，顺序会改变
@@ -594,10 +606,9 @@ t_{\mathrm{cam}}
 \delta t_c.
 $$
 
-显式初始化会改变“互相关初值”这一步：`refine` 把给定时间作为 base，再计算剩余相关
-修正；`direct` 对已经给出 `timeshift_cam_imu_s.camN` 的相机跳过互相关。两种策略下，
-只要 `calibrate_time_offset: true`，最终 $\delta t_c$ 仍是 active；`direct` 不等于固定
-时间偏移。`refine` 时间 seed 要求此开关为 `true`。
+显式时间 seed 作为互相关的 base，再计算剩余相关修正。只要
+`calibrate_time_offset: true`，最终 $\delta t_c$ 仍是 active；时间 seed 要求此开关为
+`true`。
 
 `time_offset_padding_s` 不是残差正则项，也不是显式 box constraint。它有两个作用：
 
@@ -614,8 +625,7 @@ $$
 
 - 不执行 Camera–IMU 时间偏移互相关；
 - 时间偏移 design variable inactive；
-- 无显式初值时，结果 camchain 不写新的 `timeshift_cam_imu`；若 `direct` 给出了某相机
-  的时间 seed，则把该固定预计算偏移写入结果，避免初值信息丢失；
+- 不允许提供相机时间 seed，因为没有继续估计该 seed 的路径；
 - `time_offset_padding_s` 对时间参数不再有调节意义。
 
 #### `synchronize_clocks`
@@ -807,7 +817,6 @@ CLI 只覆盖易变的执行资源参数，并额外控制：
 | `--output-dir` | 输出目录，必填；相对路径以当前工作目录为基准 |
 | `--force` | 允许替换输出目录内由程序管理的既有结果文件 |
 | `--initialization` | 字段级覆盖 task 的 seed 路径；相对路径以当前工作目录为基准 |
-| `--initialization-strategy` | 字段级覆盖 task 策略，只能为 `refine` 或 `direct` |
 | `--parallelism` 及组件并行参数 | 按第 5.2 节优先级覆盖 task `execution` |
 | `--timing-json` | 仅 `project-profile` 构建可用；输出结构化阶段计时 |
 | `--memory-sample-interval` | 仅 `project-profile` 构建可用；覆盖内存采样周期，单位 s |
@@ -909,7 +918,7 @@ feature_sigma_px
 motion_translation_weight
 motion_rotation_weight
 initialization.path 中的任一物理 seed
-initialization.strategy
+solver_mode
 ```
 
 `recover_covariance` 不应改变最终最优点，但会增加后处理求解、耗时和内存。

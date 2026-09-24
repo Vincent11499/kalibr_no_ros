@@ -31,22 +31,6 @@ INVERSE_TRANSFORM = _common.INVERSE_TRANSFORM
 def build_argument_parser():
     return _common.build_argument_parser(full_fisheye=True)
 
-_TRANSLATION_UNIT_TO_METERS = {
-    "m": 1.0,
-    "meter": 1.0,
-    "meters": 1.0,
-    "cm": 1e-2,
-    "centimeter": 1e-2,
-    "centimeters": 1e-2,
-    "mm": 1e-3,
-    "millimeter": 1e-3,
-    "millimeters": 1e-3,
-    "um": 1e-6,
-    "micrometer": 1e-6,
-    "micrometers": 1e-6,
-}
-
-
 def _finite(name, values):
     values = np.asarray(values, dtype=np.float64)
     if not np.all(np.isfinite(values)):
@@ -89,16 +73,6 @@ def _validate_d(coefficients):
     return coefficients
 
 
-def _optional_real(storage, names):
-    node = _common._node(storage, names)
-    if node is None:
-        return None
-    value = float(node.real())
-    if not np.isfinite(value):
-        raise ValueError("{} is not finite".format(names[0]))
-    return value
-
-
 def _extract_alpha(storage, K, prefix="", tolerance=1e-10):
     """Resolve alpha from K, alpha*, and pixel-skew fields without loss."""
 
@@ -108,8 +82,8 @@ def _extract_alpha(storage, K, prefix="", tolerance=1e-10):
     else:
         alpha_names = ("alpha",)
         skew_names = ("skew",)
-    explicit_alpha = _optional_real(storage, alpha_names)
-    explicit_skew = _optional_real(storage, skew_names)
+    explicit_alpha = _common._optional_real(storage, alpha_names)
+    explicit_skew = _common._optional_real(storage, skew_names)
     matrix_skew = float(K[0, 1])
     matrix_alpha = matrix_skew / float(K[0, 0])
 
@@ -208,60 +182,6 @@ def _read_stereo_transform(storage):
     ):
         raise ValueError("stereo 4x4 transform has an invalid final row")
     return transform[:3, :3], transform[:3, 3]
-
-
-def _unit_scale(unit):
-    normalized = str(unit).strip().lower().replace("µ", "u")
-    try:
-        return _TRANSLATION_UNIT_TO_METERS[normalized]
-    except KeyError:
-        raise ValueError(
-            "unsupported translation unit {!r}; use m, cm, mm, or um".format(
-                unit
-            )
-        )
-
-
-def _translation_scale_to_meters(
-    storage, override_scale=None, override_unit=None, tolerance=1e-12
-):
-    """Return the multiplier from stored T units to Kalibr meters.
-
-    OpenCV itself does not prescribe a translation unit.  With no metadata or
-    override, values are preserved (scale 1).  This avoids guessing; callers
-    importing millimetres can explicitly request ``translation_unit="mm"``.
-    """
-
-    if override_scale is not None and override_unit is not None:
-        raise ValueError("specify translation_scale or translation_unit, not both")
-    if override_scale is not None:
-        scale = float(override_scale)
-        if not np.isfinite(scale) or scale <= 0.0:
-            raise ValueError("translation_scale must be finite and positive")
-        return scale
-    if override_unit is not None:
-        return _unit_scale(override_unit)
-
-    stored_scale = _optional_real(
-        storage, ("translation_scale", "T_scale")
-    )
-    stored_unit = _common._read_string(
-        storage, ("translation_unit", "T_unit", "baseline_unit"), ""
-    )
-    unit_scale = _unit_scale(stored_unit) if stored_unit else None
-    if stored_scale is not None:
-        if stored_scale <= 0.0:
-            raise ValueError("stored translation_scale must be positive")
-        if unit_scale is not None and not np.isclose(
-            stored_scale, unit_scale, rtol=tolerance, atol=tolerance
-        ):
-            raise ValueError(
-                "translation_scale={} conflicts with translation_unit={!r}".format(
-                    stored_scale, stored_unit
-                )
-            )
-        return stored_scale
-    return unit_scale if unit_scale is not None else 1.0
 
 
 @dataclass
@@ -402,7 +322,7 @@ def read_opencv_stereo(
         declared_direction = _common._read_string(
             storage, ("transform_direction",), ""
         )
-        scale_to_meters = _translation_scale_to_meters(
+        scale_to_meters = _common._translation_scale_to_meters(
             storage, translation_scale, translation_unit
         )
     finally:
@@ -480,10 +400,7 @@ def opencv_stereo_to_camchain(stereo):
 
 
 def write_kalibr_camchain(data, output_path):
-    output_path = Path(output_path)
-    with output_path.open("w", encoding="utf-8") as stream:
-        yaml.safe_dump(data, stream, default_flow_style=None, sort_keys=False)
-    return output_path
+    return _common.write_kalibr_camchain(data, output_path)
 
 
 def import_opencv_mono(input_path, output_path, *, resolution=None, topic=None):
@@ -600,17 +517,8 @@ def read_kalibr_camchain(path):
     return cameras, transforms
 
 
-def _write_values(path, values):
-    storage = _common._open_storage(path, cv2.FILE_STORAGE_WRITE)
-    try:
-        for name, value in values:
-            storage.write(name, value)
-    finally:
-        storage.release()
-
-
 def write_opencv_camera(camera, path):
-    _write_values(
+    _common._write_values(
         path,
         [
             ("camera_name", camera.name),
@@ -632,17 +540,12 @@ def write_opencv_camera(camera, path):
     return Path(path)
 
 
-def _skew_matrix(vector):
-    x, y, z = np.asarray(vector, dtype=np.float64).reshape(3)
-    return np.array([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]])
-
-
 def write_opencv_stereo(stereo, path):
-    essential = _skew_matrix(stereo.T).dot(stereo.R)
+    essential = _common._skew(stereo.T).dot(stereo.R)
     fundamental = np.linalg.inv(stereo.right.K).T.dot(essential).dot(
         np.linalg.inv(stereo.left.K)
     )
-    _write_values(
+    _common._write_values(
         path,
         [
             ("left_camera", stereo.left.name),

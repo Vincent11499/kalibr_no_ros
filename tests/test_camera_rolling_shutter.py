@@ -225,7 +225,7 @@ class VisualRollingShutterContractTest(unittest.TestCase):
             },
         }
         canonical = validate_initialization(
-            initialization, CAMERA_RS_JOB, task, strategy="direct")
+            initialization, CAMERA_RS_JOB, task)
         self.assertEqual(list(canonical["cameras"]), ["cam0", "cam1", "cam2"])
         self.assertNotIn("T_cam_from_previous", canonical["cameras"]["cam0"])
         self.assertEqual(

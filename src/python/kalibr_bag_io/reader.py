@@ -13,7 +13,14 @@ from rosbags.highlevel import AnyReader
 from rosbags.typesys import Stores, get_typestore
 
 from .image_codec import decode_compressed_image, decode_raw_image
-from .model import ImageIndex, ImageRecord, ImuRecord, TopicInfo
+from .model import (
+    ImageIndex,
+    ImageRecord,
+    ImuRecord,
+    TopicInfo,
+    crop_records,
+    decimate_records,
+)
 
 
 IMAGE_TYPES = {"sensor_msgs/msg/Image", "sensor_msgs/msg/CompressedImage"}
@@ -119,35 +126,8 @@ class BagReader:
             )
         return found
 
-    @staticmethod
-    def _crop(records, from_to: Optional[Tuple[float, float]]):
-        if from_to is None:
-            return records
-        start_offset, end_offset = map(float, from_to)
-        if start_offset >= end_offset:
-            raise RuntimeError("Bag start time must be smaller than end time.")
-        if not records:
-            return records
-        bag_start = records[0].header_timestamp_ns
-        lower = bag_start + int(round(start_offset * 1e9))
-        upper = bag_start + int(round(end_offset * 1e9))
-        return [r for r in records if lower <= r.header_timestamp_ns <= upper]
-
-    @staticmethod
-    def _decimate(records, frequency: Optional[float]):
-        if frequency is None:
-            return records
-        frequency = float(frequency)
-        if frequency <= 0.0:
-            raise RuntimeError("Frequency must be greater than zero")
-        minimum_delta = 1e9 / frequency
-        selected = []
-        last = None
-        for record in records:
-            if last is None or record.header_timestamp_ns - last >= minimum_delta:
-                selected.append(record)
-                last = record.header_timestamp_ns
-        return selected
+    _crop = staticmethod(crop_records)
+    _decimate = staticmethod(decimate_records)
 
     def read_images(
         self,
@@ -210,7 +190,36 @@ class BagReader:
         return iter(self.read_imu(*args, **kwargs))
 
 
-class IndexedRos1ImageDataset:
+class _IndexedImageDataset:
+    """Common random-access interface for format-specific image indexes."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
+    def __del__(self):
+        self.close()
+
+    def get(self, position: int) -> ImageRecord:
+        return self.get_by_entry(self.index[int(position)])
+
+    def get_by_entry(self, selected: ImageIndex) -> ImageRecord:
+        return self._get_by_entry(selected, collect_timing=False)
+
+    def get_by_entry_with_timing(self, selected: ImageIndex):
+        """Return one image and independent I/O, deserialize and decode timings."""
+        return self._get_by_entry(selected, collect_timing=True)
+
+    def get_deferred_by_entry(self, selected: ImageIndex):
+        return self._get_deferred_by_entry(selected, collect_timing=False)
+
+    def get_deferred_by_entry_with_timing(self, selected: ImageIndex):
+        return self._get_deferred_by_entry(selected, collect_timing=True)
+
+
+class IndexedRos1ImageDataset(_IndexedImageDataset):
     """Persistent random-access view over one ROS1 image topic."""
 
     def __init__(self, path, topic, typestore, grayscale=True):
@@ -257,15 +266,6 @@ class IndexedRos1ImageDataset:
             )
         self.index.sort(key=lambda item: item.header_timestamp_ns)
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.close()
-
-    def __del__(self):
-        self.close()
-
     def close(self):
         reader = getattr(self, "reader", None)
         if reader is not None:
@@ -297,22 +297,6 @@ class IndexedRos1ImageDataset:
     def _deserialize(self, connection_id, entry):
         connection = self.connection_by_id[connection_id]
         return self.typestore.deserialize_ros1(self._raw(entry), connection.msgtype)
-
-    def get(self, position: int) -> ImageRecord:
-        return self.get_by_entry(self.index[int(position)])
-
-    def get_by_entry(self, selected: ImageIndex) -> ImageRecord:
-        return self._get_by_entry(selected, collect_timing=False)
-
-    def get_by_entry_with_timing(self, selected: ImageIndex):
-        """Return one image and independent bag/deserialize/decode timings."""
-        return self._get_by_entry(selected, collect_timing=True)
-
-    def get_deferred_by_entry(self, selected: ImageIndex):
-        return self._get_deferred_by_entry(selected, collect_timing=False)
-
-    def get_deferred_by_entry_with_timing(self, selected: ImageIndex):
-        return self._get_deferred_by_entry(selected, collect_timing=True)
 
     def _get_deferred_by_entry(self, selected, collect_timing=False):
         entry = self._entry_by_location[
@@ -381,7 +365,7 @@ class IndexedRos1ImageDataset:
         return (record, timing) if collect_timing else record
 
 
-class IndexedRos2ImageDataset:
+class IndexedRos2ImageDataset(_IndexedImageDataset):
     """Persistent random-access view over one ROS2 SQLite3 or MCAP topic.
 
     rosbag2 storage readers expose timestamp-bounded queries. The lightweight
@@ -434,37 +418,12 @@ class IndexedRos2ImageDataset:
             )
         self.index.sort(key=lambda item: item.header_timestamp_ns)
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.close()
-
-    def __del__(self):
-        self.close()
-
     def close(self):
         reader = getattr(self, "reader", None)
         if reader is not None:
             if reader.isopen:
                 reader.close()
             self.reader = None
-
-    def get(self, position: int) -> ImageRecord:
-        return self.get_by_entry(self.index[int(position)])
-
-    def get_by_entry(self, selected: ImageIndex) -> ImageRecord:
-        return self._get_by_entry(selected, collect_timing=False)
-
-    def get_by_entry_with_timing(self, selected: ImageIndex):
-        """Return one image and independent bag/deserialize/decode timings."""
-        return self._get_by_entry(selected, collect_timing=True)
-
-    def get_deferred_by_entry(self, selected: ImageIndex):
-        return self._get_deferred_by_entry(selected, collect_timing=False)
-
-    def get_deferred_by_entry_with_timing(self, selected: ImageIndex):
-        return self._get_deferred_by_entry(selected, collect_timing=True)
 
     def _raw_by_entry(self, selected):
         reader = self.reader

@@ -12,7 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src/python"))
 
 from kalibr_no_ros.delivery import (
-    apply_camera_ids, discover_camera_result, enrich_result, publish, result_name,
+    apply_camera_ids, discover_camera_result, enrich_result,
+    inspect_managed_delivery, publish, result_name,
 )
 from kalibr_no_ros.evaluation import validate_output_options
 from kalibr_no_ros.task import TaskError, dump_yaml, load_task, run_task
@@ -140,6 +141,26 @@ class DeliveryTest(unittest.TestCase):
                          b"fixture image")
         self.assertIn('src="stereo/visualizations/cam1/corners_3.jpg"',
                       (self.output / "stereo.report.html").read_text())
+
+    def test_managed_delivery_integrity_detects_sidecar_tampering(self):
+        self.populate_stage()
+        (self.stage / "task_resolved.yaml").write_text(
+            "schema_version: 1.0.0\n", encoding="utf-8")
+        (self.stage / "run_manifest.json").write_text(
+            json.dumps({"schema_version": "1.0.0", "status": "completed"}),
+            encoding="utf-8")
+        publish(
+            self.stage, self.output, "stereo",
+            {"save_diagnostics": True},
+        )
+
+        inspected = inspect_managed_delivery(self.output, "stereo")
+        self.assertEqual(inspected["manifest"]["status"], "completed")
+        validation = self.output / "stereo" / "validation.json"
+        validation.write_text('{"status": "tampered"}', encoding="utf-8")
+        with self.assertRaisesRegex(
+                TaskError, "delivery files do not match the run manifest"):
+            inspect_managed_delivery(self.output, "stereo")
 
     def test_force_rejects_unregistered_sidecar_without_modifying_delivery(self):
         self.populate_stage()

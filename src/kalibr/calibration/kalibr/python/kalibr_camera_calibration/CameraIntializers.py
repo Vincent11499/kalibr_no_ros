@@ -3,6 +3,7 @@ import kalibr_runtime as native_runtime
 # kalibr-native-source-overlay
 import aslam_backend as aopt
 import aslam_cv as cv
+import kalibr_camera_calibration as kcc
 import numpy as np
 
 def addPoseDesignVariable(problem, T0=sm.Transformation()):
@@ -311,8 +312,9 @@ def solveFullBatch(cameras, baseline_guesses, graph):
 
     #Add calibration target reprojection error terms for all camera in chain
     target_pose_dvs = list()
+    views = list()
       
-    #shuffle the views
+    # Full-batch retains the observation database's stable timestamp order.
     reprojectionErrors = [];    
     timestamps = graph.obs_db.getAllViewTimestamps()
     for view_id, timestamp in enumerate(timestamps):
@@ -324,7 +326,7 @@ def solveFullBatch(cameras, baseline_guesses, graph):
         T0 = graph.getTargetPoseGuess(timestamp, cameras, baseline_guesses)
         target_pose_dv = addPoseDesignVariable(problem, T0)
         target_pose_dvs.append(target_pose_dv)
-        
+        view_errors = dict()
 
         for cidx, obs in obs_tuple:
             cam = cameras[cidx]
@@ -339,13 +341,20 @@ def solveFullBatch(cameras, baseline_guesses, graph):
                 
         
             ## add error terms
+            view_errors[cidx] = list()
             for i in range(0, target.size()):
                 p_target = aopt.HomogeneousExpression(sm.toHomogeneous(target.point(i)));
                 valid, y = obs.imagePoint(i)
                 if valid:
                     rerr = cameras[cidx].model.reprojectionError(y, invR, T_camN_calib * p_target, cameras[cidx].dv)
+                    rerr.idx = i
                     problem.addErrorTerm(rerr)
                     reprojectionErrors.append(rerr)
+                    view_errors[cidx].append(rerr)
+                else:
+                    view_errors[cidx].append(None)
+        views.append(kcc.FullBatchTargetView(
+            timestamp, obs_tuple, target_pose_dv, view_errors))
                                                     
     sm.logDebug("solveFullBatch: added {0} camera error terms".format(len(reprojectionErrors)))
     
@@ -371,8 +380,10 @@ def solveFullBatch(cameras, baseline_guesses, graph):
         sm.logDebug( " Reprojection error squarred (camL):  mean {0}, median {1}, std: {2}".format(np.mean(e2), np.median(e2), np.std(e2) ) )
     
     #run intrinsic calibration
+    retval = None
     try:
-        retval = native_runtime.run_optimizer(optimizer)
+        with native_runtime.status_stage("full-batch refinement"):
+            retval = native_runtime.run_optimizer(optimizer)
         if retval.linearSolverFailure:
             sm.logError("calibrateIntrinsics: Optimization failed!")
         success = not retval.linearSolverFailure
@@ -385,4 +396,7 @@ def solveFullBatch(cameras, baseline_guesses, graph):
     for baseline_dv in baseline_dvs:
         baselines.append( sm.Transformation(baseline_dv.T()) )
     
-    return success, baselines
+    calibration = kcc.FullBatchCameraCalibration(
+        cameras, baseline_dvs, views, problem, retval,
+        options.maxIterations)
+    return success, baselines, calibration

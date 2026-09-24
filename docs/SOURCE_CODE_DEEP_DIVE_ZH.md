@@ -140,7 +140,7 @@ view 同时要求同步容差和共同全局角点 ID。第三台及后续相机
 
 `recompute_camera_chain_extrinsics` 只决定联合阶段相机链 baseline 是否放开。
 多 IMU 的 reference 表示参考 IMU 的坐标系/时钟，属于算法定义。
-`direct` 与 `refine` 仅改变允许的初始化阶段，不增加吸引参数靠近 seed 的残差。
+所有初始化值都作为原生前置与联合优化的起点，不增加吸引参数靠近 seed 的残差。
 hard rank 失败必须保留诊断并失败，operational rank 用于表示较弱的可观方向。
 
 ## 6. 模型与原生优化器

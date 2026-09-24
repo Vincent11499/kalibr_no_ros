@@ -82,6 +82,77 @@ class ObservabilityReportTest(unittest.TestCase):
         with self.assertRaises(observability.RankDeficiencyError):
             observability.require_full_rank(report)
 
+    def test_covariance_is_returned_in_selected_parameter_order(self):
+        original = sys.modules["incremental_calibration"].analyzeObservability
+
+        def analyze_with_covariance(
+                problem, selected, threads, recover_covariance=False):
+            result = original(problem, selected, threads)
+            if recover_covariance:
+                result["covariance"] = np.eye(3)
+            return result
+
+        sys.modules["incremental_calibration"].analyzeObservability = (
+            analyze_with_covariance)
+        report, covariance = observability.analyze_with_covariance(
+            object(),
+            [
+                {"name": "rotation", "design_variables": [_Dv(1)]},
+                {"name": "translation", "design_variables": [_Dv(2)]},
+            ],
+            job="camera_calibration",
+        )
+        self.assertEqual(report["calibration"]["columns"], 3)
+        np.testing.assert_array_equal(covariance, np.eye(3))
+
+    def test_report_contract_preserves_counts_offsets_and_units(self):
+        report = observability.analyze(
+            object(),
+            [
+                {
+                    "name": "rotation",
+                    "design_variables": [_Dv(1)],
+                    "units": "radians",
+                },
+                {
+                    "name": "translation",
+                    "design_variables": [_Dv(2)],
+                    "units": "metres",
+                    "coordinate_convention": "p_a = T_a_b * p_b",
+                },
+            ],
+            job="camera_calibration",
+        )
+
+        self.assertEqual(report["linearization"], {
+            "original_error_terms": 0,
+            "analyzed_error_terms": 0,
+            "expanded_quadratic_error_terms": 0,
+            "quadratic_expansion": "segment_sqrt_information",
+        })
+        self.assertEqual(report["nuisance"], {
+            "columns": 12,
+            "rank": 12,
+            "deficiency": 0,
+            "qr_tolerance": 1e-12,
+        })
+        self.assertEqual(report["parameter_blocks"], [
+            {
+                "name": "rotation", "active": True, "dimension": 1,
+                "active_dimension": 1, "offset": 0, "units": "radians",
+            },
+            {
+                "name": "translation", "active": True, "dimension": 2,
+                "active_dimension": 2, "offset": 1, "units": "metres",
+                "coordinate_convention": "p_a = T_a_b * p_b",
+            },
+        ])
+        self.assertEqual(
+            report["calibration"]["singular_values"], [4.0, 1.0, 0.0])
+        self.assertEqual(
+            report["calibration"]["spectrum_type"],
+            "reduced_fisher_information")
+
     def test_operational_truncation_is_a_warning_not_a_hard_failure(self):
         def analyze_weak(problem, selected, threads):
             del problem, threads

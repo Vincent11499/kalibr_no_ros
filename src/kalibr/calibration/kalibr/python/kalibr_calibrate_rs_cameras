@@ -230,7 +230,6 @@ def _run(parsed):
             parsed.initializationConfig, 1, [cameraModel])
         config.cameraInitialization = initialization['cameras'].get(
             'cam0', {})
-        config.initializationStrategy = initialization['strategy']
         if parsed.freezeIntrinsics:
             missing = [field for field in (
                 'intrinsics', 'distortion_coeffs')

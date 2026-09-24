@@ -120,9 +120,6 @@ def _extract_and_initialize(parsed, target, initialization, shutters):
 
         if parsed.freeze_intrinsics:
             camera.initGeometryFromSeed(observations, camera_name, seed)
-        elif (initialization is not None and
-              initialization["strategy"] == "direct"):
-            camera.initGeometryFromSeed(observations, camera_name, seed)
         elif seed is not None and (
                 "intrinsics" in seed or "distortion_coeffs" in seed):
             success = native_runtime.timed_call(
@@ -163,11 +160,7 @@ def _initialize_baselines(parsed, cameras, obsdb, initialization):
             "with common target corner IDs")
     if len(cameras) == 1:
         return graph, []
-    if (initialization is not None and
-            initialization["strategy"] == "direct"):
-        baselines = kcc.cameraInitializationBaselineGuesses(
-            initialization, len(cameras), require_all=True)
-    elif initialization is not None:
+    if initialization is not None:
         overrides = kcc.cameraInitializationBaselineGuesses(
             initialization, len(cameras))
         baselines = native_runtime.timed_call(

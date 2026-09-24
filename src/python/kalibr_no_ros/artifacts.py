@@ -87,6 +87,9 @@ def _optimizer_summary(result, scope):
             summary[name] = value if np.isfinite(value) else None
     if scope == "last_attempt":
         summary["objective_terms"] = "last_incremental_candidate_problem_before_acceptance_or_rollback"
+    elif scope == "final_full_batch":
+        summary["objective_terms"] = "all_camera_reprojection_terms_in_the_final_full_batch_problem"
+        summary["measurement_residual_sum_is_full_objective"] = True
     else:
         summary["objective_terms"] = "all_native_joint_problem_terms_including_enabled_bias_motion_priors"
         summary["measurement_residual_sum_is_full_objective"] = False
@@ -284,8 +287,8 @@ class RunContext:
     def record_imu_term(self, imu, measurement, kind, error):
         self._imu_terms.append((imu, measurement, kind, error))
 
-    def record_optimizer(self, result):
-        self._solver_summary = _optimizer_summary(result, "final_joint_optimization")
+    def record_optimizer(self, result, scope="final_joint_optimization"):
+        self._solver_summary = _optimizer_summary(result, scope)
 
     @staticmethod
     def _final_corners(frame, observation, indexed_errors, simple=False):

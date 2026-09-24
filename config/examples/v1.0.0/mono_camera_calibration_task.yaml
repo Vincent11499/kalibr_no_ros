@@ -10,6 +10,7 @@ cameras:
   - id: cam0
     model: pinhole-equi
 calibration:
+  solver_mode: incremental
   shuffle: false
   synchronization_tolerance_s: 0.0002
 execution:

@@ -36,6 +36,9 @@ _parallelism = {
 }
 _recorder = None
 _atexit_registered = False
+_status_fd = None
+_status_verbose = False
+_status_lock = threading.Lock()
 
 
 def positive_int(value):
@@ -195,6 +198,60 @@ def configure(arguments, command=None):
 
 def get_parallelism():
     return dict(_parallelism)
+
+
+def set_status_output(descriptor, verbose=False):
+    """Mirror selected managed-run status lines to the original terminal."""
+    global _status_fd, _status_verbose
+    if descriptor is None or int(descriptor) < 0:
+        raise ValueError("status descriptor must be an open file descriptor")
+    _status_fd = int(descriptor)
+    _status_verbose = bool(verbose)
+
+
+def clear_status_output():
+    global _status_fd, _status_verbose
+    _status_fd = None
+    _status_verbose = False
+
+
+def status_enabled(detail=False):
+    """Return whether a managed terminal status line would be emitted."""
+    return _status_fd is not None and (not detail or _status_verbose)
+
+
+def status(message, detail=False):
+    """Write one concise line to both captured logs and the managed terminal."""
+    if not status_enabled(detail):
+        return
+    line = "[kalibr] {}\n".format(message)
+    with _status_lock:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        os.write(_status_fd, line.encode("utf-8", errors="replace"))
+
+
+@contextlib.contextmanager
+def status_stage(name):
+    """Show verbose stage boundaries without enabling profiling output."""
+    if not status_enabled(detail=True):
+        yield
+        return
+    started = time.perf_counter()
+    status("{}: start".format(name), detail=True)
+    try:
+        yield
+    except BaseException:
+        status(
+            "{}: failed ({:.3f} s)".format(
+                name, time.perf_counter() - started),
+            detail=True)
+        raise
+    else:
+        status(
+            "{}: done ({:.3f} s)".format(
+                name, time.perf_counter() - started),
+            detail=True)
 
 
 def detector_processes():
@@ -694,6 +751,7 @@ def _reset_for_tests():
     }
     _profiling_enabled = bool(_BUILD_PROFILING_ENABLED)
     _recorder = None
+    clear_status_output()
 
 
 def _set_profiling_for_tests(enabled):

@@ -137,6 +137,40 @@ def camera_parameter_blocks(calibrator):
     return blocks
 
 
+def camera_covariance_parameter_blocks(calibrator):
+    """Match the legacy camera result covariance ordering exactly."""
+    blocks = []
+    for index, baseline in enumerate(calibrator.baselines, start=1):
+        convention = (
+            "p_cam{0} = T_cam{0}_cam{1} * p_cam{1}".format(
+                index, index - 1))
+        blocks.extend([
+            _parameter_block(
+                "camera_chain.cam{}.rotation".format(index), baseline.q,
+                "radians", convention),
+            _parameter_block(
+                "camera_chain.cam{}.translation".format(index), baseline.t,
+                "metres", convention),
+        ])
+    for index, camera in enumerate(calibrator.cameras):
+        distortion = camera.dv.distortionDesignVariable()
+        if int(distortion.minimalDimensions()) > 0:
+            blocks.append(_parameter_block(
+                "cameras.cam{}.distortion".format(index), distortion,
+                "model_native"))
+        projection = camera.dv.projectionDesignVariable()
+        if int(projection.minimalDimensions()) > 0:
+            blocks.append(_parameter_block(
+                "cameras.cam{}.intrinsics".format(index), projection,
+                "pixels_and_model_native"))
+        shutter = camera.dv.shutterDesignVariable()
+        if int(shutter.minimalDimensions()) > 0:
+            blocks.append(_parameter_block(
+                "cameras.cam{}.shutter".format(index), shutter,
+                "model_native"))
+    return blocks
+
+
 def camera_imu_parameter_blocks(calibrator):
     """Return camera-IMU, multi-IMU and IMU-intrinsic calibration blocks."""
     blocks = []
@@ -204,33 +238,7 @@ def camera_imu_parameter_blocks(calibrator):
     return blocks
 
 
-def analyze(problem, parameter_blocks, *, job, num_threads=1):
-    """Analyze the final weighted linearization without applying an update."""
-    try:
-        import incremental_calibration as incremental
-    except ImportError as error:
-        raise ObservabilityError(
-            "native incremental_calibration module is unavailable") from error
-
-    blocks, selected = _normalize_blocks(parameter_blocks)
-    started = time.monotonic()
-    native = incremental.analyzeObservability(
-        problem, selected, max(1, int(num_threads)))
-    elapsed = time.monotonic() - started
-    singular_values = np.asarray(native["singular_values"], dtype=float).reshape(-1)
-    nullspace = np.asarray(native["nullspace"], dtype=float)
-    active_flags = [bool(value) for value in native["selected_active"]]
-    rank = int(native["rank"])
-    columns = int(native["calibration_dimensions"])
-    deficiency = int(native["deficiency"])
-    operational_rank = int(native.get("operational_rank", rank))
-    operational_deficiency = int(
-        native.get("operational_deficiency", deficiency))
-    operational_nullspace = np.asarray(
-        native.get("operational_nullspace", native["nullspace"]),
-        dtype=float,
-    )
-
+def _describe_parameter_blocks(blocks, active_flags):
     parameter_rows = []
     active_offset = 0
     selected_offset = 0
@@ -258,34 +266,115 @@ def analyze(problem, parameter_blocks, *, job, num_threads=1):
         block_active_ranges.append(
             (block["name"], active_offset, active_offset + active_dimension))
         active_offset += active_dimension
+    return parameter_rows, block_active_ranges
 
-    nullspace_modes = _mode_contributions(
-        nullspace, columns, deficiency, block_active_ranges)
-    operational_modes = _mode_contributions(
-        operational_nullspace, columns, operational_deficiency,
-        block_active_ranges)
 
+def _calibration_spectrum(native, singular_values):
+    rank = int(native["rank"])
+    columns = int(native["calibration_dimensions"])
+    deficiency = int(native["deficiency"])
+    operational_rank = int(native.get("operational_rank", rank))
+    operational_deficiency = int(
+        native.get("operational_deficiency", deficiency))
     largest = singular_values[0] if singular_values.size else None
     smallest = singular_values[-1] if singular_values.size else None
     smallest_observable = (
-        singular_values[rank - 1] if rank > 0 and singular_values.size >= rank
-        else None
+        singular_values[rank - 1]
+        if rank > 0 and singular_values.size >= rank else None
     )
     condition_information = None
     condition_jacobian = None
-    if largest is not None and smallest_observable is not None \
-            and smallest_observable > 0.0:
+    if (largest is not None and smallest_observable is not None
+            and smallest_observable > 0.0):
         condition_information = float(largest / smallest_observable)
         condition_jacobian = math.sqrt(condition_information)
     spectral_gap = None
     if 0 < rank < singular_values.size and singular_values[rank] > 0.0:
-        spectral_gap = float(singular_values[rank - 1] / singular_values[rank])
+        spectral_gap = float(
+            singular_values[rank - 1] / singular_values[rank])
     operational_spectral_gap = None
     if (0 < operational_rank < singular_values.size
             and singular_values[operational_rank] > 0.0):
         operational_spectral_gap = float(
             singular_values[operational_rank - 1]
             / singular_values[operational_rank])
+    return {
+        "columns": columns,
+        "rank": rank,
+        "deficiency": deficiency,
+        "svd_tolerance": _finite_or_none(native["svd_tolerance"]),
+        "rank_policy": "native_rank_tol_machine_epsilon",
+        "operational_rank": operational_rank,
+        "operational_deficiency": operational_deficiency,
+        "operational_svd_tolerance": _finite_or_none(
+            native.get("operational_svd_tolerance", native["svd_tolerance"])),
+        "operational_eps_svd": _finite_or_none(
+            native.get("operational_eps_svd", np.finfo(float).eps)),
+        "spectrum_type": "reduced_fisher_information",
+        "singular_values": singular_values.tolist(),
+        "largest": _finite_or_none(largest) if largest is not None else None,
+        "smallest_observable": (
+            _finite_or_none(smallest_observable)
+            if smallest_observable is not None else None
+        ),
+        "smallest": (
+            _finite_or_none(smallest) if smallest is not None else None
+        ),
+        "condition_information_observable": (
+            _finite_or_none(condition_information)
+            if condition_information is not None else None
+        ),
+        "condition_jacobian_equivalent": (
+            _finite_or_none(condition_jacobian)
+            if condition_jacobian is not None else None
+        ),
+        "spectral_gap_at_rank": (
+            _finite_or_none(spectral_gap) if spectral_gap is not None else None
+        ),
+        "operational_spectral_gap": (
+            _finite_or_none(operational_spectral_gap)
+            if operational_spectral_gap is not None else None
+        ),
+    }
+
+
+def _analyze(problem, parameter_blocks, *, job, num_threads,
+             require_covariance):
+    try:
+        import incremental_calibration as incremental
+    except ImportError as error:
+        raise ObservabilityError(
+            "native incremental_calibration module is unavailable") from error
+
+    blocks, selected = _normalize_blocks(parameter_blocks)
+    started = time.monotonic()
+    arguments = (problem, selected, max(1, int(num_threads)))
+    native = (
+        incremental.analyzeObservability(*arguments, True)
+        if require_covariance
+        else incremental.analyzeObservability(*arguments)
+    )
+    elapsed = time.monotonic() - started
+    singular_values = np.asarray(native["singular_values"], dtype=float).reshape(-1)
+    nullspace = np.asarray(native["nullspace"], dtype=float)
+    active_flags = [bool(value) for value in native["selected_active"]]
+    calibration = _calibration_spectrum(native, singular_values)
+    rank = calibration["rank"]
+    columns = calibration["columns"]
+    deficiency = calibration["deficiency"]
+    operational_deficiency = calibration["operational_deficiency"]
+    operational_nullspace = np.asarray(
+        native.get("operational_nullspace", native["nullspace"]),
+        dtype=float,
+    )
+    parameter_rows, block_active_ranges = _describe_parameter_blocks(
+        blocks, active_flags)
+
+    nullspace_modes = _mode_contributions(
+        nullspace, columns, deficiency, block_active_ranges)
+    operational_modes = _mode_contributions(
+        operational_nullspace, columns, operational_deficiency,
+        block_active_ranges)
 
     if columns == 0 or singular_values.size == 0 or rank == 0:
         status = "no_information"
@@ -298,7 +387,7 @@ def analyze(problem, parameter_blocks, *, job, num_threads=1):
         quality = (
             "weakly_observable" if operational_deficiency else "nominal")
 
-    return {
+    report = {
         "schema_version": OBSERVABILITY_SCHEMA_VERSION,
         "kind": "calibration_diagnostics",
         "job": str(job),
@@ -325,48 +414,38 @@ def analyze(problem, parameter_blocks, *, job, num_threads=1):
             "deficiency": int(native["qr_deficiency"]),
             "qr_tolerance": _finite_or_none(native["qr_tolerance"]),
         },
-        "calibration": {
-            "columns": columns,
-            "rank": rank,
-            "deficiency": deficiency,
-            "svd_tolerance": _finite_or_none(native["svd_tolerance"]),
-            "rank_policy": "native_rank_tol_machine_epsilon",
-            "operational_rank": operational_rank,
-            "operational_deficiency": operational_deficiency,
-            "operational_svd_tolerance": _finite_or_none(
-                native.get(
-                    "operational_svd_tolerance", native["svd_tolerance"])),
-            "operational_eps_svd": _finite_or_none(
-                native.get("operational_eps_svd", np.finfo(float).eps)),
-            "spectrum_type": "reduced_fisher_information",
-            "singular_values": singular_values.tolist(),
-            "largest": _finite_or_none(largest) if largest is not None else None,
-            "smallest_observable": (
-                _finite_or_none(smallest_observable)
-                if smallest_observable is not None else None
-            ),
-            "smallest": (
-                _finite_or_none(smallest) if smallest is not None else None
-            ),
-            "condition_information_observable": (
-                _finite_or_none(condition_information)
-                if condition_information is not None else None
-            ),
-            "condition_jacobian_equivalent": (
-                _finite_or_none(condition_jacobian)
-                if condition_jacobian is not None else None
-            ),
-            "spectral_gap_at_rank": (
-                _finite_or_none(spectral_gap) if spectral_gap is not None else None
-            ),
-            "operational_spectral_gap": (
-                _finite_or_none(operational_spectral_gap)
-                if operational_spectral_gap is not None else None
-            ),
-        },
+        "calibration": calibration,
         "nullspace_modes": nullspace_modes,
         "operationally_truncated_modes": operational_modes,
     }
+    native_covariance = native.get("covariance")
+    if native_covariance is None:
+        if require_covariance:
+            raise ObservabilityError(
+                "native observability analysis did not return covariance")
+        covariance = None
+    else:
+        covariance = np.asarray(native_covariance, dtype=float)
+        if (covariance.shape != (columns, columns)
+                or not np.all(np.isfinite(covariance))):
+            raise ObservabilityError(
+                "native calibration covariance has invalid shape or values")
+    return report, covariance
+
+
+def analyze_with_covariance(problem, parameter_blocks, *, job, num_threads=1):
+    """Analyze once and return the report plus reduced calibration covariance."""
+    return _analyze(
+        problem, parameter_blocks, job=job, num_threads=num_threads,
+        require_covariance=True)
+
+
+def analyze(problem, parameter_blocks, *, job, num_threads=1):
+    """Analyze the final weighted linearization without applying an update."""
+    report, unused_covariance = _analyze(
+        problem, parameter_blocks, job=job, num_threads=num_threads,
+        require_covariance=False)
+    return report
 
 
 def write_report(report, path):

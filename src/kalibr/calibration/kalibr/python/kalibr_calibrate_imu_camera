@@ -171,22 +171,21 @@ def main():
         except (RuntimeError, ValueError) as error:
             sm.logError(str(error))
             sys.exit(2)
-        if initializationConfig['strategy'] == 'refine':
-            cameraTimeshifts = initializationConfig.get(
-                'camera_imu', {}).get('timeshift_cam_imu_s', {})
-            if cameraTimeshifts and parsed.no_time:
-                sm.logError(
-                    "Refine initialization of camera-IMU time shifts "
-                    "requires time calibration to be enabled.")
-                sys.exit(2)
-            imuTimeshifts = any(
-                'time_offset_to_reference_s' in block
-                for block in initializationConfig.get('imus', {}).values())
-            if imuTimeshifts and not parsed.estimate_imu_delay:
-                sm.logError(
-                    "Refine initialization of inter-IMU time offsets "
-                    "requires --imu-delay-by-correlation.")
-                sys.exit(2)
+        cameraTimeshifts = initializationConfig.get(
+            'camera_imu', {}).get('timeshift_cam_imu_s', {})
+        if cameraTimeshifts and parsed.no_time:
+            sm.logError(
+                "Initialization of camera-IMU time shifts requires time "
+                "calibration to be enabled.")
+            sys.exit(2)
+        imuTimeshifts = any(
+            'time_offset_to_reference_s' in block
+            for block in initializationConfig.get('imus', {}).values())
+        if imuTimeshifts and not parsed.estimate_imu_delay:
+            sm.logError(
+                "Initialization of inter-IMU time offsets requires "
+                "--imu-delay-by-correlation.")
+            sys.exit(2)
     
     #logging modess
     if parsed.verbose:
@@ -234,9 +233,7 @@ def main():
             for imuNr, imu in enumerate(imus):
                 imuName = 'imu{}'.format(imuNr)
                 if imuName in imuInitializations:
-                    imu.applyInitialization(
-                        imuInitializations[imuName],
-                        initializationConfig['strategy'])
+                    imu.applyInitialization(imuInitializations[imuName])
         except ValueError as error:
             sm.logError(str(error))
             sys.exit(2)
@@ -259,8 +256,7 @@ def main():
             'camera_imu' in initializationConfig):
         try:
             camChain.applyInitialization(
-                initializationConfig.get('camera_imu'),
-                initializationConfig['strategy'])
+                initializationConfig.get('camera_imu'))
         except ValueError as error:
             sm.logError(str(error))
             sys.exit(2)

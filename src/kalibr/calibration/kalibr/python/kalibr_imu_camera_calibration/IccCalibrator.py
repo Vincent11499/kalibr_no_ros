@@ -106,11 +106,9 @@ class IccCalibrator(object):
         if (noTimeCalibration and
                 getattr(self.CameraChain, 'hasInitialization', False)):
             for cam in self.CameraChain.camList:
-                if (getattr(cam, 'hasTimeshiftInitialization', False) and
-                        getattr(cam, 'initializationStrategy', None) ==
-                        'refine'):
+                if getattr(cam, 'hasTimeshiftInitialization', False):
                     raise ValueError(
-                        "refine initialization of camera-IMU time shifts "
+                        "initialization of camera-IMU time shifts "
                         "requires time calibration to be enabled")
         if not noTimeCalibration:
             for cam in self.CameraChain.camList:

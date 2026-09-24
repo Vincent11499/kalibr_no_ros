@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager, redirect_stdout, redirect_stderr
 from pathlib import Path
-import hashlib
 import json
 import copy
 import math
@@ -14,6 +13,7 @@ import shutil
 import statistics
 import sys
 import tempfile
+import time
 import traceback
 from datetime import datetime, timezone
 
@@ -22,6 +22,7 @@ import yaml
 from kalibr_bag_io import detect_dataset_format, open_dataset
 
 from .version import VERSION, SCHEMA_VERSION
+from .filesystem import file_sha256
 from .rolling_shutter import (
     JOB as ROLLING_SHUTTER_JOB,
     CAMERA_RS_JOB,
@@ -308,8 +309,7 @@ def _camera_calibration_ids(task):
     return [camera["id"] for camera in cameras]
 
 
-def resolve_initialization(task, expected_job=None, initialization=None,
-                           initialization_strategy=None):
+def resolve_initialization(task, expected_job=None, initialization=None):
     """Resolve CLI-over-task initialization settings and validate the file.
 
     Task paths are relative to the task YAML.  A CLI path is resolved against
@@ -318,7 +318,6 @@ def resolve_initialization(task, expected_job=None, initialization=None,
     expected_job = expected_job or task.get("job")
     configured = task.get("initialization") or {}
     configured_path = configured.get("path")
-    configured_strategy = configured.get("strategy")
 
     if initialization is not None:
         if not isinstance(initialization, (str, os.PathLike)) or not str(initialization):
@@ -332,27 +331,16 @@ def resolve_initialization(task, expected_job=None, initialization=None,
         path = None
         path_origin = None
 
-    strategy = initialization_strategy
-    strategy_origin = "cli" if strategy is not None else None
-    if strategy is None:
-        strategy = configured_strategy
-        if strategy is not None:
-            strategy_origin = "task"
     if path is None:
-        if strategy is not None:
-            raise TaskError("initialization strategy requires an initialization path")
         _require_frozen_intrinsics_initialization(task, None)
         return None
-    if strategy is None:
-        strategy = "refine"
-        strategy_origin = "default"
 
     camera_ids = None
     if expected_job in CAMERA_IMU_JOBS:
         camera_ids = _camera_calibration_ids(task)
     try:
         document = load_initialization(
-            path, expected_job, task, strategy=strategy, camera_ids=camera_ids)
+            path, expected_job, task, camera_ids=camera_ids)
         source_sha256 = _sha256(path)
     except OSError as error:
         raise TaskError(
@@ -362,10 +350,8 @@ def resolve_initialization(task, expected_job=None, initialization=None,
         raise TaskError(str(error)) from error
     resolved = {
         "path": path,
-        "strategy": strategy,
         "document": document,
         "path_origin": path_origin,
-        "strategy_origin": strategy_origin,
         "camera_ids": camera_ids,
         "source_sha256": source_sha256,
     }
@@ -377,20 +363,11 @@ def _write_initialization_config(initialization, temporary):
     if initialization is None:
         return None
     path = temporary / "initialization.yaml"
-    dump_yaml(
-        canonical_initialization(
-            initialization["document"], initialization["strategy"]),
-        path,
-    )
+    dump_yaml(canonical_initialization(initialization["document"]), path)
     return path
 
 
-def _sha256(path):
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+_sha256 = file_sha256
 
 
 def _write_initialization_report(
@@ -399,12 +376,10 @@ def _write_initialization_report(
         return None
     report = build_initialization_report(
         initialization["document"],
-        initialization["strategy"],
         task,
         source_path=initialization["path"],
         source_sha256=initialization["source_sha256"],
         path_origin=initialization["path_origin"],
-        strategy_origin=initialization["strategy_origin"],
         camera_ids=initialization["camera_ids"],
         solver_backend=solver_backend,
     )
@@ -754,6 +729,8 @@ def _camera_arguments(task, bag, target, overrides, initialization_config=None):
         if calibration.get(key) is not None:
             arguments.extend([option, str(calibration[key])])
     _flag(arguments, calibration.get("shuffle") is False, "--no-shuffle")
+    arguments.extend([
+        "--solver-mode", calibration.get("solver_mode", "incremental")])
     _flag(arguments, calibration.get("remove_outliers") is False, "--no-outliers-removal")
     _flag(arguments, calibration.get("final_filtering") is False, "--no-final-filtering")
     _flag(arguments, bool(calibration.get("blake_zisserman")), "--use-blakezisserman")
@@ -1097,7 +1074,7 @@ def _run_legacy(prefix, command, arguments, directory):
 
 
 @contextmanager
-def _capture_solver_logs(output):
+def _capture_solver_logs(output, verbose=False):
     """Capture Python, native C++ and detector-worker output, restoring FDs even on failure."""
     import ctypes
     flush_native = ctypes.CDLL(None).fflush
@@ -1107,12 +1084,14 @@ def _capture_solver_logs(output):
     sys.stderr.flush()
     flush_native(None)
     saved = [os.dup(1), os.dup(2)]
+    import kalibr_runtime as native_runtime
     try:
         with (Path(output) / "stdout.log").open("w", encoding="utf-8", buffering=1) as stdout, \
                 (Path(output) / "stderr.log").open("w", encoding="utf-8", buffering=1) as stderr:
             os.dup2(stdout.fileno(), 1)
             os.dup2(stderr.fileno(), 2)
             with redirect_stdout(stdout), redirect_stderr(stderr):
+                native_runtime.set_status_output(saved[0], verbose=verbose)
                 try:
                     yield
                 except BaseException:
@@ -1123,6 +1102,7 @@ def _capture_solver_logs(output):
                     stderr.flush()
                     flush_native(None)
     finally:
+        native_runtime.clear_status_output()
         for descriptor, original in zip((1, 2), saved):
             os.dup2(original, descriptor)
             os.close(original)
@@ -1312,6 +1292,256 @@ def _preserve_diagnostic_sidecars(work, output):
             shutil.move(str(source), str(destination))
 
 
+def _staged_dataset_path(task, config, output_dir, initialization):
+    dataset_path = resolve_task_path(task, task["dataset"]["path"])
+    output_path = Path(output_dir).expanduser().resolve()
+    if (output_path == dataset_path or dataset_path in output_path.parents
+            or output_path in dataset_path.parents):
+        raise TaskError(
+            "output directory must be separate from the input dataset")
+    referenced_inputs = [Path(config).expanduser().resolve()]
+    for block in [
+            task.get("target"), task.get("camera_calibration"),
+            *task.get("imus", []),
+    ]:
+        value = block.get("path") if isinstance(block, dict) else block
+        if value:
+            referenced_inputs.append(resolve_task_path(task, value))
+    if initialization is not None:
+        referenced_inputs.append(initialization["path"])
+    for source in referenced_inputs:
+        if source == output_path or output_path in source.parents:
+            raise TaskError(
+                "output directory contains an input file: {}".format(source))
+    return dataset_path
+
+
+def _resolved_staged_task(
+        task, dataset_path, initialization, overrides, solver_backend):
+    resolved = copy.deepcopy({
+        key: value for key, value in task.items() if not key.startswith("_")
+    })
+    resolved["execution"] = resolve_execution(task.get("execution"), overrides)
+    resolved["dataset"] = dict(task["dataset"], path=str(dataset_path))
+    for key in ("target", "camera_calibration"):
+        block = resolved.get(key)
+        if isinstance(block, dict) and block.get("path"):
+            block["path"] = str(resolve_task_path(task, block["path"]))
+        elif isinstance(block, str):
+            resolved[key] = {"path": str(resolve_task_path(task, block))}
+    for imu in resolved.get("imus", []):
+        imu["path"] = str(resolve_task_path(task, imu["path"]))
+    if initialization is not None:
+        resolved["initialization"] = {
+            "path": str(initialization["path"]),
+        }
+    if solver_backend is not None:
+        # Managed provenance; the portable task schema does not accept it.
+        resolved["solver_backend"] = solver_backend
+    return resolved
+
+
+def _validate_staged_input(
+        task, resolved_task, output, temporary, solver_backend):
+    from .validation import validate_task
+
+    if solver_backend is not None:
+        _validate_camera_rs_backend(task, solver_backend)
+        validation_task = copy.deepcopy(resolved_task)
+        validation_task.pop("solver_backend", None)
+        validation_path = temporary / "task_for_validation.yaml"
+        dump_yaml(validation_task, validation_path)
+    else:
+        validation_path = output / "task_resolved.yaml"
+    validation = validate_task(
+        validation_path, solver_backend=solver_backend)
+    if solver_backend is not None:
+        validation["solver_backend"] = solver_backend
+    (output / "validation.json").write_text(
+        json.dumps(validation, ensure_ascii=False, indent=2, allow_nan=False)
+        + "\n",
+        encoding="utf-8",
+    )
+    if validation["status"] != "passed":
+        raise TaskError("input validation failed: {}".format(
+            "; ".join(validation["errors"])))
+
+
+def _staged_solver_invocation(
+        task, expected_job, temporary, overrides, initialization_config,
+        rs_backend):
+    bag = _dataset_alias(task, temporary)
+    target = _target_path(task, temporary)
+    if expected_job == "camera_calibration":
+        return "kalibr_calibrate_cameras", _camera_arguments(
+            task, bag, target, overrides, initialization_config)
+    if expected_job == CAMERA_RS_JOB:
+        if rs_backend == "native":
+            return "kalibr_calibrate_rs_cameras", _native_rs_camera_arguments(
+                task, bag, target, temporary, overrides,
+                initialization_config)
+        return "kalibr_calibrate_rs_camera_system", _rs_camera_arguments(
+            task, bag, target, temporary, overrides, initialization_config)
+    return "kalibr_calibrate_imu_camera", _imu_arguments(
+        task, bag, target, temporary, overrides, initialization_config)
+
+
+def _print_solver_start(task, resolved_task, initialization):
+    dataset = resolved_task["dataset"]
+    if task["job"] in CAMERA_CALIBRATION_JOBS:
+        camera_ids = [
+            camera.get("id", "cam{}".format(index))
+            for index, camera in enumerate(task["cameras"])
+        ]
+    else:
+        camera_ids = _camera_calibration_ids(task)
+    calibration = task.get("calibration") or {}
+    solver_mode = (
+        calibration.get("solver_mode", "incremental")
+        if task["job"] == "camera_calibration" else "joint_batch"
+    )
+    print("[kalibr] task={} dataset={} ({}) cameras={} [{}] solver_mode={}".format(
+        task["job"], dataset["path"], dataset["type"], len(camera_ids),
+        ", ".join(camera_ids), solver_mode))
+    execution = resolved_task["execution"]
+    print(
+        "[kalibr] detector_processes={} detector_opencv_threads={} "
+        "optimizer_threads={} detector_inflight_per_worker={}".format(
+            execution.get("detector_processes", "native_default"),
+            execution.get("detector_opencv_threads", "native_default"),
+            execution.get("optimizer_threads", "native_default"),
+            execution.get("detector_inflight_per_worker", "native_default"),
+        ))
+    if initialization is not None:
+        print("[kalibr] initialization_seed={}".format(
+            initialization["path"]))
+    if solver_mode == "full_batch":
+        incremental_fields = {
+            "shuffle", "qr_tolerance", "information_gain_tolerance",
+            "min_views_for_outlier_statistics", "remove_outliers",
+            "final_filtering", "blake_zisserman",
+        }
+        ignored = sorted(incremental_fields & set(calibration))
+        if ignored:
+            print("[kalibr] warning: full_batch ignores incremental fields: {}".format(
+                ", ".join("calibration." + key for key in ignored)))
+
+
+def _attach_required_observability(
+        artifacts, temporary, expected_job, rs_backend, initialization, task):
+    full_batch = (
+        expected_job == "camera_calibration"
+        and (task.get("calibration") or {}).get(
+            "solver_mode", "incremental") == "full_batch"
+    )
+    required = (
+        expected_job == ROLLING_SHUTTER_JOB
+        or expected_job == CAMERA_RS_JOB and rs_backend == "system"
+        or initialization is not None and rs_backend != "native"
+        or full_batch
+    )
+    if not required:
+        return
+    observability = _read_observability(temporary / "observability.yaml")
+    if observability is None:
+        raise TaskError("calibration did not produce observability.yaml")
+    rank_required = (
+        expected_job == ROLLING_SHUTTER_JOB
+        or expected_job == CAMERA_RS_JOB and rs_backend == "system"
+        or initialization is not None and rs_backend != "native"
+    )
+    if rank_required and observability.get("status") != "full_rank":
+        raise TaskError(
+            "calibration is rank deficient: rank {}/{} "
+            "(deficiency {})".format(
+                observability.get("rank"),
+                observability.get("columns"),
+                observability.get("deficiency"),
+            ))
+    if expected_job in ROLLING_SHUTTER_JOBS or full_batch:
+        artifacts["observability"] = observability
+
+
+def _record_staged_failure(
+        initialization_report, temporary, output, task, error,
+        solver_completed, input_validated, solver_backend):
+    if initialization_report is not None:
+        observability_path = temporary / "observability.yaml"
+        observability = _read_observability(observability_path)
+        status = (
+            "failed_rank_deficient"
+            if observability is not None
+            and observability.get("status") in {
+                "rank_deficient", "no_information"
+            }
+            else "failed"
+        )
+        report_path = (
+            initialization_report
+            if initialization_report.is_file()
+            else output / "initialization_report.yaml"
+        )
+        _finish_initialization_report(
+            report_path, status, error=error,
+            observability_path=observability_path)
+    _preserve_diagnostic_sidecars(temporary, output)
+    status = (
+        "output_failed" if solver_completed
+        else "failed" if input_validated else "input_failed"
+    )
+    write_run_manifest(
+        output, status=status, task=task, failure=error,
+        solver_backend=solver_backend)
+
+
+@contextmanager
+def _output_status_stage(task, name):
+    if not bool((task.get("output") or {}).get("verbose")):
+        yield
+        return
+    started = time.perf_counter()
+    print("[kalibr] {}: start".format(name))
+    try:
+        yield
+    except BaseException:
+        print("[kalibr] {}: failed ({:.3f} s)".format(
+            name, time.perf_counter() - started))
+        raise
+    else:
+        print("[kalibr] {}: done ({:.3f} s)".format(
+            name, time.perf_counter() - started))
+
+
+def _complete_staged_output(
+        temporary, output, expected_job, task, artifacts, rs_backend,
+        initialization_report, report_generator, solver_backend):
+    export_poses = bool((task.get("output") or {}).get("export_poses"))
+    with _output_status_stage(task, "result collection"):
+        result = _collect_outputs(
+            temporary, output, expected_job, export_poses, task=task,
+            rs_solver_backend=rs_backend)
+    if expected_job == CAMERA_RS_JOB:
+        _overlay_structured_camera_snapshots(result, artifacts)
+    if initialization_report is not None:
+        _finish_initialization_report(
+            output / "initialization_report.yaml",
+            "completed",
+            observability_path=output / "observability.yaml",
+            calibration_path=output / "calibration.yaml",
+        )
+    from .delivery import apply_camera_ids, enrich_result
+    with _output_status_stage(task, "metrics and report"):
+        apply_camera_ids(task, artifacts, result)
+        report = report_generator(
+            artifacts, result, output, task["output"])
+        enrich_result(result, report["metrics"])
+    with _output_status_stage(task, "result serialization"):
+        dump_yaml(result, output / "calibration.yaml")
+        write_run_manifest(
+            output, status="completed", task=task,
+            solver_backend=solver_backend)
+
+
 def _run_task_staged(prefix, config, output_dir, expected_job, force=False, _task=None, **overrides):
     from .artifacts import run_context
     from .reporting import generate_report
@@ -1324,40 +1554,12 @@ def _run_task_staged(prefix, config, output_dir, expected_job, force=False, _tas
         task,
         expected_job,
         initialization=overrides.get("initialization"),
-        initialization_strategy=overrides.get("initialization_strategy"),
     )
-    dataset_path = resolve_task_path(task, task["dataset"]["path"])
-    output_path = Path(output_dir).expanduser().resolve()
-    if output_path == dataset_path or dataset_path in output_path.parents or output_path in dataset_path.parents:
-        raise TaskError("output directory must be separate from the input dataset")
-    referenced_inputs = [Path(config).expanduser().resolve()]
-    for block in [task.get("target"), task.get("camera_calibration"), *task.get("imus", [])]:
-        value = block.get("path") if isinstance(block, dict) else block
-        if value:
-            referenced_inputs.append(resolve_task_path(task, value))
-    if initialization is not None:
-        referenced_inputs.append(initialization["path"])
-    for source in referenced_inputs:
-        if source == output_path or output_path in source.parents:
-            raise TaskError("output directory contains an input file: {}".format(source))
+    dataset_path = _staged_dataset_path(
+        task, config, output_dir, initialization)
     output = prepare_output_directory(output_dir, force=force)
-    resolved_task = copy.deepcopy({key: value for key, value in task.items() if not key.startswith("_")})
-    resolved_task["execution"] = resolve_execution(task.get("execution"), overrides)
-    resolved_task["dataset"] = dict(task["dataset"], path=str(dataset_path))
-    for key in ("target", "camera_calibration"):
-        block = resolved_task.get(key)
-        if isinstance(block, dict) and block.get("path"):
-            block["path"] = str(resolve_task_path(task, block["path"]))
-        elif isinstance(block, str):
-            resolved_task[key] = {"path": str(resolve_task_path(task, block))}
-    for imu in resolved_task.get("imus", []):
-        imu["path"] = str(resolve_task_path(task, imu["path"]))
-    if initialization is not None:
-        resolved_task["initialization"] = {"path": str(initialization["path"]), "strategy": initialization["strategy"]}
-    if public_solver_backend is not None:
-        # This is managed run provenance, not a private CLI override or a
-        # user-configurable task input field.
-        resolved_task["solver_backend"] = public_solver_backend
+    resolved_task = _resolved_staged_task(
+        task, dataset_path, initialization, overrides, public_solver_backend)
     dump_yaml(resolved_task, output / "task_resolved.yaml")
     write_run_manifest(
         output, status="running", task=task,
@@ -1372,57 +1574,22 @@ def _run_task_staged(prefix, config, output_dir, expected_job, force=False, _tas
             initialization, task, temporary,
             solver_backend=public_solver_backend)
         try:
-            from .validation import validate_task
-            if public_solver_backend is not None:
-                _validate_camera_rs_backend(task, public_solver_backend)
-                # solver_backend is public provenance in the managed resolved
-                # artifact.  The portable input task schema deliberately does
-                # not accept it, so validate an equivalent private copy.
-                validation_task = copy.deepcopy(resolved_task)
-                validation_task.pop("solver_backend", None)
-                validation_path = temporary / "task_for_validation.yaml"
-                dump_yaml(validation_task, validation_path)
-            else:
-                validation_path = output / "task_resolved.yaml"
-            validation = validate_task(
-                validation_path, solver_backend=public_solver_backend)
-            if public_solver_backend is not None:
-                validation["solver_backend"] = public_solver_backend
-            (output / "validation.json").write_text(
-                json.dumps(validation, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
-                encoding="utf-8")
-            if validation["status"] != "passed":
-                raise TaskError("input validation failed: {}".format("; ".join(validation["errors"])))
+            _validate_staged_input(
+                task, resolved_task, output, temporary,
+                public_solver_backend)
             if public_solver_backend != "native":
                 input_validated = True
-            bag = _dataset_alias(task, temporary)
-            target = _target_path(task, temporary)
-            if expected_job == "camera_calibration":
-                command = "kalibr_calibrate_cameras"
-                arguments = _camera_arguments(
-                    task, bag, target, overrides, initialization_config)
-            elif expected_job == CAMERA_RS_JOB:
-                if rs_backend == "native":
-                    command = "kalibr_calibrate_rs_cameras"
-                    arguments = _native_rs_camera_arguments(
-                        task, bag, target, temporary, overrides,
-                        initialization_config)
-                else:
-                    command = "kalibr_calibrate_rs_camera_system"
-                    arguments = _rs_camera_arguments(
-                        task, bag, target, temporary, overrides,
-                        initialization_config)
-            else:
-                command = "kalibr_calibrate_imu_camera"
-                arguments = _imu_arguments(
-                    task, bag, target, temporary, overrides,
-                    initialization_config)
+            command, arguments = _staged_solver_invocation(
+                task, expected_job, temporary, overrides,
+                initialization_config, rs_backend)
+            _print_solver_start(task, resolved_task, initialization)
             if public_solver_backend == "native":
                 # Native-only cardinality/options and timestamp-rate inference
                 # are all input adaptation; no solver code has run yet.
                 input_validated = True
             with run_context(expected_job, capture_history=task["output"]["archive_selection_history"]) as context:
-                with _capture_solver_logs(output):
+                with _capture_solver_logs(
+                        output, verbose=bool(task["output"].get("verbose"))):
                     _run_legacy(prefix, command, arguments, temporary)
             artifacts = context.artifacts
             if artifacts.get("state") != "completed":
@@ -1446,74 +1613,17 @@ def _run_task_staged(prefix, config, output_dir, expected_job, force=False, _tas
                         "reason": (
                             "the temporary native single-camera RS solver does not expose a final Hessian rank report"),
                     }
-            require_observability = (
-                expected_job == ROLLING_SHUTTER_JOB
-                or expected_job == CAMERA_RS_JOB and rs_backend == "system"
-                or initialization is not None and rs_backend != "native"
-            )
-            if require_observability:
-                observability_path = temporary / "observability.yaml"
-                observability = _read_observability(observability_path)
-                if observability is None:
-                    raise TaskError(
-                        "calibration did not produce observability.yaml")
-                if observability.get("status") != "full_rank":
-                    raise TaskError(
-                        "seeded calibration is rank deficient: rank {}/{} "
-                        "(deficiency {})".format(
-                            observability.get("rank"),
-                            observability.get("columns"),
-                            observability.get("deficiency"),
-                        ))
-                if expected_job in ROLLING_SHUTTER_JOBS:
-                    artifacts["observability"] = observability
-            export_poses = bool(
-                (task.get("output") or {}).get("export_poses"))
-            result = _collect_outputs(
-                temporary, output, expected_job, export_poses, task=task,
-                rs_solver_backend=rs_backend)
-            if expected_job == CAMERA_RS_JOB:
-                _overlay_structured_camera_snapshots(result, artifacts)
-            if initialization_report is not None:
-                _finish_initialization_report(
-                    output / "initialization_report.yaml",
-                    "completed",
-                    observability_path=output / "observability.yaml",
-                    calibration_path=output / "calibration.yaml",
-                )
-            from .delivery import apply_camera_ids, enrich_result
-            apply_camera_ids(task, artifacts, result)
-            report = generate_report(artifacts, result, output, task["output"])
-            enrich_result(result, report["metrics"])
-            dump_yaml(result, output / "calibration.yaml")
-            write_run_manifest(
-                output, status="completed", task=task,
-                solver_backend=public_solver_backend)
+            _attach_required_observability(
+                artifacts, temporary, expected_job, rs_backend,
+                initialization, task)
+            _complete_staged_output(
+                temporary, output, expected_job, task, artifacts, rs_backend,
+                initialization_report, generate_report,
+                public_solver_backend)
         except Exception as error:
-            if initialization_report is not None:
-                observability_path = temporary / "observability.yaml"
-                observability = _read_observability(observability_path)
-                status = (
-                    "failed_rank_deficient"
-                    if observability is not None
-                    and observability.get("status") in {
-                        "rank_deficient", "no_information"
-                    }
-                    else "failed"
-                )
-                report_path = (
-                    initialization_report
-                    if initialization_report.is_file()
-                    else output / "initialization_report.yaml"
-                )
-                _finish_initialization_report(
-                    report_path, status, error=error,
-                    observability_path=observability_path)
-            _preserve_diagnostic_sidecars(temporary, output)
-            status = "output_failed" if solver_completed else "failed" if input_validated else "input_failed"
-            write_run_manifest(
-                output, status=status, task=task, failure=error,
-                solver_backend=public_solver_backend)
+            _record_staged_failure(
+                initialization_report, temporary, output, task, error,
+                solver_completed, input_validated, public_solver_backend)
             raise
     return output
 

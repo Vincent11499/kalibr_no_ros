@@ -85,7 +85,7 @@ IMU 任务要求相机结果的模型、尺寸、
 初始化默认未启用。`initialization_*.yaml` 中的 900 px 焦距、零畸变、
 100 mm baseline 和单位 Camera–IMU 变换都是教学占位值，必须先换成可信初值。
 然后才取消对应完整 task 顶层 `initialization` 的三行注释。
-`refine` 继续原生 refinement；`direct` 跳过部分初始化求解但不固定最终参数。
+提供的数值始终作为原生初始化与后续联合优化的起点，不增加先验约束。
 固定内参另由 `calibration.freeze_intrinsics` 控制，仅双目及以上并具备完整 seed
 时可打开。修改初值和算法参数后需另建候选，不能复用历史数值一致性结论。
 

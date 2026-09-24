@@ -108,8 +108,6 @@ class RsCalibratorConfiguration(object):
         self.estimateParameters = dict(type(self).estimateParameters)
         self.cameraInitialization = None
         """Optional cam0 intrinsics/distortion seed mapping."""
-        self.initializationStrategy = None
-        """Provenance for the project initialization strategy."""
         self.lineDelaySeed = None
         """Optional explicit rolling-shutter line-delay seed in seconds."""
         self.maxAbsLineDelay = None

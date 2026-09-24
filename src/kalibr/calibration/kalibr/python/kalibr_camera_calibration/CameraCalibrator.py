@@ -139,8 +139,7 @@ def loadCameraCalibrationInitialization(filename, num_cameras,
     if not isinstance(document, dict):
         _initialization_error(filename, 'the document root must be a mapping')
 
-    allowed_top_level = set([
-        'schema_version', 'kind', 'strategy', 'cameras'])
+    allowed_top_level = set(['schema_version', 'kind', 'cameras'])
     unknown = set(document.keys()) - allowed_top_level
     if unknown:
         _initialization_error(
@@ -162,11 +161,6 @@ def loadCameraCalibrationInitialization(filename, num_cameras,
         _initialization_error(
             filename, 'kind must be "{0}"'.format(
                 CAMERA_CALIBRATION_INITIALIZATION_KIND))
-
-    strategy = document['strategy']
-    if strategy not in ('refine', 'direct'):
-        _initialization_error(
-            filename, 'strategy must be either "refine" or "direct"')
 
     cameras = document['cameras']
     if not isinstance(cameras, dict):
@@ -207,24 +201,6 @@ def loadCameraCalibrationInitialization(filename, num_cameras,
                 filename, camera_name, block['T_cam_from_previous'])
         normalized_cameras[camera_name] = normalized
 
-    if strategy == 'direct':
-        incomplete = list()
-        for camera_index in range(num_cameras):
-            camera_name = 'cam{0}'.format(camera_index)
-            block = normalized_cameras.get(camera_name, {})
-            for field_name in ('intrinsics', 'distortion_coeffs'):
-                if field_name not in block:
-                    incomplete.append('{0}.{1}'.format(
-                        camera_name, field_name))
-            if (camera_index > 0 and
-                    'T_cam_from_previous' not in block):
-                incomplete.append('{0}.T_cam_from_previous'.format(
-                    camera_name))
-        if incomplete:
-            _initialization_error(
-                filename, 'direct strategy requires complete seeds; missing: '
-                '{0}'.format(', '.join(incomplete)))
-
     if camera_models is not None:
         if len(camera_models) != num_cameras:
             _initialization_error(
@@ -241,13 +217,11 @@ def loadCameraCalibrationInitialization(filename, num_cameras,
     return {
         'schema_version': CAMERA_CALIBRATION_INITIALIZATION_SCHEMA_VERSION,
         'kind': CAMERA_CALIBRATION_INITIALIZATION_KIND,
-        'strategy': strategy,
         'cameras': normalized_cameras,
     }
 
 
-def cameraInitializationBaselineGuesses(initialization, num_cameras,
-                                        require_all=False):
+def cameraInitializationBaselineGuesses(initialization, num_cameras):
     """Return fresh chain-baseline transformations from a parsed seed."""
     baselines = list()
     for camera_index in range(1, num_cameras):
@@ -255,10 +229,6 @@ def cameraInitializationBaselineGuesses(initialization, num_cameras,
         block = initialization['cameras'].get(camera_name, {})
         matrix = block.get('T_cam_from_previous')
         if matrix is None:
-            if require_all:
-                raise RuntimeError(
-                    'Initialization is missing {0}.T_cam_from_previous'.format(
-                        camera_name))
             baselines.append(None)
         else:
             baselines.append(sm.Transformation(np.asarray(matrix, dtype=float)))
@@ -425,7 +395,7 @@ class CameraGeometry(object):
                 native_object.setParameters(parameters)
 
     def _restoreUnseededInitializationDefaults(self, seed):
-        """Keep omitted refine fields stable across optimizer restarts."""
+        """Keep omitted seed fields stable across optimizer restarts."""
         projection = self.geometry.projection()
         native_fields = {
             'intrinsics': projection,
@@ -466,7 +436,7 @@ class CameraGeometry(object):
         bootstrap_error = None
         try:
             # The success value describes the analytic focal-length estimate;
-            # direct/seeded initialization deliberately does not depend on it.
+            # Fixed/seeded initialization deliberately does not depend on it.
             self.geometry.initializeIntrinsics(observations)
         except Exception as error:
             bootstrap_error = error
@@ -519,13 +489,13 @@ class CameraGeometry(object):
         return success
 
     def initGeometryFromSeed(self, observations, camera_name, seed):
-        """Install a complete direct-mode seed without running intrinsic LM."""
+        """Install complete fixed intrinsics without running intrinsic LM."""
         missing = [field_name for field_name in
                    ('intrinsics', 'distortion_coeffs')
                    if field_name not in seed]
         if missing:
             raise RuntimeError(
-                'Direct initialization for {0} is missing: {1}'.format(
+                'Fixed-intrinsics initialization for {0} is missing: {1}'.format(
                     camera_name, ', '.join(missing)))
         self._bootstrapObservationMetadata(observations, camera_name)
         self._restoreUnseededInitializationDefaults(seed)
@@ -759,3 +729,82 @@ class CameraCalibration(object):
                 timestamp, rig_observations, success, "incremental",
                 self.estimator_return_value)
         return success
+
+
+class FullBatchTargetPose(object):
+    """Expose the pose snapshot interface used by shared output code."""
+
+    def __init__(self, native_pose):
+        self._native_pose = native_pose
+
+    def T(self):
+        return self._native_pose.toTransformationMatrix()
+
+
+class FullBatchTargetView(object):
+    """Final view state retained by the ordinary full-batch solver."""
+
+    def __init__(self, timestamp, rig_observations, target_pose, rerrs):
+        self.timestamp = timestamp
+        self.rig_observations = rig_observations
+        self.dv_T_target_camera = FullBatchTargetPose(target_pose)
+        self.rerrs = rerrs
+        self._errors = [
+            error for camera_id, unused_observation in rig_observations
+            for error in rerrs[camera_id] if error is not None
+        ]
+
+    def errorTerm(self, index):
+        return self._errors[index]
+
+
+class FullBatchEstimator(object):
+    """Read-only subset of IncrementalEstimator used by shared output code."""
+
+    def __init__(self, problem, num_batches):
+        self._problem = problem
+        self._num_batches = int(num_batches)
+        self._sigma2theta = None
+
+    def getProblem(self):
+        return self._problem
+
+    def getNumBatches(self):
+        return self._num_batches
+
+    def setSigma2Theta(self, covariance):
+        covariance = np.asarray(covariance, dtype=float)
+        if (covariance.ndim != 2 or covariance.shape[0] != covariance.shape[1]
+                or not np.all(np.isfinite(covariance))):
+            raise RuntimeError("full-batch covariance must be a finite square matrix")
+        self._sigma2theta = covariance
+
+    def getSigma2Theta(self):
+        if self._sigma2theta is None:
+            raise RuntimeError("full-batch covariance has not been analyzed")
+        return self._sigma2theta
+
+
+class FullBatchCameraCalibration(object):
+    """Final ordinary camera calibration without an incremental estimator."""
+
+    def __init__(self, cameras, baselines, views, problem, optimizer_result,
+                 max_iterations):
+        self.cameras = cameras
+        self.baselines = baselines
+        self.views = views
+        self.target = CalibrationTarget(
+            cameras[0].ctarget.detector.target(), estimateLandmarks=False)
+        self.optimizer_result = optimizer_result
+        self.max_iterations = int(max_iterations)
+        self.estimator = FullBatchEstimator(problem, len(views))
+
+    def converged(self):
+        if self.optimizer_result is None:
+            return False
+        iterations = getattr(
+            self.optimizer_result, "iterations",
+            getattr(self.optimizer_result, "numIterations", self.max_iterations))
+        return (not bool(getattr(
+            self.optimizer_result, "linearSolverFailure", True))
+            and int(iterations) < self.max_iterations)

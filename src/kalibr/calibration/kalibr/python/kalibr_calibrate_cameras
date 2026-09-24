@@ -21,6 +21,7 @@ from kalibr_no_ros import artifacts as run_artifacts
 import sys
 import random
 import signal
+import time
 
 import kalibr_radtan5 as kr5
 kr5.install()
@@ -52,6 +53,31 @@ cameraModels = { 'pinhole-radtan': acvb.DistortedPinhole,
                  'pinhole-radtan5': kr5.PinholeRadtan5,
                  'pinhole-radtan8': kr8.PinholeRadtan8,
                  'pinhole-opencv-fisheye': kof.PinholeOpenCvFisheye}
+
+
+def reportFullBatchStatus(calibrator):
+    result = calibrator.optimizer_result
+    corners = sum(
+        1 for view in calibrator.views for errors in view.rerrs.values()
+        for error in errors if error is not None)
+    values = []
+    for name in ('iterations', 'JStart', 'JFinal', 'dXFinal', 'dJFinal'):
+        value = getattr(result, name, None)
+        if value is not None:
+            values.append('{}={}'.format(name, value))
+    camera_states = [
+        'cam{} K/D={}'.format(
+            index, 'fixed' if camera.freezeIntrinsics else 'active')
+        for index, camera in enumerate(calibrator.cameras)
+    ]
+    native_runtime.status(
+        'full-batch summary: views={}, corners={}, {}'.format(
+            len(calibrator.views), corners, ', '.join(values)),
+        detail=True)
+    native_runtime.status(
+        'full-batch blocks: baselines=active, target_poses=active, {}, '
+        'shutters=fixed'.format(', '.join(camera_states)),
+        detail=True)
 
 def signal_exit(signal, frame):
     sm.logWarn("Shutdown requested! (CTRL+C)")
@@ -112,6 +138,10 @@ def parseArgs():
     groupCalibrator.add_argument('--mi-tol', type=float, default=0.2, dest='miTol', help='The tolerance on the mutual information for adding an image. Higher means fewer images will be added. Use -1 to force all images. (default: %(default)s)')
     groupCalibrator.add_argument('--no-shuffle', action='store_true', dest='noShuffle', help='Do not shuffle the dataset processing order')
     groupCalibrator.add_argument(
+        '--solver-mode', choices=('incremental', 'full_batch'),
+        default='incremental', dest='solverMode',
+        help=argparse.SUPPRESS)
+    groupCalibrator.add_argument(
         '--initialization-config', dest='initializationConfig',
         help=argparse.SUPPRESS)
     groupCalibrator.add_argument(
@@ -164,6 +194,9 @@ def parseArgs():
     if parsed.minViewOutlier<1:
         sm.logError("Please specify a positive integer (--min-views-outlier).")
         sys.exit(2)
+    if parsed.solverMode == 'full_batch' and len(parsed.topics) < 2:
+        sm.logError("--solver-mode full_batch requires at least two cameras.")
+        sys.exit(2)
     if parsed.windowHalfSizePx is not None and parsed.windowHalfSizePx < 1:
         sm.logError("Please specify a positive integer (--window-half-size-px).")
         sys.exit(2)
@@ -215,8 +248,8 @@ def main():
             cameraModels.get(model_name) for model_name in parsed.models]
         initialization = kcc.loadCameraCalibrationInitialization(
             initialization_config, numCams, selected_camera_models)
-        print("Using {0} camera calibration initialization from: {1}".format(
-            initialization['strategy'], initialization_config))
+        print("Using camera calibration initialization from: {0}".format(
+            initialization_config))
     if parsed.freezeIntrinsics:
         if numCams < 2:
             raise RuntimeError(
@@ -292,32 +325,42 @@ def main():
                 obsdb.addObservation(cam_id, obs)
 
             #initialize the intrinsics
-            if parsed.freezeIntrinsics:
-                cam.initGeometryFromSeed(
-                    observations, camera_name, camera_initialization)
-            elif (initialization is not None and
-                    initialization['strategy'] == 'direct'):
-                cam.initGeometryFromSeed(
-                    observations, camera_name, camera_initialization)
-            elif (camera_initialization is not None and
-                    ('intrinsics' in camera_initialization or
-                     'distortion_coeffs' in camera_initialization)):
-                if not native_runtime.timed_call(
+            with native_runtime.status_stage(
+                    "single-camera initialization {}".format(camera_name)):
+                if parsed.freezeIntrinsics:
+                    cam.initGeometryFromSeed(
+                        observations, camera_name, camera_initialization)
+                elif (camera_initialization is not None and
+                        ('intrinsics' in camera_initialization or
+                         'distortion_coeffs' in camera_initialization)):
+                    if not native_runtime.timed_call(
+                            "camera_intrinsics_initialization",
+                            "initialization", {"inclusive": True},
+                            cam.initGeometryFromObservationsWithSeed,
+                            observations, camera_name, camera_initialization,
+                            parsed.focalInitializationMinVisibleCornerRatio):
+                        raise RuntimeError("Could not initialize the intrinsics for camera with topic: {0}. Try to use --verbose and check whether the calibration target extraction is successful.".format(topic))
+                elif not native_runtime.timed_call(
                         "camera_intrinsics_initialization",
                         "initialization", {"inclusive": True},
-                        cam.initGeometryFromObservationsWithSeed,
-                        observations, camera_name, camera_initialization,
+                        cam.initGeometryFromObservations, observations,
                         parsed.focalInitializationMinVisibleCornerRatio):
                     raise RuntimeError("Could not initialize the intrinsics for camera with topic: {0}. Try to use --verbose and check whether the calibration target extraction is successful.".format(topic))
-            elif not native_runtime.timed_call(
-                    "camera_intrinsics_initialization",
-                    "initialization", {"inclusive": True},
-                    cam.initGeometryFromObservations, observations,
-                    parsed.focalInitializationMinVisibleCornerRatio):
-                raise RuntimeError("Could not initialize the intrinsics for camera with topic: {0}. Try to use --verbose and check whether the calibration target extraction is successful.".format(topic))
             
             print("\tProjection initialized to: %s" % cam.geometry.projection().getParameters().flatten())
             print("\tDistortion initialized to: %s" % cam.geometry.projection().distortion().getParameters().flatten())
+            initialization_label = (
+                "seed refined" if camera_initialization is not None
+                else "observation initialized")
+            native_runtime.status(
+                "{} {}: model={} resolution={}x{} K={} D={}".format(
+                    camera_name, initialization_label,
+                    parsed.models[cam_id],
+                    int(cam.geometry.projection().ru()),
+                    int(cam.geometry.projection().rv()),
+                    cam.geometry.projection().getParameters().flatten(),
+                    cam.geometry.projection().distortion().getParameters().flatten()),
+                detail=initialization is not None)
             
             cameraList.append(cam)
         else:
@@ -328,6 +371,9 @@ def main():
     
     #initialize the calibration graph
     graph = kcc.MulticamCalibrationGraph(obsdb)
+    native_runtime.status(
+        "camera graph: {} cameras, {} synchronized views".format(
+            numCams, len(obsdb.getAllViewTimestamps())))
     
     if not graph.isGraphConnected():
         obsdb.printTable()
@@ -344,25 +390,21 @@ def main():
             #compute initial guesses for the baselines, intrinsics
             print("initializing initial guesses")
             if len(cameraList)>1:
-                if (initialization is not None and
-                        initialization['strategy'] == 'direct'):
-                    baseline_guesses = (
-                        kcc.cameraInitializationBaselineGuesses(
-                            initialization, numCams, require_all=True))
-                elif initialization is not None:
-                    baseline_initialization = (
-                        kcc.cameraInitializationBaselineGuesses(
-                            initialization, numCams))
-                    baseline_guesses = native_runtime.timed_call(
-                        "camera_baseline_initialization",
-                        "initialization", {"inclusive": True},
-                        graph.getInitialGuesses, cameraList,
-                        baseline_initialization)
-                else:
-                    baseline_guesses = native_runtime.timed_call(
-                        "camera_baseline_initialization",
-                        "initialization", {"inclusive": True},
-                        graph.getInitialGuesses, cameraList)
+                with native_runtime.status_stage("baseline initialization"):
+                    if initialization is not None:
+                        baseline_initialization = (
+                            kcc.cameraInitializationBaselineGuesses(
+                                initialization, numCams))
+                        baseline_guesses = native_runtime.timed_call(
+                            "camera_baseline_initialization",
+                            "initialization", {"inclusive": True},
+                            graph.getInitialGuesses, cameraList,
+                            baseline_initialization)
+                    else:
+                        baseline_guesses = native_runtime.timed_call(
+                            "camera_baseline_initialization",
+                            "initialization", {"inclusive": True},
+                            graph.getInitialGuesses, cameraList)
             else:
                 baseline_guesses=[]
                 
@@ -372,6 +414,10 @@ def main():
             for baseline_idx, baseline in enumerate(baseline_guesses):
                 print("initialized baseline between cam{0} and cam{1} to:".format(baseline_idx, baseline_idx+1))
                 print(baseline.T())
+                native_runtime.status(
+                    "baseline cam{}->cam{}: {}".format(
+                        baseline_idx, baseline_idx + 1, baseline.T()),
+                    detail=initialization is not None)
                 
             for cam_idx, cam in enumerate(cameraList):
                 print("initialized cam{0} to:".format(cam_idx))
@@ -380,30 +426,44 @@ def main():
                 
 
             print("initializing calibrator")
-            calibrator = native_runtime.timed_call(
-                "camera_full_batch_initialization",
-                "initialization",
-                {"inclusive": True,
-                 "operation": "incremental_calibrator_construction",
-                 "runs_full_batch_solver": False},
-                kcc.CameraCalibration, cameraList,
-                baseline_guesses, verbose=parsed.verbose,
-                useBlakeZissermanMest=parsed.doBlakeZisserman)
-            options = calibrator.estimator.getOptions()
-            options.infoGainDelta = parsed.miTol
-            options.checkValidity = True
-            options.verbose = parsed.verbose
-            linearSolverOptions = calibrator.estimator.getLinearSolverOptions()
-            linearSolverOptions.columnScaling = True
-            linearSolverOptions.verbose = parsed.verbose
-            linearSolverOptions.epsSVD = 1e-6
-            #linearSolverOptions.svdTol = 0.0 #TODO
-            #linearSolverOptions.qrTol = 0.0
-            
-            optimizerOptions = calibrator.estimator.getOptimizerOptions()
-            optimizerOptions.maxIterations = 50
-            optimizerOptions.nThreads = max(1,multiprocessing.cpu_count()-1)
-            optimizerOptions.verbose = parsed.verbose
+            if parsed.solverMode == 'full_batch':
+                calibrator = graph.full_batch_calibration
+                if (not graph.full_batch_success or calibrator is None or
+                        not calibrator.converged()):
+                    raise RuntimeError(
+                        "Full-batch camera calibration failed or did not converge")
+                artifact_context = run_artifacts.current_context()
+                if artifact_context is not None:
+                    artifact_context.record_optimizer(
+                        calibrator.optimizer_result, scope="final_full_batch")
+                native_runtime.status(
+                    "incremental stage skipped; all {0}/{0} synchronized views "
+                    "are final".format(len(calibrator.views)))
+                reportFullBatchStatus(calibrator)
+            else:
+                calibrator = native_runtime.timed_call(
+                    "camera_full_batch_initialization",
+                    "initialization",
+                    {"inclusive": True,
+                     "operation": "incremental_calibrator_construction",
+                     "runs_full_batch_solver": False},
+                    kcc.CameraCalibration, cameraList,
+                    baseline_guesses, verbose=parsed.verbose,
+                    useBlakeZissermanMest=parsed.doBlakeZisserman)
+                options = calibrator.estimator.getOptions()
+                options.infoGainDelta = parsed.miTol
+                options.checkValidity = True
+                options.verbose = parsed.verbose
+                linearSolverOptions = calibrator.estimator.getLinearSolverOptions()
+                linearSolverOptions.columnScaling = True
+                linearSolverOptions.verbose = parsed.verbose
+                linearSolverOptions.epsSVD = 1e-6
+                #linearSolverOptions.svdTol = 0.0 #TODO
+                #linearSolverOptions.qrTol = 0.0
+                optimizerOptions = calibrator.estimator.getOptimizerOptions()
+                optimizerOptions.maxIterations = 50
+                optimizerOptions.nThreads = max(1,multiprocessing.cpu_count()-1)
+                optimizerOptions.verbose = parsed.verbose
             verbose = parsed.verbose
         
             doPlot = parsed.plot
@@ -412,14 +472,25 @@ def main():
 
             #shuffle the views
             timestamps = obsdb.getAllViewTimestamps()
-            if not parsed.noShuffle:
+            if parsed.solverMode == 'incremental' and not parsed.noShuffle:
                 random.shuffle(timestamps)
 
             #process all target views
             print("starting calibration...")
             numViews = len(timestamps)
-            progress = sm.Progress2(numViews); progress.sample()
-            for view_id, timestamp in enumerate(timestamps):
+            processing_timestamps = (
+                timestamps if parsed.solverMode == 'incremental' else [])
+            incremental_status_start = None
+            if (parsed.solverMode == 'incremental'
+                    and native_runtime.status_enabled(detail=True)):
+                incremental_status_start = time.perf_counter()
+                native_runtime.status(
+                    "incremental selection and refinement: start", detail=True)
+            progress = None
+            if processing_timestamps:
+                progress = sm.Progress2(len(processing_timestamps))
+                progress.sample()
+            for view_id, timestamp in enumerate(processing_timestamps):
                 
                 #add new batch problem
                 obs_tuple = obsdb.getAllObsAtTimestamp(timestamp)    
@@ -554,7 +625,36 @@ def main():
                         #start and end filtering progress bar
                         if len(batches_to_check)>1:
                             progress_filter.sample()
+
+            if incremental_status_start is not None:
+                native_runtime.status(
+                    "incremental selection and refinement: done "
+                    "({:.3f} s, {}/{} views retained)".format(
+                        time.perf_counter() - incremental_status_start,
+                        calibrator.estimator.getNumBatches(), numViews),
+                    detail=True)
                             
+            if parsed.solverMode == 'full_batch':
+                from kalibr_no_ros import observability as calibration_observability
+                observability_threads = native_runtime.optimizer_threads_or(
+                    max(1, multiprocessing.cpu_count() - 1))
+                with native_runtime.status_stage("observability analysis"):
+                    observability, covariance = native_runtime.timed_call(
+                        "observability_analysis", "reporting",
+                        {"job": "camera_calibration",
+                         "optimizer_threads": observability_threads},
+                        calibration_observability.analyze_with_covariance,
+                        calibrator.estimator.getProblem(),
+                        calibration_observability.camera_covariance_parameter_blocks(
+                            calibrator),
+                        job="camera_calibration",
+                        num_threads=observability_threads)
+                calibrator.estimator.setSigma2Theta(covariance)
+                calibration_observability.write_report(
+                    observability, "observability.yaml")
+                if initialization is not None:
+                    calibration_observability.require_full_rank(observability)
+
             #final output
             print("")
             print("")
@@ -562,7 +662,7 @@ def main():
             print("")
             print("Calibration complete.")
             print("")
-            if parsed.removeOutliers:
+            if parsed.solverMode == 'incremental' and parsed.removeOutliers:
                 sm.logWarn("Removed {0} outlier corners.".format(len(removedOutlierCorners)) )             
             print("")
             print("Processed {0} images with {1} images used".format(numViews, calibrator.estimator.getNumBatches()))
@@ -575,7 +675,7 @@ def main():
             # observable at the final weighted linearization.  The helper
             # writes the sidecar before raising on a deficient rank, so a
             # failed task still leaves actionable diagnostics.
-            if initialization is not None:
+            if initialization is not None and parsed.solverMode == 'incremental':
                 from kalibr_no_ros import observability as calibration_observability
                 observability_threads = native_runtime.optimizer_threads_or(
                     max(1, multiprocessing.cpu_count() - 1))
@@ -660,11 +760,6 @@ def main():
                         initialization['cameras'].get(camera_name, {})
                         if initialization is not None else None)
                     if parsed.freezeIntrinsics:
-                        cam.initGeometryFromSeed(
-                            observations, camera_name,
-                            camera_initialization)
-                    elif (initialization is not None and
-                            initialization['strategy'] == 'direct'):
                         cam.initGeometryFromSeed(
                             observations, camera_name,
                             camera_initialization)

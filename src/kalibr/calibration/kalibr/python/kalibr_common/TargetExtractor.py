@@ -473,6 +473,10 @@ def extractCornersFromDataset(dataset, detector, multithreading=False,
                               numProcesses=None, clearImages=True,
                               noTransformation=False):
     print("Extracting calibration target corners")
+    statusWallStart = (
+        time.perf_counter()
+        if (_native_runtime is not None
+            and _native_runtime.status_enabled()) else None)
     targetObservations = []
     numImages = dataset.numImages()
     artifact_context = run_artifacts.current_context()
@@ -791,6 +795,18 @@ def extractCornersFromDataset(dataset, detector, multithreading=False,
     else:
         print("\r  Extracted corners for %d images (of %d images)                              " %
               (len(targetObservations), numImages))
+
+    if statusWallStart is not None and targetObservations:
+        detectedCorners = sum(
+            len(observation.getCornersIdx())
+            for observation in targetObservations)
+        targetCorners = int(targetObservations[0].target().size())
+        _native_runtime.status(
+            "detection {}: frames {}/{}, corners {}/{}, {:.3f} s".format(
+                getattr(dataset, "topic", "camera"),
+                len(targetObservations), numImages, detectedCorners,
+                numImages * targetCorners,
+                time.perf_counter() - statusWallStart))
 
     cv2.destroyAllWindows()
     return targetObservations

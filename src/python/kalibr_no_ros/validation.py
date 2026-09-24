@@ -96,7 +96,7 @@ def validate_options(task):
         "freeze_intrinsics", "focal_initialization_min_visible_corner_ratio",
         "synchronization_tolerance_s", "qr_tolerance", "information_gain_tolerance",
         "min_views_for_outlier_statistics", "shuffle", "remove_outliers",
-        "final_filtering", "blake_zisserman",
+        "final_filtering", "blake_zisserman", "solver_mode",
     }
     if task["job"] == CAMERA_RS_JOB:
         camera_fields = {
@@ -126,6 +126,11 @@ def validate_options(task):
         if key in booleans:
             if type(value) is not bool:
                 raise TaskError("calibration.{} must be a boolean".format(key))
+        elif key == "solver_mode":
+            if (not isinstance(value, str)
+                    or value not in {"incremental", "full_batch"}):
+                raise TaskError(
+                    "calibration.solver_mode must be incremental or full_batch")
         elif key in integers:
             if type(value) is not int or value < 1:
                 raise TaskError("calibration.{} must be a positive integer".format(key))
@@ -167,6 +172,11 @@ def validate_options(task):
                 raise TaskError(
                     "camera_rolling_shutter_calibration supports pinhole-equi and pinhole-radtan")
             topics.add(topic)
+        if (task["job"] == "camera_calibration"
+                and calibration.get("solver_mode", "incremental") == "full_batch"
+                and len(task["cameras"]) < 2):
+            raise TaskError(
+                "calibration.solver_mode: full_batch requires at least two cameras")
     else:
         if "camera_calibration" in task:
             _input_path(task["camera_calibration"], "camera_calibration")

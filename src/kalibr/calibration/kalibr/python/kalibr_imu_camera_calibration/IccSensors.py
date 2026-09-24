@@ -28,9 +28,8 @@ import yaml
 CAMERA_IMU_CALIBRATION_INITIALIZATION_SCHEMA_VERSION = SCHEMA_VERSION
 CAMERA_IMU_CALIBRATION_INITIALIZATION_KIND = (
     'camera_imu_calibration_initialization')
-_CAMERA_IMU_INITIALIZATION_STRATEGIES = ('refine', 'direct')
 _CAMERA_IMU_INITIALIZATION_TOP_LEVEL_KEYS = {
-    'schema_version', 'kind', 'strategy', 'camera_imu', 'imus'
+    'schema_version', 'kind', 'camera_imu', 'imus'
 }
 _CAMERA_IMU_INITIALIZATION_FIELDS = {
     'T_cam0_imu', 'timeshift_cam_imu_s', 'gravity_direction_target'
@@ -154,10 +153,6 @@ def loadCameraImuCalibrationInitialization(filename, num_cameras=None,
         _cameraImuInitializationError(
             filename, 'kind must be "{}"'.format(
                 CAMERA_IMU_CALIBRATION_INITIALIZATION_KIND))
-    if document.get('strategy') not in _CAMERA_IMU_INITIALIZATION_STRATEGIES:
-        _cameraImuInitializationError(
-            filename, 'strategy must be either "refine" or "direct"')
-
     if 'camera_imu' in document:
         cameraImu = _cameraImuInitializationMapping(
             filename, document['camera_imu'], 'camera_imu')
@@ -315,7 +310,6 @@ class IccCamera():
 
         #set the extrinsic prior to default
         self.T_extrinsic = sm.Transformation()
-        self.initializationStrategy = None
         self.hasTransformInitialization = False
         self.hasTimeshiftInitialization = False
         self.hasGravityInitialization = False
@@ -338,20 +332,17 @@ class IccCamera():
         #an estimate of the gravity in the world coordinate frame  
         self.gravity_w = np.array([9.80655, 0., 0.])
 
-    def setTransformInitialization(self, transform, strategy):
+    def setTransformInitialization(self, transform):
         self.T_extrinsic = sm.Transformation(np.asarray(transform, dtype=float))
-        self.initializationStrategy = strategy
         self.hasTransformInitialization = True
 
-    def setTimeshiftInitialization(self, timeshift, strategy):
+    def setTimeshiftInitialization(self, timeshift):
         self.timeshiftCamToImuPrior = float(timeshift)
-        self.initializationStrategy = strategy
         self.hasTimeshiftInitialization = True
 
-    def setGravityInitialization(self, direction, strategy):
+    def setGravityInitialization(self, direction):
         direction = np.asarray(direction, dtype=float)
         self.gravity_w = direction / np.linalg.norm(direction) * 9.80655
-        self.initializationStrategy = strategy
         self.hasGravityInitialization = True
         
     def setupCalibrationTarget(self, targetConfig, showExtraction=False,
@@ -426,17 +417,13 @@ class IccCamera():
         else:
             q_i_c_prior = self.T_extrinsic.q()
         q_i_c_Dv = aopt.RotationQuaternionDv(q_i_c_prior)
-        rotationActive = not (
-            self.initializationStrategy == 'direct' and
-            self.hasTransformInitialization)
+        rotationActive = True
         q_i_c_Dv.setActive(rotationActive)
         problem.addDesignVariable(q_i_c_Dv)
 
         # Add the gyro bias as design variable
         gyroBiasDv = aopt.EuclideanPointDv(imu.GyroBiasPrior)
-        biasActive = not (
-            getattr(imu, 'initializationStrategy', None) == 'direct' and
-            getattr(imu, 'hasGyroBiasInitialization', False))
+        biasActive = True
         gyroBiasDv.setActive(biasActive)
         problem.addDesignVariable(gyroBiasDv)
         
@@ -474,9 +461,7 @@ class IccCamera():
             sys.exit(-1)
 
         
-        # If direct initialization supplies both coupled quantities there is
-        # nothing for this preliminary LM to solve. Otherwise supplied values
-        # are either fixed (direct) or active starting points (refine).
+        # Supplied values are active starting points for the preliminary LM.
         if rotationActive or biasActive:
             options = aopt.Optimizer2Options()
             options.verbose = False
@@ -538,12 +523,6 @@ class IccCamera():
     def findTimeshiftCameraImuPrior(self, imu, verbose=False):
         print("Estimating time shift camera to imu:")
 
-        if (self.hasTimeshiftInitialization and
-                self.initializationStrategy == 'direct'):
-            print("  Using direct camera-to-IMU time shift initialization:")
-            print(self.timeshiftCamToImuPrior)
-            return
-
         initialTimeshift = self.timeshiftCamToImuPrior
         
         #fit a spline to the camera observations
@@ -597,8 +576,7 @@ class IccCamera():
             sm.logDebug("dT: {0}".format(dT))
         
         #store the timeshift (t_imu = t_cam + timeshiftCamToImuPrior)
-        if (self.hasTimeshiftInitialization and
-                self.initializationStrategy == 'refine'):
+        if self.hasTimeshiftInitialization:
             self.timeshiftCamToImuPrior = initialTimeshift + shift
         else:
             self.timeshiftCamToImuPrior = shift
@@ -789,7 +767,7 @@ class IccCameraChain():
         #use stereo calibration guess if no baselines are provided
         self.initializeBaselines()
 
-    def applyInitialization(self, initialization, strategy):
+    def applyInitialization(self, initialization):
         if initialization is None:
             return
 
@@ -797,11 +775,11 @@ class IccCameraChain():
 
         if 'T_cam0_imu' in initialization:
             self.camList[0].setTransformInitialization(
-                initialization['T_cam0_imu'], strategy)
+                initialization['T_cam0_imu'])
 
         if 'gravity_direction_target' in initialization:
             self.camList[0].setGravityInitialization(
-                initialization['gravity_direction_target'], strategy)
+                initialization['gravity_direction_target'])
 
         for cameraName, timeshift in initialization.get(
                 'timeshift_cam_imu_s', {}).items():
@@ -811,7 +789,7 @@ class IccCameraChain():
                     "Initialization config references unavailable {}".format(
                         cameraName))
             self.camList[cameraNr].setTimeshiftInitialization(
-                timeshift, strategy)
+                timeshift)
 
     def initializeBaselines(self):
         #estimate baseline prior if no external guess is provided           
@@ -989,13 +967,12 @@ class IccImu(object):
         self.A_gyro_accel_prior = np.zeros((3, 3))
         self.ry_i_prior = np.array([0., 0., 0.])
         self.rz_i_prior = np.array([0., 0., 0.])
-        self.initializationStrategy = None
         self.initializationFields = set()
         self.hasGyroBiasInitialization = False
         self.hasTransformInitialization = False
         self.hasTimeInitialization = False
 
-    def applyInitialization(self, initialization, strategy):
+    def applyInitialization(self, initialization):
         if initialization is None:
             return
 
@@ -1024,7 +1001,6 @@ class IccImu(object):
                 "Lever-arm initialization for {} requires the "
                 "scale-misalignment-size-effect IMU model".format(imuName))
 
-        self.initializationStrategy = strategy
         self.initializationFields = set(initialization)
 
         if 'gyroscope_bias_rad_s' in initialization:
@@ -1045,9 +1021,9 @@ class IccImu(object):
             self.r_b_prior = -np.dot(rotation.transpose(), translation)
             self.hasTransformInitialization = True
         if 'time_offset_to_reference_s' in initialization:
-            if strategy == 'refine' and not self.estimateTimedelay:
+            if not self.estimateTimedelay:
                 raise ValueError(
-                    "refine initialization of {} time offset requires "
+                    "initialization of {} time offset requires "
                     "--imu-delay-by-correlation".format(imuName))
             self.timeOffset = float(
                 initialization['time_offset_to_reference_s'])
@@ -1261,9 +1237,7 @@ class IccImu(object):
 
         # Add the relative rotation as design variable.
         q_i_b_Dv = aopt.RotationQuaternionDv(self.q_i_b_prior)
-        rotationActive = not (
-            self.initializationStrategy == 'direct' and
-            self.hasTransformInitialization)
+        rotationActive = True
         q_i_b_Dv.setActive(rotationActive)
         problem.addDesignVariable(q_i_b_Dv)
 
@@ -1289,10 +1263,7 @@ class IccImu(object):
             else np.zeros(3))
         referenceGyroBiasDv = aopt.EuclideanPointDv(
             referenceGyroBiasPrior)
-        referenceBiasActive = not (
-            getattr(referenceImu, 'initializationStrategy', None) == 'direct'
-            and getattr(
-                referenceImu, 'hasGyroBiasInitialization', False))
+        referenceBiasActive = True
         referenceGyroBiasDv.setActive(referenceBiasActive)
         problem.addDesignVariable(referenceGyroBiasDv)
 
@@ -1349,28 +1320,24 @@ class IccImu(object):
                         .format(referenceImu.imuConfig.getRosTopic(), self.imuConfig.getRosTopic()))
             sys.exit(-1)
          
-        directTime = (
-            self.hasTimeInitialization and
-            self.initializationStrategy == 'direct')
-        if not directTime:
-            #get the (residual, for refine initialization) time shift
-            corr = np.correlate(
-                referenceAbsoluteOmega(), absoluteOmega(), "full")
-            discrete_shift = corr.argmax() - (np.size(absoluteOmega()) - 1)
-            times = [im.stamp.toSec() for im in self.imuData]
-            dT = np.mean(np.diff( times ))
-            shift = discrete_shift*dT
+        # Get the residual time shift around a supplied seed, or an absolute
+        # shift when no seed exists.
+        corr = np.correlate(
+            referenceAbsoluteOmega(), absoluteOmega(), "full")
+        discrete_shift = corr.argmax() - (np.size(absoluteOmega()) - 1)
+        times = [im.stamp.toSec() for im in self.imuData]
+        dT = np.mean(np.diff( times ))
+        shift = discrete_shift*dT
 
-            if self.estimateTimedelay and not self.isReferenceImu:
-                objectiveFunction = lambda dt: np.linalg.norm(
-                    referenceAbsoluteOmega(dt) - absoluteOmega(dt))**2
-                refined_shift = scipy.optimize.fmin(
-                    objectiveFunction, np.array([shift]), maxiter=100)[0]
-                if (self.hasTimeInitialization and
-                        self.initializationStrategy == 'refine'):
-                    self.timeOffset = initialTimeOffset + float(refined_shift)
-                else:
-                    self.timeOffset = float(refined_shift)
+        if self.estimateTimedelay and not self.isReferenceImu:
+            objectiveFunction = lambda dt: np.linalg.norm(
+                referenceAbsoluteOmega(dt) - absoluteOmega(dt))**2
+            refined_shift = scipy.optimize.fmin(
+                objectiveFunction, np.array([shift]), maxiter=100)[0]
+            if self.hasTimeInitialization:
+                self.timeOffset = initialTimeOffset + float(refined_shift)
+            else:
+                self.timeOffset = float(refined_shift)
 
         print("Temporal correction with respect to reference IMU ")
         print(self.timeOffset, "[s]", ("" if (
@@ -1379,9 +1346,7 @@ class IccImu(object):
 
         # Add constant gyro bias as design variable
         gyroBiasDv = aopt.EuclideanPointDv(self.GyroBiasPrior)
-        biasActive = not (
-            self.initializationStrategy == 'direct' and
-            self.hasGyroBiasInitialization)
+        biasActive = True
         gyroBiasDv.setActive(biasActive)
         problem.addDesignVariable(gyroBiasDv)
 
@@ -1399,7 +1364,7 @@ class IccImu(object):
                 gerr = ket.GyroscopeError(im.omega, im.omegaInvR, omega_predicted, bias)
                 problem.addErrorTerm(gerr)
 
-        #get the prior unless direct initialization supplied both coupled values
+        # Refine all supplied starting values in the preliminary problem.
         if rotationActive or biasActive:
             try:
                 native_runtime.run_optimizer(optimizer)

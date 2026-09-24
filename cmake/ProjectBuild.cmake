@@ -316,16 +316,16 @@ prepare_cli(kalibr_calibrate_rs_camera_system)
 prepare_cli(kalibr_calibrate_rs_cameras)
 prepare_cli(kalibr_calibrate_imu_camera)
 
-configure_file("${CMAKE_CURRENT_SOURCE_DIR}/tools/kalibr-noros"
-  "${CMAKE_BINARY_DIR}/bin/kalibr-noros" COPYONLY)
-execute_process(COMMAND chmod +x "${CMAKE_BINARY_DIR}/bin/kalibr-noros")
-install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/tools/kalibr-noros"
-  DESTINATION bin)
-configure_file("${CMAKE_CURRENT_SOURCE_DIR}/tools/kalibr-cedarobot"
-  "${CMAKE_BINARY_DIR}/bin/kalibr-cedarobot" COPYONLY)
-execute_process(COMMAND chmod +x "${CMAKE_BINARY_DIR}/bin/kalibr-cedarobot")
-install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/tools/kalibr-cedarobot"
-  DESTINATION bin)
+function(prepare_public_cli name module)
+  set(KALIBR_ENTRY_MODULE "${module}")
+  configure_file("${CMAKE_CURRENT_SOURCE_DIR}/tools/kalibr-launcher.in"
+    "${CMAKE_BINARY_DIR}/bin/${name}" @ONLY)
+  execute_process(COMMAND chmod +x "${CMAKE_BINARY_DIR}/bin/${name}")
+  install(PROGRAMS "${CMAKE_BINARY_DIR}/bin/${name}" DESTINATION bin)
+endfunction()
+
+prepare_public_cli(kalibr-noros kalibr_no_ros.cli)
+prepare_public_cli(kalibr-cedarobot kalibr_no_ros.machine_cli)
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/config/examples/"
   DESTINATION share/kalibr-noros/config/examples
   FILES_MATCHING PATTERN "*.yaml" PATTERN "README_ZH.md")
@@ -380,46 +380,29 @@ if(KALIBR_BUILD_NATIVE)
   add_subdirectory(${KALIBR_CAMERA}/aslam_cv_error_terms native/aslam_cv_error_terms)
   add_subdirectory(${KALIBR_CAMERA}/aslam_cv_backend_python native/aslam_cv_backend_python)
 
-  # OpenCV-compatible [k1, k2, p1, p2, k3] support is an out-of-tree
-  # extension with the native Kalibr projection and optimizer interfaces.
-  add_python_export_library(kalibr_radtan5_cv_python
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/camera_models/radtan5/python/kalibr_radtan5"
-    src/camera_models/radtan5/src/cv_module.cpp)
-  target_include_directories(kalibr_radtan5_cv_python PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/camera_models/radtan5/include")
-  target_link_libraries(kalibr_radtan5_cv_python
-    aslam_cv_python aslam_cameras aslam_cv_serialization sm_python numpy_eigen
-    ${Boost_LIBRARIES})
+  function(add_radtan_extension model)
+    set(target "kalibr_${model}")
+    set(package
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/camera_models/${model}/python/${target}")
+    set(include_dir
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/camera_models/${model}/include")
+    add_python_export_library(${target}_cv_python "${package}"
+      src/camera_models/${model}/src/cv_module.cpp)
+    target_include_directories(${target}_cv_python PRIVATE "${include_dir}")
+    target_link_libraries(${target}_cv_python
+      aslam_cv_python aslam_cameras aslam_cv_serialization sm_python numpy_eigen
+      ${Boost_LIBRARIES})
+    add_python_export_library(${target}_backend_python "${package}"
+      src/camera_models/${model}/src/backend_module.cpp)
+    target_include_directories(${target}_backend_python PRIVATE "${include_dir}")
+    target_link_libraries(${target}_backend_python
+      aslam_cv_backend_python aslam_cv_backend aslam_backend_python
+      aslam_backend aslam_backend_expressions aslam_cv_python aslam_cameras
+      aslam_splines sm_python numpy_eigen ${Boost_LIBRARIES})
+  endfunction()
 
-  add_python_export_library(kalibr_radtan5_backend_python
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/camera_models/radtan5/python/kalibr_radtan5"
-    src/camera_models/radtan5/src/backend_module.cpp)
-  target_include_directories(kalibr_radtan5_backend_python PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/camera_models/radtan5/include")
-  target_link_libraries(kalibr_radtan5_backend_python
-    aslam_cv_backend_python aslam_cv_backend aslam_backend_python
-    aslam_backend aslam_backend_expressions aslam_cv_python aslam_cameras
-    aslam_splines sm_python numpy_eigen ${Boost_LIBRARIES})
-
-  # OpenCV rational [k1,k2,p1,p2,k3,k4,k5,k6] uses the native Kalibr interfaces.
-  add_python_export_library(kalibr_radtan8_cv_python
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/camera_models/radtan8/python/kalibr_radtan8"
-    src/camera_models/radtan8/src/cv_module.cpp)
-  target_include_directories(kalibr_radtan8_cv_python PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/camera_models/radtan8/include")
-  target_link_libraries(kalibr_radtan8_cv_python
-    aslam_cv_python aslam_cameras aslam_cv_serialization sm_python numpy_eigen
-    ${Boost_LIBRARIES})
-
-  add_python_export_library(kalibr_radtan8_backend_python
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/camera_models/radtan8/python/kalibr_radtan8"
-    src/camera_models/radtan8/src/backend_module.cpp)
-  target_include_directories(kalibr_radtan8_backend_python PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/camera_models/radtan8/include")
-  target_link_libraries(kalibr_radtan8_backend_python
-    aslam_cv_backend_python aslam_cv_backend aslam_backend_python
-    aslam_backend aslam_backend_expressions aslam_cv_python aslam_cameras
-    aslam_splines sm_python numpy_eigen ${Boost_LIBRARIES})
+  add_radtan_extension(radtan5)
+  add_radtan_extension(radtan8)
 
   # Full OpenCV fisheye projection.  Unlike PinholeProjection, this model owns
   # the complete 5-D intrinsic block [fu,fv,cu,cv,alpha].

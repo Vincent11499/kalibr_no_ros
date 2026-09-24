@@ -272,10 +272,9 @@ $$
 - shutter design variable 在上述普通相机阶段为 fixed；只有独立 RS job 才把行时间
   作为标定变量；
 - 图像分辨率 fixed；
-- `direct`/`refine` 只改变初值如何产生以及跳过哪些前置初值阶段，不会自行把最终
-  增量问题中的内参、畸变或 baseline 固定住；需要固定相机模型时显式使用
-  `calibration.freeze_intrinsics: true`。无初始化、`refine`、`direct` 以及冻结模式的
-  逐阶段 active 变量表见
+- 初始化值始终作为 refinement 起点，不会自行把最终问题中的内参、畸变或 baseline
+  固定住；需要固定相机模型时显式使用 `calibration.freeze_intrinsics: true`。无初始化、
+  有 seed 以及冻结模式的逐阶段 active 变量表见
   [`INITIALIZATION_ZH.md`](INITIALIZATION_ZH.md)。
 
 因此，“给了内外参初值”不等于“固定内外参”。若最终阶段有足够观测，结果仍可以
@@ -326,7 +325,8 @@ task 中的模型组合会被拆成结果中的 `camera_model` 和 `distortion_m
 `model: pinhole-radtan5`。
 
 无独立畸变块的 `omni-none`、`eucm-none` 和 `ds-none` 仍输出
-`distortion_coeffs: []`。在 `direct` 初始化中也必须显式提供这个空列表，用来区分
+`distortion_coeffs: []`。在 `freeze_intrinsics: true` 的完整初始化中也必须显式提供
+这个空列表，用来区分
 “完整的零维参数块”和“遗漏字段”。
 
 ## 6. 选型建议

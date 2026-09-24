@@ -88,7 +88,8 @@ struct ProblemOrderingGuard {
 boost::python::dict analyzeObservability(
     const OptimizationProblemBase& constProblem,
     const boost::python::list& selectedDesignVariables,
-    size_t numThreads) {
+    size_t numThreads,
+    bool recoverCovariance) {
   // IncrementalEstimator intentionally exposes its assembled problem as
   // const.  Analysis temporarily changes only ordering metadata and restores
   // it with ProblemOrderingGuard; parameter values are never updated.
@@ -285,6 +286,8 @@ boost::python::dict analyzeObservability(
   result["operational_deficiency"] = operationalDeficiency;
   result["operational_svd_tolerance"] = operationalTolerance;
   result["operational_nullspace"] = operationalNullspace;
+  if (recoverCovariance)
+    result["covariance"] = solver.getCovariance();
   result["selected_active"] = activeFlags;
   result["original_error_terms"] = problem.numErrorTerms();
   result["linearized_error_terms"] = errors.size();
@@ -320,5 +323,5 @@ void exportLinearSolver() {
 
   def("analyzeObservability", &analyzeObservability,
     (arg("problem"), arg("selected_design_variables"),
-      arg("num_threads") = 1));
+      arg("num_threads") = 1, arg("recover_covariance") = false));
 }

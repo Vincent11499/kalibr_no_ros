@@ -19,7 +19,6 @@ imus: # 本例一台IMU，收到的原始样本全部进入读取流程。
 
 # initialization: # 默认不启用；必须先用真实可信物理参数替换模板占位值。
 #   path: ../initialization_imu.yaml # 独立Camera–IMUseed，不是结果文件。
-#   strategy: refine # 默认refine保留原生refinement；direct需满足完整性要求。
 
 calibration: # 保持原生时间相关、旋转/gyro bias、spline和最终联合LM顺序。
   window_half_size_px: 7 # 像素，正整数；本例实际亚像素窗口15×15，省略时默认2（5×5）。

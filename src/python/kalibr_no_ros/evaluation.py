@@ -480,229 +480,358 @@ def _paired_corner_vectors(left, right, field):
     return common, values
 
 
-def compute_metrics(artifacts, calibration, options=None):
+def _camera_metrics(camera):
+    frames = camera.get("frames", [])
+    used_frames = [frame for frame in frames if frame.get("used")]
+    residual_norms = []
+    per_frame = []
+    missing_residuals = 0
+    measured_points = []
+    final_corners = []
+    for frame in used_frames:
+        frame_norms = []
+        for corner in frame.get("corners", []):
+            if not corner.get("used", True):
+                continue
+            final_corners.append(corner)
+            point = vector(corner.get("measurement_px"), 2)
+            if point is not None:
+                measured_points.append(point)
+            residual = corner_residual(corner)
+            if residual is None:
+                missing_residuals += 1
+            else:
+                frame_norms.append(float(np.linalg.norm(residual)))
+        residual_norms.extend(frame_norms)
+        per_frame.append({
+            "frame_id": frame["frame_id"],
+            **distribution(frame_norms),
+        })
+
+    reprojection = distribution(residual_norms)
+    reprojection["missing_residual_count"] = missing_residuals
+    if missing_residuals:
+        reprojection["status"] = "incomplete"
+    result = {
+        "model": camera.get("model", camera.get("distortion_model")),
+        "resolution": camera.get("resolution"),
+        "input_frames": camera.get("source_frame_count"),
+        "selected_frames": camera.get("selected_frame_count", len(frames)),
+        "detected_frames": sum(
+            bool(frame.get("corners"))
+            or frame.get("detection_status") in ("detected", "success", "succeeded")
+            for frame in frames
+        ),
+        "used_frames": len(used_frames),
+        "unused_frames": len(frames) - len(used_frames),
+        "reprojection": reprojection,
+        "frames": per_frame,
+    }
+    result["normalized_reprojection"], result["robust_objective"] = (
+        normalized_statistics(final_corners, 2)
+    )
+    result["intrinsics"] = camera.get("intrinsics")
+    result["distortion_coeffs"] = camera.get("distortion_coeffs")
+    if camera.get("shutter"):
+        result["shutter"] = dict(camera["shutter"])
+    shift = camera.get("timeshift_cam_imu_s", camera.get("timeshift_cam_imu"))
+    if shift is not None:
+        result["timeshift_cam_imu_s"] = shift
+        result["absolute_timeshift_cam_imu_s"] = abs(shift)
+
+    resolution = vector(camera.get("resolution"), 2)
+    result["coverage"] = {
+        "status": "unavailable",
+        "grid_columns": 8,
+        "grid_rows": 6,
+        "occupied_bin_ratio": None,
+        "bounding_box_area_ratio": None,
+    }
+    if measured_points and resolution is not None and np.all(resolution > 0):
+        normalized = np.asarray(measured_points) / resolution
+        inside = normalized[np.all((normalized >= 0) & (normalized < 1), axis=1)]
+        if len(inside):
+            bins = np.floor(inside * [8, 6]).astype(int)
+            result["coverage"].update(
+                status="available",
+                occupied_bin_ratio=len(set(map(tuple, bins))) / 48.0,
+                bounding_box_area_ratio=float(
+                    np.prod(np.max(inside, axis=0) - np.min(inside, axis=0))
+                ),
+            )
+    return result
+
+
+def _imu_metrics(artifacts):
+    groups = {}
+    for residual in artifacts.get("imu_residuals", []):
+        key = (residual.get("imu_id", "imu0"), residual.get("kind"))
+        groups.setdefault(key, []).append(residual)
+
+    metrics = {}
+    for (identifier, kind), residuals in groups.items():
+        valid = [vector(residual.get("residual"), 3) for residual in residuals]
+        values = [residual for residual in valid if residual is not None]
+        unit = "rad/s" if kind == "gyro" else "m/s^2"
+        summary = distribution(
+            [np.linalg.norm(residual) for residual in values], unit)
+        summary["missing_residual_count"] = len(residuals) - len(values)
+        summary["rms_per_axis"] = (
+            np.sqrt(np.mean(np.asarray(values) ** 2, axis=0)).tolist()
+            if values else None
+        )
+        summary["normalized_residual"], summary["robust_objective"] = (
+            normalized_statistics(residuals, 3)
+        )
+        if summary["missing_residual_count"]:
+            summary["status"] = "incomplete"
+        metrics.setdefault(identifier, {})[kind] = summary
+
+    for bias in artifacts.get("imu_biases", []):
+        identifier = bias.get("imu_id", "imu0")
+        kind = bias.get("kind")
+        if kind not in ("gyro", "accel"):
+            raise ReportingError("unknown IMU bias kind")
+        imu = metrics.setdefault(identifier, {})
+        if kind not in imu:
+            unit = "rad/s" if kind == "gyro" else "m/s^2"
+            imu[kind] = distribution([], unit)
+        imu[kind]["bias_spline"] = bias_spline_statistics(bias)
+    return metrics
+
+
+def _rolling_shutter_pair_residual(left_frame, right_frame, geometry,
+                                   disparity_axis):
+    predicted_common, predicted = _paired_corner_vectors(
+        left_frame, right_frame, "prediction_px")
+    measured_common, measured = _paired_corner_vectors(
+        left_frame, right_frame, "measurement_px")
+    common = sorted(set(predicted_common) & set(measured_common))
+    if not common:
+        statistics = distribution([])
+        statistics["reason"] = (
+            "both cameras require final RS model predictions for common corners")
+        return statistics, [], 0
+
+    measured_left = rectified_points(
+        [measured[0][key] for key in common], geometry, "left")
+    measured_right = rectified_points(
+        [measured[1][key] for key in common], geometry, "right")
+    predicted_left = rectified_points(
+        [predicted[0][key] for key in common], geometry, "left")
+    predicted_right = rectified_points(
+        [predicted[1][key] for key in common], geometry, "right")
+    width, height = geometry["size"]
+    valid = np.ones(len(common), dtype=bool)
+    for points in (
+            measured_left, measured_right, predicted_left, predicted_right):
+        valid &= np.all(np.isfinite(points), axis=1)
+        valid &= (points[:, 0] >= 0) & (points[:, 0] < width)
+        valid &= (points[:, 1] >= 0) & (points[:, 1] < height)
+    non_disparity_axis = 1 - disparity_axis
+    measured_delta = (
+        measured_left[valid, non_disparity_axis]
+        - measured_right[valid, non_disparity_axis]
+    )
+    predicted_delta = (
+        predicted_left[valid, non_disparity_axis]
+        - predicted_right[valid, non_disparity_axis]
+    )
+    absolute = np.abs(measured_delta - predicted_delta)
+    statistics = distribution(absolute)
+    statistics["mean_abs_px"] = statistics["mean"]
+    return statistics, absolute.tolist(), int(np.sum(~valid))
+
+
+def _stereo_pair_metrics(artifacts, left, right, calibration_type, options):
     import cv2
 
+    pair = {
+        "left_camera": left["id"],
+        "right_camera": right["id"],
+        "pairs": [],
+        "pairing": (
+            "native_target_view"
+            if calibration_type == "cameras"
+            else "camera_imu_diagnostic_pairing"
+        ),
+        "status": "unavailable",
+        "rectification": dict(options["rectification"], zero_disparity=True),
+    }
+    rolling = bool(left.get("shutter") or right.get("shutter"))
+    if calibration_type == "camera_imu":
+        pair["evaluation_pairing_tolerance_s"] = options[
+            "evaluation_pairing_tolerance_s"]
+        pair["pairing_timebase"] = "source_timestamp_ns"
+        pair["interpretation"] = (
+            "Spatial alignment diagnostic on time-separated observations; "
+            "motion can contribute. Not an independent or strictly "
+            "simultaneous validation.")
+    if rolling:
+        pair["interpretation"] = (
+            "Optical rectification of the original rolling-shutter "
+            "measurements using only K/D/T. It does not use line delay, "
+            "trajectory, target depth, or per-corner row time; motion can "
+            "therefore remain, and alignment is not the joint reprojection "
+            "residual.")
+    try:
+        geometry = stereo_geometry(left, right, options["rectification"])
+    except (ReportingError, ValueError, RuntimeError, cv2.error) as error:
+        reason = str(error)
+        pair["reason"] = reason
+        pair["alignment"] = distribution([])
+        pair["alignment"]["reason"] = reason
+        if rolling:
+            pair["rs_compensated_pair_residual"] = distribution([])
+            pair["rs_compensated_pair_residual"].update({
+                "definition": (
+                    "absolute non-disparity-axis residual after subtracting "
+                    "the rectified K/D/T difference predicted by the fitted "
+                    "per-corner rolling-shutter trajectory from the "
+                    "rectified measured difference"),
+                "fit_dependent": True,
+                "independent_validation": False,
+                "outside_rectified_domain_corners": 0,
+                "reason": reason,
+            })
+        return pair
+
+    pair.update({
+        "baseline_m": geometry["baseline_m"],
+        "translation_m": geometry["T"].tolist(),
+        "disparity_axis": geometry["disparity_axis"],
+    })
+    pair["rectification"]["size"] = list(geometry["size"])
+    errors, disparities, removed = [], [], 0
+    compensated_errors, compensated_removed = [], 0
+    paired_view_count, common_corner_count = 0, 0
+    for view, left_frame, right_frame in paired_frames(
+            artifacts, left, right):
+        paired_view_count += 1
+        common, left_points, right_points = _paired_points(
+            left_frame, right_frame)
+        if not common:
+            continue
+        common_corner_count += len(common)
+        left_points = rectified_points(
+            left_points, geometry, "left")
+        right_points = rectified_points(
+            right_points, geometry, "right")
+        width, height = geometry["size"]
+        valid = np.all(np.isfinite(left_points), axis=1) & np.all(
+            np.isfinite(right_points), axis=1)
+        for points in (left_points, right_points):
+            valid &= (points[:, 0] >= 0) & (points[:, 0] < width)
+            valid &= (points[:, 1] >= 0) & (points[:, 1] < height)
+        removed += int(np.sum(~valid))
+        disparity_axis = 0 if geometry["disparity_axis"] == "x" else 1
+        delta = left_points[valid] - right_points[valid]
+        alignment = np.abs(delta[:, 1 - disparity_axis])
+        errors.extend(alignment.tolist())
+        disparities.extend(delta[:, disparity_axis].tolist())
+        timestamp0 = left_frame.get("source_timestamp_ns")
+        timestamp1 = right_frame.get("source_timestamp_ns")
+        solver0 = left_frame.get("solver_timestamp_s")
+        solver1 = right_frame.get("solver_timestamp_s")
+        pair_record = {
+            "view_id": view.get("view_id"),
+            "left_frame_id": left_frame["frame_id"],
+            "right_frame_id": right_frame["frame_id"],
+            "common_corners": len(common),
+            "valid_rectified_corners": int(np.sum(valid)),
+            "timestamp_difference_ns": (
+                abs(timestamp1 - timestamp0)
+                if timestamp0 is not None and timestamp1 is not None else None
+            ),
+            "solver_timestamp_difference_s": (
+                abs(solver1 - solver0)
+                if solver0 is not None and solver1 is not None else None
+            ),
+            "alignment": distribution(alignment),
+        }
+        if rolling:
+            statistics, values, outside = _rolling_shutter_pair_residual(
+                left_frame, right_frame, geometry, disparity_axis)
+            pair_record["rs_compensated_pair_residual"] = statistics
+            compensated_errors.extend(values)
+            compensated_removed += outside
+        pair["pairs"].append(pair_record)
+
+    pair["alignment"] = distribution(errors)
+    pair["alignment"]["mean_abs_px"] = pair["alignment"]["mean"]
+    pair["signed_disparity"] = distribution(disparities)
+    pair["outside_rectified_domain_corners"] = removed
+    if rolling:
+        compensated = distribution(compensated_errors)
+        compensated.update({
+            "mean_abs_px": compensated["mean"],
+            "definition": (
+                "absolute non-disparity-axis residual after subtracting the "
+                "rectified K/D/T difference predicted by the fitted "
+                "per-corner rolling-shutter trajectory from the rectified "
+                "measured difference"),
+            "fit_dependent": True,
+            "independent_validation": False,
+            "outside_rectified_domain_corners": compensated_removed,
+        })
+        if not compensated_errors:
+            compensated["reason"] = (
+                "no common final corners contain finite measured and "
+                "RS-predicted pixels in the rectified image domain")
+        pair["rs_compensated_pair_residual"] = compensated
+    pair["used_pairs"] = len(pair["pairs"])
+    pair["status"] = "available" if errors else "unavailable"
+    if not errors:
+        if not paired_view_count:
+            reason = "no directly paired final views for this adjacent camera pair"
+        elif not common_corner_count:
+            reason = "directly paired final views have no common final corner IDs"
+        else:
+            reason = (
+                "all common final corners are outside the finite rectified "
+                "image domain")
+        pair["reason"] = reason
+        pair["alignment"]["reason"] = reason
+        if rolling:
+            pair["rs_compensated_pair_residual"]["reason"] = reason
+    return pair
+
+
+def compute_metrics(artifacts, calibration, options=None):
     options = validate_output_options(options)
     artifacts = prepare_evaluation_artifacts(artifacts, options)
     cameras = merged_cameras(artifacts, calibration)
-    metrics = {"schema_version": SCHEMA_VERSION, "software_version": VERSION,
-               "kind": "calibration_metrics", "calibration_type": artifacts.get("calibration_type", calibration.get("calibration_type")),
-               "population": "final_used_observations", "reprojection_definition": "sqrt(sum(dx^2 + dy^2) / number_of_corners)",
-               "evaluation_options": {"rectification": options["rectification"],
-                                      "evaluation_pairing_tolerance_s": options["evaluation_pairing_tolerance_s"]},
-               "cameras": {}, "stereo_pairs": {}, "imus": {}}
+    calibration_type = artifacts.get(
+        "calibration_type", calibration.get("calibration_type"))
+    metrics = {
+        "schema_version": SCHEMA_VERSION,
+        "software_version": VERSION,
+        "kind": "calibration_metrics",
+        "calibration_type": calibration_type,
+        "population": "final_used_observations",
+        "reprojection_definition": (
+            "sqrt(sum(dx^2 + dy^2) / number_of_corners)"),
+        "evaluation_options": {
+            "rectification": options["rectification"],
+            "evaluation_pairing_tolerance_s": options[
+                "evaluation_pairing_tolerance_s"],
+        },
+        "cameras": {},
+        "stereo_pairs": {},
+        "imus": {},
+    }
     if artifacts.get("observability"):
         metrics["observability"] = dict(artifacts["observability"])
     if artifacts.get("rolling_shutter_solver_backend"):
         metrics["rolling_shutter_solver_backend"] = str(
             artifacts["rolling_shutter_solver_backend"])
     for camera in cameras:
-        frames = camera.get("frames", [])
-        used = [f for f in frames if f.get("used")]
-        norms, per_frame, missing, measured_points, final_corners = [], [], 0, [], []
-        for frame in used:
-            frame_norms = []
-            for corner in frame.get("corners", []):
-                if not corner.get("used", True):
-                    continue
-                final_corners.append(corner)
-                point = vector(corner.get("measurement_px"), 2)
-                if point is not None:
-                    measured_points.append(point)
-                residual = corner_residual(corner)
-                if residual is None:
-                    missing += 1
-                else:
-                    frame_norms.append(float(np.linalg.norm(residual)))
-            norms.extend(frame_norms)
-            per_frame.append({"frame_id": frame["frame_id"], **distribution(frame_norms)})
-        reprojection = distribution(norms)
-        reprojection["missing_residual_count"] = missing
-        if missing:
-            reprojection["status"] = "incomplete"
-        metrics["cameras"][camera["id"]] = {
-            "model": camera.get("model", camera.get("distortion_model")),
-            "resolution": camera.get("resolution"), "input_frames": camera.get("source_frame_count"),
-            "selected_frames": camera.get("selected_frame_count", len(frames)),
-            "detected_frames": sum(bool(f.get("corners")) or f.get("detection_status") in ("detected", "success", "succeeded") for f in frames),
-            "used_frames": len(used), "unused_frames": len(frames) - len(used),
-            "reprojection": reprojection, "frames": per_frame}
-        entry = metrics["cameras"][camera["id"]]
-        entry["normalized_reprojection"], entry["robust_objective"] = normalized_statistics(final_corners, 2)
-        entry["intrinsics"] = camera.get("intrinsics")
-        entry["distortion_coeffs"] = camera.get("distortion_coeffs")
-        if camera.get("shutter"):
-            entry["shutter"] = dict(camera["shutter"])
-        shift = camera.get("timeshift_cam_imu_s", camera.get("timeshift_cam_imu"))
-        if shift is not None:
-            entry["timeshift_cam_imu_s"] = shift
-            entry["absolute_timeshift_cam_imu_s"] = abs(shift)
-        resolution = vector(camera.get("resolution"), 2)
-        entry["coverage"] = {"status": "unavailable", "grid_columns": 8, "grid_rows": 6,
-                             "occupied_bin_ratio": None, "bounding_box_area_ratio": None}
-        if measured_points and resolution is not None and np.all(resolution > 0):
-            normalized = np.asarray(measured_points) / resolution
-            inside = normalized[np.all((normalized >= 0) & (normalized < 1), axis=1)]
-            if len(inside):
-                bins = np.floor(inside * [8, 6]).astype(int)
-                entry["coverage"].update(status="available",
-                    occupied_bin_ratio=len(set(map(tuple, bins))) / 48.,
-                    bounding_box_area_ratio=float(np.prod(np.max(inside, axis=0) - np.min(inside, axis=0))))
+        metrics["cameras"][camera["id"]] = _camera_metrics(camera)
     for left, right in zip(cameras, cameras[1:]):
         identifier = left["id"] + "_" + right["id"]
-        pair = {"left_camera": left["id"], "right_camera": right["id"], "pairs": [],
-                "pairing": "native_target_view" if metrics["calibration_type"] == "cameras" else "camera_imu_diagnostic_pairing",
-                "status": "unavailable", "rectification": dict(options["rectification"], zero_disparity=True)}
-        rolling = bool(left.get("shutter") or right.get("shutter"))
-        if metrics["calibration_type"] == "camera_imu":
-            pair["evaluation_pairing_tolerance_s"] = options["evaluation_pairing_tolerance_s"]
-            pair["pairing_timebase"] = "source_timestamp_ns"
-            pair["interpretation"] = "Spatial alignment diagnostic on time-separated observations; motion can contribute. Not an independent or strictly simultaneous validation."
-        metrics["stereo_pairs"][identifier] = pair
-        if rolling:
-            pair["interpretation"] = "Optical rectification of the original rolling-shutter measurements using only K/D/T. It does not use line delay, trajectory, target depth, or per-corner row time; motion can therefore remain, and alignment is not the joint reprojection residual."
-        try:
-            geometry = stereo_geometry(left, right, options["rectification"])
-        except (ReportingError, ValueError, RuntimeError, cv2.error) as error:
-            reason = str(error)
-            pair["reason"] = reason
-            pair["alignment"] = distribution([])
-            pair["alignment"]["reason"] = reason
-            if rolling:
-                pair["rs_compensated_pair_residual"] = distribution([])
-                pair["rs_compensated_pair_residual"].update({
-                    "definition": (
-                        "absolute non-disparity-axis residual after subtracting "
-                        "the rectified K/D/T difference predicted by the fitted "
-                        "per-corner rolling-shutter trajectory from the "
-                        "rectified measured difference"),
-                    "fit_dependent": True,
-                    "independent_validation": False,
-                    "outside_rectified_domain_corners": 0,
-                    "reason": reason,
-                })
-            continue
-        pair.update({"baseline_m": geometry["baseline_m"], "translation_m": geometry["T"].tolist(),
-                     "disparity_axis": geometry["disparity_axis"]})
-        pair["rectification"]["size"] = list(geometry["size"])
-        errors, disparities, removed = [], [], 0
-        compensated_errors, compensated_removed = [], 0
-        paired_view_count, common_corner_count = 0, 0
-        for view, lf, rf in paired_frames(artifacts, left, right):
-            paired_view_count += 1
-            common, lp, rp = _paired_points(lf, rf)
-            if not common:
-                continue
-            common_corner_count += len(common)
-            lp, rp = rectified_points(lp, geometry, "left"), rectified_points(rp, geometry, "right")
-            width, height = geometry["size"]
-            valid = np.all(np.isfinite(lp), axis=1) & np.all(np.isfinite(rp), axis=1)
-            for points in (lp, rp):
-                valid &= (points[:, 0] >= 0) & (points[:, 0] < width) & (points[:, 1] >= 0) & (points[:, 1] < height)
-            removed += int(np.sum(~valid))
-            d_axis = 0 if geometry["disparity_axis"] == "x" else 1
-            delta = lp[valid] - rp[valid]
-            alignment = np.abs(delta[:, 1 - d_axis])
-            errors.extend(alignment.tolist())
-            disparities.extend(delta[:, d_axis].tolist())
-            timestamp0, timestamp1 = lf.get("source_timestamp_ns"), rf.get("source_timestamp_ns")
-            solver0, solver1 = lf.get("solver_timestamp_s"), rf.get("solver_timestamp_s")
-            pair_record = {"view_id": view.get("view_id"), "left_frame_id": lf["frame_id"],
-                           "right_frame_id": rf["frame_id"], "common_corners": len(common),
-                           "valid_rectified_corners": int(np.sum(valid)),
-                           "timestamp_difference_ns": abs(timestamp1 - timestamp0) if timestamp0 is not None and timestamp1 is not None else None,
-                           "solver_timestamp_difference_s": abs(solver1 - solver0) if solver0 is not None and solver1 is not None else None,
-                           "alignment": distribution(alignment)}
-            if rolling:
-                predicted_common, predicted = _paired_corner_vectors(
-                    lf, rf, "prediction_px")
-                measured_common, measured = _paired_corner_vectors(
-                    lf, rf, "measurement_px")
-                rs_common = sorted(set(predicted_common) & set(measured_common))
-                if rs_common:
-                    measured_left = rectified_points(
-                        [measured[0][key] for key in rs_common], geometry, "left")
-                    measured_right = rectified_points(
-                        [measured[1][key] for key in rs_common], geometry, "right")
-                    predicted_left = rectified_points(
-                        [predicted[0][key] for key in rs_common], geometry, "left")
-                    predicted_right = rectified_points(
-                        [predicted[1][key] for key in rs_common], geometry, "right")
-                    # Keep both measurements and their model predictions inside
-                    # the same rectified image domain.
-                    rs_valid = np.ones(len(rs_common), dtype=bool)
-                    for points in (measured_left, measured_right,
-                                   predicted_left, predicted_right):
-                        rs_valid &= np.all(np.isfinite(points), axis=1)
-                        rs_valid &= (points[:, 0] >= 0) & (points[:, 0] < width)
-                        rs_valid &= (points[:, 1] >= 0) & (points[:, 1] < height)
-                    measured_delta = measured_left[rs_valid, 1 - d_axis] - measured_right[rs_valid, 1 - d_axis]
-                    predicted_delta = predicted_left[rs_valid, 1 - d_axis] - predicted_right[rs_valid, 1 - d_axis]
-                    compensated = measured_delta - predicted_delta
-                    absolute = np.abs(compensated)
-                    compensated_errors.extend(absolute.tolist())
-                    compensated_removed += int(np.sum(~rs_valid))
-                    pair_record["rs_compensated_pair_residual"] = distribution(absolute)
-                    pair_record["rs_compensated_pair_residual"]["mean_abs_px"] = (
-                        pair_record["rs_compensated_pair_residual"]["mean"])
-                else:
-                    pair_record["rs_compensated_pair_residual"] = distribution([])
-                    pair_record["rs_compensated_pair_residual"]["reason"] = (
-                        "both cameras require final RS model predictions for common corners")
-            pair["pairs"].append(pair_record)
-        pair["alignment"] = distribution(errors)
-        pair["alignment"]["mean_abs_px"] = pair["alignment"]["mean"]
-        pair["signed_disparity"] = distribution(disparities)
-        pair["outside_rectified_domain_corners"] = removed
-        if rolling:
-            pair["rs_compensated_pair_residual"] = distribution(compensated_errors)
-            pair["rs_compensated_pair_residual"]["mean_abs_px"] = (
-                pair["rs_compensated_pair_residual"]["mean"])
-            pair["rs_compensated_pair_residual"]["definition"] = (
-                "absolute non-disparity-axis residual after subtracting the rectified K/D/T difference predicted by the fitted per-corner rolling-shutter trajectory from the rectified measured difference")
-            pair["rs_compensated_pair_residual"]["fit_dependent"] = True
-            pair["rs_compensated_pair_residual"]["independent_validation"] = False
-            pair["rs_compensated_pair_residual"]["outside_rectified_domain_corners"] = compensated_removed
-            if not compensated_errors:
-                pair["rs_compensated_pair_residual"]["reason"] = (
-                    "no common final corners contain finite measured and RS-predicted pixels in the rectified image domain")
-        pair["used_pairs"] = len(pair["pairs"])
-        pair["status"] = "available" if errors else "unavailable"
-        if not errors:
-            if not paired_view_count:
-                reason = "no directly paired final views for this adjacent camera pair"
-            elif not common_corner_count:
-                reason = "directly paired final views have no common final corner IDs"
-            else:
-                reason = "all common final corners are outside the finite rectified image domain"
-            pair["reason"] = reason
-            pair["alignment"]["reason"] = reason
-            if rolling:
-                pair["rs_compensated_pair_residual"]["reason"] = reason
-    groups = {}
-    for residual in artifacts.get("imu_residuals", []):
-        key = (residual.get("imu_id", "imu0"), residual.get("kind"))
-        groups.setdefault(key, []).append(residual)
-    for (identifier, kind), residuals in groups.items():
-        valid = [vector(r.get("residual"), 3) for r in residuals]
-        values = [r for r in valid if r is not None]
-        unit = "rad/s" if kind == "gyro" else "m/s^2"
-        summary = distribution([np.linalg.norm(r) for r in values], unit)
-        summary["missing_residual_count"] = len(residuals) - len(values)
-        summary["rms_per_axis"] = np.sqrt(np.mean(np.asarray(values) ** 2, axis=0)).tolist() if values else None
-        summary["normalized_residual"], summary["robust_objective"] = normalized_statistics(residuals, 3)
-        if summary["missing_residual_count"]:
-            summary["status"] = "incomplete"
-        metrics["imus"].setdefault(identifier, {})[kind] = summary
-    for bias in artifacts.get("imu_biases", []):
-        identifier, kind = bias.get("imu_id", "imu0"), bias.get("kind")
-        if kind not in ("gyro", "accel"):
-            raise ReportingError("unknown IMU bias kind")
-        imu = metrics["imus"].setdefault(identifier, {})
-        if kind not in imu:
-            imu[kind] = distribution([], "rad/s" if kind == "gyro" else "m/s^2")
-        imu[kind]["bias_spline"] = bias_spline_statistics(bias)
+        metrics["stereo_pairs"][identifier] = _stereo_pair_metrics(
+            artifacts, left, right, calibration_type, options)
+    metrics["imus"] = _imu_metrics(artifacts)
     metrics["solver_state"] = artifacts.get("state")
     metrics["optimizer"] = artifacts.get("optimizer")
     metrics["objective"] = artifacts.get("objective")

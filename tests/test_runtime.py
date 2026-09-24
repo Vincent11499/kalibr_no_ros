@@ -2,12 +2,14 @@ import argparse
 from contextlib import redirect_stderr
 import io
 import json
+import os
 import sys
 import tempfile
 import time
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -135,7 +137,7 @@ class NativeOptimizerRuntimeTest(unittest.TestCase):
         self.assertEqual(effective["optimizer_threads"], 6)
 
     def test_pipeline_execution_controls_are_validated(self):
-        effective = native_runtime.configure(self.arguments(
+        native_runtime.configure(self.arguments(
             detector_inflight_per_worker=3,
             detector_opencv_threads=2,
             profiling_memory_sample_interval_s=0.1,
@@ -144,6 +146,30 @@ class NativeOptimizerRuntimeTest(unittest.TestCase):
         self.assertEqual(native_runtime.detector_opencv_threads(), 2)
         self.assertEqual(
             native_runtime.profiling_memory_sample_interval_s(), 0.1)
+
+    def test_status_channel_filters_detail_and_stage_timing(self):
+        read_descriptor, write_descriptor = os.pipe()
+        try:
+            native_runtime.set_status_output(write_descriptor, verbose=False)
+            self.assertTrue(native_runtime.status_enabled())
+            self.assertFalse(native_runtime.status_enabled(detail=True))
+            native_runtime.status("summary")
+            native_runtime.status("hidden", detail=True)
+            with mock.patch.object(
+                    runtime.time, "perf_counter",
+                    side_effect=AssertionError("detail stage sampled time")):
+                with native_runtime.status_stage("hidden stage"):
+                    pass
+            native_runtime.clear_status_output()
+            os.close(write_descriptor)
+            write_descriptor = None
+            payload = os.read(read_descriptor, 4096).decode("utf-8")
+        finally:
+            if write_descriptor is not None:
+                os.close(write_descriptor)
+            os.close(read_descriptor)
+        self.assertIn("[kalibr] summary", payload)
+        self.assertNotIn("hidden", payload)
 
     def test_explicit_threads_cover_direct_and_incremental_optimizers(self):
         native_runtime.configure(self.arguments(optimizer_threads=3))

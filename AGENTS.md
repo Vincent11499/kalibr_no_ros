@@ -64,7 +64,7 @@ distortion；baseline 与 target pose 仍 active。
 
 Camera–IMU 保持时间偏移互相关、旋转/gyro bias 初值、连续时间 spline、建图和最终
 联合 LM。`recompute_camera_chain_extrinsics` 仅控制联合阶段 baseline 是否 active，
-不意味着重做相机内参标定。初始化 `direct`/`refine` 语义见
+不意味着重做相机内参标定。初始化 seed 与固定参数语义见
 [初始化说明](docs/INITIALIZATION_ZH.md)；seed 不应增加隐式先验或掩盖秩亏。
 
 统一坐标方向：

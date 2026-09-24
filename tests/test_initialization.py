@@ -17,6 +17,7 @@ from kalibr_no_ros.initialization import (
     InitializationError,
     build_initialization_report,
     canonical_initialization,
+    initialization_stage_decisions,
     validate_initialization,
 )
 from kalibr_no_ros.task import (
@@ -28,6 +29,7 @@ from kalibr_no_ros.task import (
 )
 import kalibr_no_ros.task as task_module
 from kalibr_no_ros import artifacts as artifact_module
+from kalibr_no_ros import delivery
 from kalibr_no_ros import reporting
 
 
@@ -47,12 +49,12 @@ class InitializationValidationTest(unittest.TestCase):
         doc = {'schema_version': '1.0.0', 'kind': 'camera_calibration_initialization',
                'cameras': {'cam1': {'T_cn_cnm1': transform.tolist()},
                            'cam2': {'T_cn_cnm1': transform.tolist()}}}
-        value = validate_initialization(doc, 'camera_calibration', task, strategy='refine')
+        value = validate_initialization(doc, 'camera_calibration', task)
         np.testing.assert_array_equal(value['cameras']['cam1']['T_cam_from_previous'], transform)
         np.testing.assert_array_equal(value['cameras']['cam2']['T_cam_from_previous'], transform)
         doc['cameras']['cam0'] = {'T_cn_cnm1': transform.tolist()}
         with self.assertRaises(InitializationError):
-            validate_initialization(doc, 'camera_calibration', task, strategy='refine')
+            validate_initialization(doc, 'camera_calibration', task)
 
     def camera_task(self, *models):
         return {
@@ -80,7 +82,7 @@ class InitializationValidationTest(unittest.TestCase):
                         {"from": "rear", "to": "left", "T": np.linalg.inv(second).tolist()},
                         {"from": "right", "to": "left", "T": first.tolist()},
                     ]}
-        validated = validate_initialization(document, "camera_calibration", task, strategy="direct")
+        validated = validate_initialization(document, "camera_calibration", task)
         self.assertEqual(list(validated["cameras"]), ["cam0", "cam1", "cam2"])
         self.assertEqual(validated["cameras"]["cam0"]["intrinsics"][0], 400.)
         actual_first = np.asarray(validated["cameras"]["cam1"]["T_cam_from_previous"])
@@ -90,9 +92,10 @@ class InitializationValidationTest(unittest.TestCase):
         origin = np.array([0., 0., 0., 1.])
         np.testing.assert_allclose(actual_second @ actual_first @ origin, second @ first @ origin)
         np.testing.assert_allclose(np.linalg.inv(actual_first) @ actual_first @ origin, origin)
-        self.assertNotIn("extrinsics", canonical_initialization(validated, "direct"))
-        report = build_initialization_report(validated, "direct", task, source_path="seed.yaml",
-                                             source_sha256="abc", path_origin="task", strategy_origin="task")
+        self.assertNotIn("extrinsics", canonical_initialization(validated))
+        report = build_initialization_report(
+            validated, task, source_path="seed.yaml",
+            source_sha256="abc", path_origin="task")
         self.assertEqual(report["camera_id_mapping"], dict(zip(ids, ["cam0", "cam1", "cam2"])))
         self.assertEqual([stage["stage"] for stage in report["stage_decisions"][:3]],
                          ["single_camera_intrinsics." + identifier for identifier in ids])
@@ -104,8 +107,8 @@ class InitializationValidationTest(unittest.TestCase):
         document = {"schema_version": "1.0.0", "kind": "camera_calibration_initialization",
                     "cameras": {"cam1": {"intrinsics": [400., 401., 320., 240.],
                                            "distortion_coeffs": [0.] * 4}}}
-        self.assertEqual(list(validate_initialization(document, "camera_calibration", task,
-                                                       strategy="direct")["cameras"]), ["cam0"])
+        self.assertEqual(list(validate_initialization(
+            document, "camera_calibration", task)["cameras"]), ["cam0"])
 
     def test_refine_accepts_only_explicit_extrinsics(self):
         task = self.camera_task("pinhole-equi", "pinhole-equi")
@@ -113,8 +116,7 @@ class InitializationValidationTest(unittest.TestCase):
                     "extrinsics": [{"from": "cam0", "to": "cam1", "T": IDENTITY4}]}
         validated = validate_initialization(document, "camera_calibration", task)
         self.assertEqual(validated["cameras"], {"cam1": {"T_cam_from_previous": IDENTITY4}})
-        with self.assertRaisesRegex(InitializationError, "direct initialization requires"):
-            validate_initialization(document, "camera_calibration", task, strategy="direct")
+        self.assertNotIn("strategy", validated)
 
     def test_explicit_extrinsics_reject_ambiguous_or_invalid_edges(self):
         task = self.camera_task("pinhole-equi", "pinhole-equi", "pinhole-equi")
@@ -150,12 +152,14 @@ class InitializationValidationTest(unittest.TestCase):
         task = {"job": "camera_imu_calibration", "imus": [{"path": "imu.yaml"}]}
         document = {"schema_version": "1.0.0", "kind": "camera_imu_calibration_initialization",
                     "camera_imu": {"timeshift_cam_imu_s": {"rear": .002, "front": -.001}}}
-        validated = validate_initialization(document, "camera_imu_calibration", task,
-                                            strategy="direct", camera_ids=["front", "rear"])
+        validated = validate_initialization(
+            document, "camera_imu_calibration", task,
+            camera_ids=["front", "rear"])
         self.assertEqual(validated["camera_imu"]["timeshift_cam_imu_s"], {"cam0": -.001, "cam1": .002})
-        report = build_initialization_report(validated, "direct", task, camera_ids=["front", "rear"],
-                                             source_path="seed.yaml", source_sha256="abc",
-                                             path_origin="task", strategy_origin="task")
+        report = build_initialization_report(
+            validated, task, camera_ids=["front", "rear"],
+            source_path="seed.yaml", source_sha256="abc",
+            path_origin="task")
         self.assertEqual(report["camera_id_mapping"], {"front": "cam0", "rear": "cam1"})
         self.assertTrue(all(stage["seed_supplied"] for stage in report["stage_decisions"]
                             if stage["stage"].startswith("camera_imu_time_offset.")))
@@ -174,12 +178,12 @@ class InitializationValidationTest(unittest.TestCase):
             },
         }
         validated = validate_initialization(
-            document, "camera_calibration", task, strategy="refine")
+            document, "camera_calibration", task)
         self.assertEqual(validated["cameras"]["cam1"]["distortion_coeffs"], [])
         document["cameras"]["cam0"]["distortion_coeffs"] = [0, 0, 0, 0]
         with self.assertRaisesRegex(InitializationError, "5-element"):
             validate_initialization(
-                document, "camera_calibration", task, strategy="refine")
+                document, "camera_calibration", task)
 
     def test_radtan8_initialization_requires_eight_coefficients(self):
         task = self.camera_task("pinhole-radtan8")
@@ -193,13 +197,13 @@ class InitializationValidationTest(unittest.TestCase):
             },
         }
         validated = validate_initialization(
-            document, "camera_calibration", task, strategy="refine")
+            document, "camera_calibration", task)
         self.assertEqual(
             validated["cameras"]["cam0"]["distortion_coeffs"], [0.0] * 8)
         document["cameras"]["cam0"]["distortion_coeffs"] = [0.0] * 5
         with self.assertRaisesRegex(InitializationError, "8-element"):
             validate_initialization(
-                document, "camera_calibration", task, strategy="refine")
+                document, "camera_calibration", task)
 
     def test_initialization_schema_version_requires_release_string(self):
         task = self.camera_task("pinhole-radtan")
@@ -215,17 +219,16 @@ class InitializationValidationTest(unittest.TestCase):
                     validate_initialization(
                         document, "camera_calibration", task)
 
-    def test_camera_direct_requires_complete_seed(self):
+    def test_initialization_document_rejects_removed_strategy(self):
         task = self.camera_task("pinhole-radtan", "pinhole-equi")
         document = {
             "schema_version": "1.0.0",
             "kind": "camera_calibration_initialization",
+            "strategy": "direct",
             "cameras": {"cam0": {"intrinsics": [400, 400, 320, 240]}},
         }
-        with self.assertRaisesRegex(
-                InitializationError, "direct initialization requires"):
-            validate_initialization(
-                document, "camera_calibration", task, strategy="direct")
+        with self.assertRaisesRegex(InitializationError, "unknown fields.*strategy"):
+            validate_initialization(document, "camera_calibration", task)
 
     def test_transform_rotation_and_bottom_row_are_checked(self):
         task = self.camera_task("pinhole-radtan", "pinhole-radtan")
@@ -311,7 +314,7 @@ class InitializationValidationTest(unittest.TestCase):
         }
         validated = validate_initialization(
             document, "camera_imu_calibration", task,
-            strategy="direct", camera_ids=["cam0"])
+            camera_ids=["cam0"])
         self.assertEqual(
             validated["camera_imu"]["gravity_direction_target"],
             [0.0, 0.0, -1.0])
@@ -339,7 +342,7 @@ class InitializationValidationTest(unittest.TestCase):
                 InitializationError, "calibrate_time_offset"):
             validate_initialization(
                 document, "camera_imu_calibration", task,
-                strategy="refine", camera_ids=["cam0"])
+                camera_ids=["cam0"])
         document = {
             "schema_version": "1.0.0",
             "kind": "camera_imu_calibration_initialization",
@@ -350,24 +353,24 @@ class InitializationValidationTest(unittest.TestCase):
                 InitializationError, "estimate_multi_imu_delay"):
             validate_initialization(
                 document, "camera_imu_calibration", task,
-                strategy="refine", camera_ids=["cam0"])
+                camera_ids=["cam0"])
         task["calibration"]["estimate_multi_imu_delay"] = True
         validated = validate_initialization(
             document, "camera_imu_calibration", task,
-            strategy="refine", camera_ids=["cam0"])
+            camera_ids=["cam0"])
         self.assertEqual(
             validated["imus"]["imu1"]["time_offset_to_reference_s"],
             0.001)
 
-    def test_canonical_document_adds_only_effective_strategy(self):
+    def test_canonical_document_has_no_strategy(self):
         source = {
             "schema_version": "1.0.0",
             "kind": "camera_imu_calibration_initialization",
             "camera_imu": {},
         }
-        canonical = canonical_initialization(source, "direct")
-        self.assertEqual(list(canonical)[:3], ["schema_version", "kind", "strategy"])
-        self.assertEqual(canonical["strategy"], "direct")
+        canonical = canonical_initialization(source)
+        self.assertEqual(list(canonical), ["schema_version", "kind", "camera_imu"])
+        self.assertNotIn("strategy", canonical)
 
     def test_report_records_seed_only_semantics_and_stage_policy(self):
         task = self.camera_task("pinhole-radtan", "pinhole-radtan")
@@ -388,20 +391,51 @@ class InitializationValidationTest(unittest.TestCase):
             },
         }
         report = build_initialization_report(
-            document, "direct", task, source_path="seed.yaml",
-            source_sha256="abc", path_origin="task",
-            strategy_origin="task")
+            document, task, source_path="seed.yaml",
+            source_sha256="abc", path_origin="task")
         self.assertEqual(report["status"], "configured")
         self.assertEqual(report["semantics"]["role"], "initial_value_only")
         baseline = next(
             item for item in report["stage_decisions"]
             if item["stage"] == "camera_chain_baselines")
         self.assertEqual(baseline["pairwise_stereo_lm"], "skipped")
-        self.assertEqual(baseline["full_batch_lm"], "skipped")
+        self.assertEqual(baseline["full_batch_lm"], "run")
         self.assertNotIn("camera_intrinsics_state", baseline)
         self.assertFalse(report["semantics"]["fixed_parameter"])
         self.assertTrue(
             report["semantics"]["final_optimizer_activity_unchanged"])
+
+    def test_camera_stage_decision_matrix_is_stable(self):
+        task = self.camera_task("pinhole-equi", "pinhole-equi")
+        task["job"] = "camera_calibration"
+        complete = {
+            "cameras": {
+                "cam0": {
+                    "intrinsics": [400.0, 400.0, 320.0, 240.0],
+                    "distortion_coeffs": [0.0] * 4,
+                },
+                "cam1": {
+                    "intrinsics": [401.0, 401.0, 320.0, 240.0],
+                    "distortion_coeffs": [0.0] * 4,
+                    "T_cam_from_previous": IDENTITY4,
+                },
+            },
+        }
+        cases = [
+            ({}, ("run", "run", "run")),
+            (complete, ("run", "skipped", "run")),
+        ]
+        for document, expected in cases:
+            with self.subTest(seeded=bool(document)):
+                decisions = initialization_stage_decisions(document, task)
+                camera = decisions[0]
+                baseline = decisions[-1]
+                self.assertEqual(
+                    (camera["single_camera_lm"],
+                     baseline["pairwise_stereo_lm"],
+                     baseline["full_batch_lm"]),
+                    expected,
+                )
 
     def test_report_records_frozen_intrinsics_activity_policy(self):
         task = self.camera_task("pinhole-radtan", "pinhole-radtan")
@@ -423,9 +457,8 @@ class InitializationValidationTest(unittest.TestCase):
         }
 
         report = build_initialization_report(
-            document, "refine", task, source_path="seed.yaml",
-            source_sha256="abc", path_origin="task",
-            strategy_origin="task")
+            document, task, source_path="seed.yaml",
+            source_sha256="abc", path_origin="task")
 
         semantics = report["semantics"]
         self.assertEqual(
@@ -478,9 +511,9 @@ class InitializationValidationTest(unittest.TestCase):
         }
 
         report = build_initialization_report(
-            document, "direct", task, source_path="seed.yaml",
+            document, task, source_path="seed.yaml",
             source_sha256="abc", path_origin="task",
-            strategy_origin="task", solver_backend="system")
+            solver_backend="system")
 
         self.assertEqual(report["solver_backend"], "system")
         self.assertEqual(
@@ -522,9 +555,9 @@ class InitializationValidationTest(unittest.TestCase):
         }
 
         report = build_initialization_report(
-            document, "refine", task, source_path="seed.yaml",
+            document, task, source_path="seed.yaml",
             source_sha256="abc", path_origin="task",
-            strategy_origin="task", solver_backend="native")
+            solver_backend="native")
 
         self.assertEqual(report["solver_backend"], "native")
         self.assertEqual(len(report["stage_decisions"]), 2)
@@ -559,9 +592,8 @@ class InitializationValidationTest(unittest.TestCase):
         with self.assertRaisesRegex(
                 InitializationError, "solver_backend system or native"):
             build_initialization_report(
-                document, "refine", task, source_path="seed.yaml",
-                source_sha256="abc", path_origin="task",
-                strategy_origin="task")
+                document, task, source_path="seed.yaml",
+                source_sha256="abc", path_origin="task")
 
     def test_report_marks_disabled_camera_time_correlation(self):
         task = {
@@ -587,9 +619,9 @@ class InitializationValidationTest(unittest.TestCase):
             },
         }
         report = build_initialization_report(
-            document, "direct", task, source_path="seed.yaml",
+            document, task, source_path="seed.yaml",
             source_sha256="abc", path_origin="task",
-            strategy_origin="default", camera_ids=["cam0"])
+            camera_ids=["cam0"])
         camera_time = next(
             item for item in report["stage_decisions"]
             if item["stage"] == "camera_imu_time_offset.cam0")
@@ -608,7 +640,7 @@ class InitializationValidationTest(unittest.TestCase):
             item for item in report["stage_decisions"]
             if item["stage"] == "multi_imu_preliminary.imu1")
         self.assertEqual(
-            preliminary_imu1["rotation_and_gyro_bias_lm"], "skipped")
+            preliminary_imu1["rotation_and_gyro_bias_lm"], "run_from_seed")
 
 
 class InitializationTaskIntegrationTest(unittest.TestCase):
@@ -630,10 +662,12 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
         if save_diagnostics:
             lines.append("output: {save_diagnostics: true}")
         if initialization is not None:
+            initialization_path = (
+                initialization[0]
+                if isinstance(initialization, tuple) else initialization)
             lines.extend([
                 "initialization:",
-                "  path: {}".format(initialization[0]),
-                "  strategy: {}".format(initialization[1]),
+                "  path: {}".format(initialization_path),
             ])
         path = directory / "task.yaml"
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -649,15 +683,87 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def test_staged_task_preserves_phase_order_and_manifest_states(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            task_path = self._write_camera_task(root)
+            task = load_task(task_path)
+            output = root / "stage"
+            events = []
+
+            def manifest(*unused, **values):
+                events.append("manifest:" + values["status"])
+
+            def validate(*unused, **kwargs):
+                del kwargs
+                events.append("validate")
+                return {"status": "passed"}
+
+            def solve(*unused):
+                events.append("solve")
+                artifact_module.current_context().artifacts["state"] = "completed"
+
+            result = {
+                "schema_version": "1.0.0",
+                "kind": "calibration_result",
+                "calibration_type": "cameras",
+                "cameras": [],
+            }
+
+            with mock.patch.object(
+                    task_module, "write_run_manifest",
+                    side_effect=manifest), \
+                    mock.patch.object(
+                        task_module, "_dataset_alias",
+                        side_effect=lambda *unused: events.append("dataset") or "bag"), \
+                    mock.patch.object(
+                        task_module, "_target_path",
+                        side_effect=lambda *unused: events.append("target") or "target"), \
+                    mock.patch.object(
+                        task_module, "_camera_arguments",
+                        side_effect=lambda *unused: events.append("arguments") or []), \
+                    mock.patch.object(
+                        task_module, "_run_legacy", side_effect=solve), \
+                    mock.patch.object(
+                        task_module, "_collect_outputs",
+                        side_effect=lambda *unused, **kwargs:
+                        events.append("collect") or result), \
+                    mock.patch.object(
+                        delivery, "apply_camera_ids",
+                        side_effect=lambda *unused: events.append("camera_ids")), \
+                    mock.patch.object(
+                        reporting, "generate_report",
+                        side_effect=lambda *unused:
+                        events.append("report") or {"metrics": {}}), \
+                    mock.patch.object(
+                        delivery, "enrich_result",
+                        side_effect=lambda *unused: events.append("enrich")), \
+                    mock.patch(
+                        "kalibr_no_ros.validation.validate_task",
+                        side_effect=validate):
+                task_module._run_task_staged(
+                    ROOT, task_path, output, "camera_calibration", _task=task)
+
+            self.assertEqual(events, [
+                "manifest:running", "validate", "dataset", "target",
+                "arguments", "solve", "collect", "camera_ids", "report",
+                "enrich", "manifest:completed",
+            ])
+
     def test_task_initialization_mapping_is_strict(self):
         with tempfile.TemporaryDirectory() as directory:
             task_path = self._write_camera_task(
-                directory, ("seed.yaml", "refine"))
+                directory, "seed.yaml")
             task = load_task(task_path)
-            self.assertEqual(task["initialization"]["strategy"], "refine")
+            self.assertEqual(task["initialization"], {"path": "seed.yaml"})
             text = task_path.read_text(encoding="utf-8")
             task_path.write_text(text + "  extra: true\n", encoding="utf-8")
             with self.assertRaisesRegex(TaskError, "unknown fields in initialization"):
+                load_task(task_path)
+
+            task_path.write_text(
+                text + "  strategy: direct\n", encoding="utf-8")
+            with self.assertRaisesRegex(TaskError, "direct has been removed"):
                 load_task(task_path)
 
     def test_task_schema_version_requires_release_string(self):
@@ -678,7 +784,7 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
                             TaskError, "task schema_version must be 1.0.0"):
                         load_task(task_path)
 
-    def test_task_initialization_strategy_is_optional(self):
+    def test_task_initialization_path_is_optional(self):
         with tempfile.TemporaryDirectory() as directory:
             seed = Path(directory) / "seed.yaml"
             self._write_camera_seed(seed, 100)
@@ -687,7 +793,7 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
                 stream.write("initialization: {path: seed.yaml}\n")
             task = load_task(task_path)
             resolved = resolve_initialization(task)
-            self.assertEqual(resolved["strategy"], "refine")
+            self.assertNotIn("strategy", resolved)
 
             task_path = self._write_camera_task(directory)
             task_path.write_text(
@@ -707,13 +813,12 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
             self._write_camera_seed(task_dir / "seed.yaml", 100)
             self._write_camera_seed(cli_dir / "seed.yaml", 200)
             task = load_task(self._write_camera_task(
-                task_dir, ("seed.yaml", "direct")))
+                task_dir, "seed.yaml"))
             previous = Path.cwd()
             os.chdir(str(cli_dir))
             try:
                 resolved = resolve_initialization(
-                    task, initialization="seed.yaml",
-                    initialization_strategy="refine")
+                    task, initialization="seed.yaml")
             finally:
                 os.chdir(str(previous))
             self.assertEqual(resolved["path"], (cli_dir / "seed.yaml").resolve())
@@ -721,18 +826,16 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
                 resolved["document"]["cameras"]["cam0"]["intrinsics"][0],
                 200.0)
 
-    def test_initialization_path_without_strategy_defaults_to_refine(self):
+    def test_initialization_path_has_fixed_refinement_semantics(self):
         with tempfile.TemporaryDirectory() as directory:
             seed = Path(directory) / "seed.yaml"
             self._write_camera_seed(seed, 100)
             task = load_task(self._write_camera_task(directory))
             resolved = resolve_initialization(task, initialization=seed)
-            self.assertEqual(resolved["strategy"], "refine")
-            with self.assertRaisesRegex(TaskError, "strategy requires"):
-                resolve_initialization(
-                    task, initialization_strategy="direct")
+            self.assertNotIn("strategy", resolved)
+            self.assertEqual(resolved["path_origin"], "cli")
 
-    def test_self_contained_task_families_resolve_refine_and_direct_initialization(self):
+    def test_self_contained_task_families_resolve_initialization(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             unseeded = load_task(self._write_camera_task(root))
@@ -748,45 +851,36 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
             }
             task_module.dump_yaml(camera_result, root / "calibration.yaml")
             for job in ("camera_calibration", "camera_imu_calibration"):
-                for strategy in ("refine", "direct"):
-                    with self.subTest(job=job, strategy=strategy):
-                        if job == "camera_calibration":
-                            seed = {"schema_version": "1.0.0",
-                                    "kind": "camera_calibration_initialization",
-                                    "cameras": {"cam0": {"intrinsics": [400., 401., 320., 240.]}}}
-                            if strategy == "direct":
-                                seed["cameras"]["cam0"]["distortion_coeffs"] = [0.] * 4
-                            task_path = self._write_camera_task(root, ("seed.yaml", strategy))
-                        else:
-                            seed = {"schema_version": "1.0.0",
-                                    "kind": "camera_imu_calibration_initialization",
-                                    "camera_imu": {"T_cam0_imu": IDENTITY4}}
-                            if strategy == "direct":
-                                seed["camera_imu"].update({
-                                    "timeshift_cam_imu_s": {"cam0": 0.001},
-                                    "gravity_direction_target": [0., 0., -1.],
-                                })
-                            task_path = root / "task.yaml"
-                            task_module.dump_yaml({
-                                "schema_version": "1.0.0", "job": job,
-                                "dataset": {"type": "bag", "path": "missing.bag"},
-                                "target": {"path": "target.yaml"},
-                                "camera_calibration": {"path": "calibration.yaml"},
-                                "imus": [{"path": "imu.yaml", "model": "calibrated"}],
-                                "initialization": {"path": "seed.yaml", "strategy": strategy},
-                            }, task_path)
-                        task_module.dump_yaml(seed, root / "seed.yaml")
-                        resolved = resolve_initialization(load_task(task_path))
-                        self.assertEqual(resolved["strategy"], strategy)
-                        self.assertEqual(resolved["path_origin"], "task")
-                        self.assertEqual(resolved["strategy_origin"], "task")
-                        self.assertEqual(resolved["path"], root / "seed.yaml")
+                with self.subTest(job=job):
+                    if job == "camera_calibration":
+                        seed = {"schema_version": "1.0.0",
+                                "kind": "camera_calibration_initialization",
+                                "cameras": {"cam0": {"intrinsics": [400., 401., 320., 240.]}}}
+                        task_path = self._write_camera_task(root, "seed.yaml")
+                    else:
+                        seed = {"schema_version": "1.0.0",
+                                "kind": "camera_imu_calibration_initialization",
+                                "camera_imu": {"T_cam0_imu": IDENTITY4}}
+                        task_path = root / "task.yaml"
+                        task_module.dump_yaml({
+                            "schema_version": "1.0.0", "job": job,
+                            "dataset": {"type": "bag", "path": "missing.bag"},
+                            "target": {"path": "target.yaml"},
+                            "camera_calibration": {"path": "calibration.yaml"},
+                            "imus": [{"path": "imu.yaml", "model": "calibrated"}],
+                            "initialization": {"path": "seed.yaml"},
+                        }, task_path)
+                    task_module.dump_yaml(seed, root / "seed.yaml")
+                    resolved = resolve_initialization(load_task(task_path))
+                    self.assertEqual(resolved["path_origin"], "task")
+                    self.assertNotIn("strategy", resolved)
+                    self.assertEqual(resolved["path"], root / "seed.yaml")
 
     def test_invalid_initialization_does_not_clean_output(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             task_path = self._write_camera_task(
-                root, ("invalid.yaml", "refine"))
+                root, "invalid.yaml")
             (root / "invalid.yaml").write_text(
                 "schema_version: 1.0.0\n"
                 "kind: camera_imu_calibration_initialization\n",
@@ -805,7 +899,7 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
             root = Path(directory)
             self._write_camera_seed(root / "seed.yaml", 100)
             task_path = self._write_camera_task(
-                root, ("seed.yaml", "refine"), save_diagnostics=True)
+                root, "seed.yaml", save_diagnostics=True)
             output = root / "output"
 
             def fail_with_diagnostics(prefix, command, arguments, work):
@@ -845,7 +939,7 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
             root = Path(directory)
             self._write_camera_seed(root / "seed.yaml", 100)
             task_path = self._write_camera_task(
-                root, ("seed.yaml", "refine"), save_diagnostics=True)
+                root, "seed.yaml", save_diagnostics=True)
             output = root / "output"
 
             with self.assertRaisesRegex(TaskError, "input validation failed"):
@@ -866,7 +960,7 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
             root = Path(directory)
             self._write_camera_seed(root / "seed.yaml", 100)
             task_path = self._write_camera_task(
-                root, ("seed.yaml", "refine"), save_diagnostics=True)
+                root, "seed.yaml", save_diagnostics=True)
             output = root / "output"
 
             def finish_native(prefix, command, arguments, work):
@@ -926,7 +1020,7 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
             root = Path(directory)
             self._write_camera_seed(root / "seed.yaml", 100)
             task_path = self._write_camera_task(
-                root, ("seed.yaml", "refine"), save_diagnostics=True)
+                root, "seed.yaml", save_diagnostics=True)
             output = root / "output"
 
             def finish_native(prefix, command, arguments, work):
@@ -1002,6 +1096,25 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
             with self.subTest(key=key, value=value):
                 with self.assertRaises(TaskError):
                     _camera_arguments(invalid, "bag", "target", {})
+
+    def test_solver_mode_is_forwarded_without_shuffle_seed(self):
+        task = {
+            "dataset": {},
+            "cameras": [
+                {"topic": "/cam0", "model": "pinhole-radtan"},
+                {"topic": "/cam1", "model": "pinhole-radtan"},
+            ],
+            "calibration": {"shuffle": True, "solver_mode": "full_batch"},
+        }
+        arguments = _camera_arguments(task, "bag", "target", {})
+        self.assertEqual(
+            arguments[arguments.index("--solver-mode") + 1], "full_batch")
+        self.assertNotIn("--shuffle-seed", arguments)
+
+        task["calibration"] = {}
+        arguments = _camera_arguments(task, "bag", "target", {})
+        self.assertEqual(
+            arguments[arguments.index("--solver-mode") + 1], "incremental")
 
     def test_partial_focal_initialization_ratio_is_forwarded_and_validated(self):
         task = {
@@ -1089,7 +1202,7 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             task_path = self._write_camera_task(
-                root, ("seed.yaml", "refine"), num_cameras=2)
+                root, "seed.yaml", num_cameras=2)
             with task_path.open("a", encoding="utf-8") as stream:
                 stream.write("calibration: {freeze_intrinsics: true}\n")
             (root / "seed.yaml").write_text(
@@ -1127,11 +1240,16 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
         arguments = build_parser().parse_args([
             "calibrate", "cameras", "--config", "task.yaml",
             "--output-dir", "out", "--initialization", "seed.yaml",
-            "--initialization-strategy", "direct",
         ])
         overrides = _runtime_overrides(arguments, "out")
         self.assertEqual(overrides["initialization"], Path("seed.yaml").resolve())
-        self.assertEqual(overrides["initialization_strategy"], "direct")
+        self.assertNotIn("initialization_strategy", overrides)
+        with self.assertRaises(SystemExit):
+            build_parser().parse_args([
+                "calibrate", "cameras", "--config", "task.yaml",
+                "--output-dir", "out",
+                "--initialization-strategy", "direct",
+            ])
 
 
 if __name__ == "__main__":

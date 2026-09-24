@@ -13,6 +13,7 @@ try:
     import igraph
     import sm
     import kalibr_camera_calibration.CameraCalibrator as camera_calibrator
+    import kalibr_camera_calibration.CameraIntializers as camera_initializers
     import kalibr_camera_calibration.MulticamGraph as multicam_graph
     from kalibr_camera_calibration.CameraCalibrator import CameraGeometry
 except ImportError:
@@ -21,6 +22,7 @@ except ImportError:
     igraph = None
     sm = None
     camera_calibrator = None
+    camera_initializers = None
     multicam_graph = None
     CameraGeometry = None
 
@@ -58,6 +60,32 @@ class CameraInitializationTest(unittest.TestCase):
             False)
         camera.dv.shutterDesignVariable().setActive.assert_called_once_with(
             True)
+
+    def test_full_batch_estimator_is_read_only_and_retains_covariance(self):
+        problem = object()
+        estimator = camera_calibrator.FullBatchEstimator(problem, 20)
+
+        self.assertIs(estimator.getProblem(), problem)
+        self.assertEqual(estimator.getNumBatches(), 20)
+        self.assertFalse(hasattr(estimator, "addBatch"))
+        with self.assertRaisesRegex(RuntimeError, "has not been analyzed"):
+            estimator.getSigma2Theta()
+        estimator.setSigma2Theta(np.eye(3))
+        np.testing.assert_array_equal(estimator.getSigma2Theta(), np.eye(3))
+        self.assertIs(
+            camera_initializers.kcc.FullBatchTargetView,
+            camera_calibrator.FullBatchTargetView,
+        )
+
+    def test_full_batch_target_pose_exposes_shared_output_snapshot(self):
+        matrix = np.eye(4)
+        matrix[0, 3] = 0.12
+        native_pose = mock.Mock()
+        native_pose.toTransformationMatrix.return_value = matrix
+
+        pose = camera_calibrator.FullBatchTargetPose(native_pose)
+
+        np.testing.assert_array_equal(pose.T(), matrix)
 
     def test_frozen_intrinsics_policy_clamps_projection_and_distortion(self):
         camera = self.camera_with_activity_policy(True)
@@ -236,11 +264,10 @@ class CameraInitializationTest(unittest.TestCase):
             )
 
     @staticmethod
-    def base_document(strategy="refine"):
+    def base_document():
         return {
             "schema_version": "1.0.0",
             "kind": "camera_calibration_initialization",
-            "strategy": strategy,
             "cameras": {},
         }
 
@@ -257,7 +284,7 @@ class CameraInitializationTest(unittest.TestCase):
         loaded = camera_calibrator.loadCameraCalibrationInitialization(
             str(self.write_initialization(document)), 2)
 
-        self.assertEqual(loaded["strategy"], "refine")
+        self.assertNotIn("strategy", loaded)
         self.assertEqual(
             loaded["cameras"]["cam0"]["intrinsics"],
             (400.0, 401.0, 320.0, 240.0),
@@ -265,8 +292,9 @@ class CameraInitializationTest(unittest.TestCase):
         self.assertNotIn(
             "distortion_coeffs", loaded["cameras"]["cam0"])
 
-    def test_direct_rejects_an_incomplete_seed(self):
-        document = self.base_document("direct")
+    def test_removed_strategy_is_rejected(self):
+        document = self.base_document()
+        document["strategy"] = "direct"
         document["cameras"] = {
             "cam0": {
                 "intrinsics": [400.0, 400.0, 320.0, 240.0],
@@ -278,9 +306,7 @@ class CameraInitializationTest(unittest.TestCase):
             },
         }
 
-        with self.assertRaisesRegex(
-            RuntimeError, r"cam1\.T_cam_from_previous"
-        ):
+        with self.assertRaisesRegex(RuntimeError, "unknown top-level.*strategy"):
             camera_calibrator.loadCameraCalibrationInitialization(
                 str(self.write_initialization(document)), 2)
 
@@ -469,7 +495,7 @@ class CameraInitializationTest(unittest.TestCase):
         )
         self.assertTrue(camera.isGeometryInitialized)
 
-    def test_direct_seed_uses_metadata_bootstrap_without_intrinsic_lm(self):
+    def test_fixed_intrinsics_seed_uses_metadata_bootstrap_without_intrinsic_lm(self):
         camera = CameraGeometry.__new__(CameraGeometry)
         camera.geometry = acvb.DistortedPinhole.geometry()
 
@@ -487,7 +513,7 @@ class CameraInitializationTest(unittest.TestCase):
         with mock.patch.object(
             camera_calibrator.kcc,
             "calibrateIntrinsics",
-            side_effect=AssertionError("direct mode ran intrinsic LM"),
+            side_effect=AssertionError("fixed-intrinsics mode ran intrinsic LM"),
         ):
             success = camera.initGeometryFromSeed(
                 [observation], "cam0", seed
@@ -580,7 +606,7 @@ class CameraInitializationTest(unittest.TestCase):
         self.assertIs(camera.dv, design_variable)
         self.assertEqual(camera.ctarget, "detector")
 
-    def test_complete_refine_baselines_skip_pair_stereo_but_run_full_batch(self):
+    def test_complete_seed_baselines_skip_pair_stereo_but_run_full_batch(self):
         graph = multicam_graph.MulticamCalibrationGraph.__new__(
             multicam_graph.MulticamCalibrationGraph
         )
@@ -599,7 +625,8 @@ class CameraInitializationTest(unittest.TestCase):
         ), mock.patch.object(
             multicam_graph.kcc,
             "solveFullBatch",
-            side_effect=lambda cameras, baselines, owner: (True, baselines),
+            side_effect=lambda cameras, baselines, owner: (
+                True, baselines, object()),
         ) as full_batch:
             result = graph.getInitialGuesses(
                 ["cam0", "cam1"], [baseline]
@@ -607,9 +634,11 @@ class CameraInitializationTest(unittest.TestCase):
 
         full_batch.assert_called_once()
         self.assertEqual(graph.optimal_baseline_edges, set())
+        self.assertTrue(graph.full_batch_success)
+        self.assertIsNotNone(graph.full_batch_calibration)
         np.testing.assert_allclose(result[0].T(), transform)
 
-    def test_partial_refine_baselines_overlay_before_full_batch(self):
+    def test_partial_seed_baselines_overlay_before_full_batch(self):
         class ObservationDatabase:
             @staticmethod
             def getAllObsTwoCams(cam_a, cam_b):
@@ -633,7 +662,7 @@ class CameraInitializationTest(unittest.TestCase):
 
         def full_batch(cameras, baselines, owner):
             captured.extend(baselines)
-            return True, baselines
+            return True, baselines, object()
 
         with mock.patch.object(
             multicam_graph.kcc,

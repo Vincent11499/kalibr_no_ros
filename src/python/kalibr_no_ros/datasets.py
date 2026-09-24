@@ -40,25 +40,25 @@ def _source_metadata(dataset, idx):
     return result
 
 
-class _Iterator:
+class _DatasetIterator:
     def __init__(self, dataset, getter, indices=None):
         self.dataset = dataset
         self.getter = getter
         count = len(dataset.indices)
         self.indices = np.arange(count) if indices is None else indices
-        self.iter = iter(self.indices)
+        self._positions = iter(self.indices)
 
     def __iter__(self):
         return self
 
     def next(self):
-        return self.getter(int(next(self.iter)))
+        return self.getter(int(next(self._positions)))
 
     def __next__(self):
-        return self.getter(int(next(self.iter)))
+        return self.getter(int(next(self._positions)))
 
 
-class _TimeBridge:
+class _TimestampConverter:
     def __init__(self, perform_synchronization, time_factory=None, corrector=None):
         self.perform_synchronization = bool(perform_synchronization)
         if time_factory is None:
@@ -119,7 +119,7 @@ class BagImageDatasetReader:
         self._dataset = self.bag.index_images(imagetopic)
         all_records = self._dataset.index
         self.index = all_records
-        self._time = _TimeBridge(
+        self._time = _TimestampConverter(
             perform_synchronization, time_factory, timestamp_corrector
         )
         self._time.train(all_records)
@@ -132,18 +132,18 @@ class BagImageDatasetReader:
         return self.readDataset()
 
     def readDataset(self):
-        return _Iterator(self, self.getImage, self.indices.copy())
+        return _DatasetIterator(self, self.getImage, self.indices.copy())
 
     def readDatasetWithTiming(self):
         """Iterate images with bag-read, deserialize, and decode timings."""
-        return _Iterator(self, self.getImageWithTiming, self.indices.copy())
+        return _DatasetIterator(self, self.getImageWithTiming, self.indices.copy())
 
     def readDatasetDeferred(self):
         """Iterate raw picklable messages for detector-worker decoding."""
-        return _Iterator(self, self.getDeferredImage, self.indices.copy())
+        return _DatasetIterator(self, self.getDeferredImage, self.indices.copy())
 
     def readDatasetDeferredWithTiming(self):
-        return _Iterator(
+        return _DatasetIterator(
             self, self.getDeferredImageWithTiming, self.indices.copy())
 
     def readDatasetShuffle(self):
@@ -151,7 +151,7 @@ class BagImageDatasetReader:
         # Preserve that observable behavior for repeated iterator creation.
         indices = self.indices
         np.random.shuffle(indices)
-        return _Iterator(self, self.getImage, indices)
+        return _DatasetIterator(self, self.getImage, indices)
 
     def numImages(self):
         return len(self.indices)
@@ -215,7 +215,7 @@ class BagImuDatasetReader:
         self.bag = reader or open_dataset(bagfile)
         all_records = self.bag.read_imu(imutopic)
         self.index = all_records
-        self._time = _TimeBridge(
+        self._time = _TimestampConverter(
             perform_synchronization, time_factory, timestamp_corrector
         )
         self._time.train(all_records)
@@ -227,12 +227,12 @@ class BagImuDatasetReader:
         return self.readDataset()
 
     def readDataset(self):
-        return _Iterator(self, self.getMessage, self.indices.copy())
+        return _DatasetIterator(self, self.getMessage, self.indices.copy())
 
     def readDatasetShuffle(self):
         indices = self.indices
         np.random.shuffle(indices)
-        return _Iterator(self, self.getMessage, indices)
+        return _DatasetIterator(self, self.getMessage, indices)
 
     def numMessages(self):
         return len(self.indices)

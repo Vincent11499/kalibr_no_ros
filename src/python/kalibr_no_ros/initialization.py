@@ -19,8 +19,6 @@ from .rolling_shutter import (
 )
 
 INITIALIZATION_SCHEMA_VERSION = SCHEMA_VERSION
-INITIALIZATION_STRATEGIES = frozenset(("refine", "direct"))
-
 _JOB_KINDS = {
     "camera_calibration": "camera_calibration_initialization",
     CAMERA_RS_JOB: "camera_calibration_initialization",
@@ -157,17 +155,21 @@ def _transform(value, field):
 def validate_task_initialization(value):
     """Validate the optional ``initialization`` mapping in a task document."""
     value = _mapping(value, "initialization")
-    _reject_unknown(value, {"path", "strategy"}, "initialization")
+    if "strategy" in value:
+        if value["strategy"] == "direct":
+            raise InitializationError(
+                "initialization.strategy: direct has been removed; delete "
+                "strategy and provide initialization.path to refine the seed")
+        raise InitializationError(
+            "initialization.strategy has been removed; delete the field because "
+            "all supplied initial values are refined")
+    _reject_unknown(value, {"path"}, "initialization")
     missing = {"path"} - set(value)
     if missing:
         raise InitializationError(
             "initialization requires {}".format(_field_list(missing)))
     if not isinstance(value["path"], str) or not value["path"].strip():
         raise InitializationError("initialization.path must be a non-empty string")
-    if ("strategy" in value
-            and value["strategy"] not in INITIALIZATION_STRATEGIES):
-        raise InitializationError(
-            "initialization.strategy must be refine or direct")
 
 
 def _validate_header(document, expected_job):
@@ -242,7 +244,7 @@ def _camera_extrinsics(value, camera_ids):
     return result
 
 
-def _validate_camera_document(document, task, strategy):
+def _validate_camera_document(document, task):
     _reject_unknown(document, {"schema_version", "kind", "cameras", "extrinsics"},
                     "camera initialization")
     if "cameras" not in document and "extrinsics" not in document:
@@ -260,9 +262,6 @@ def _validate_camera_document(document, task, strategy):
     result = {}
     for index, camera_id in enumerate(camera_ids):
         if camera_id not in cameras and camera_id not in extrinsics:
-            if strategy == "direct":
-                raise InitializationError(
-                    "direct initialization requires {}".format(camera_id))
             continue
         block = dict(_mapping(cameras.get(camera_id, {}), "cameras.{}".format(camera_id)))
         _reject_unknown(block, _CAMERA_FIELDS, "cameras.{}".format(camera_id))
@@ -292,16 +291,6 @@ def _validate_camera_document(document, task, strategy):
                 "cameras.{}.T_cam_from_previous".format(camera_id))
         elif camera_id in extrinsics:
             validated["T_cam_from_previous"] = extrinsics[camera_id]
-        if strategy == "direct":
-            for field in ("intrinsics", "distortion_coeffs"):
-                if field not in validated:
-                    raise InitializationError(
-                        "direct initialization requires cameras.{}.{}".format(
-                            camera_id, field))
-            if index > 0 and "T_cam_from_previous" not in validated:
-                raise InitializationError(
-                    "direct initialization requires extrinsics between {} and {}".format(
-                        camera_ids[index - 1], camera_id))
         result["cam{}".format(index)] = validated
     return {"cameras": result}
 
@@ -436,8 +425,8 @@ def _validate_camera_imu_document(document, task, camera_ids):
     return result
 
 
-def _validate_strategy_requirements(body, task, strategy):
-    if task.get("job") not in CAMERA_IMU_JOBS or strategy != "refine":
+def _validate_time_seed_requirements(body, task):
+    if task.get("job") not in CAMERA_IMU_JOBS:
         return
     calibration = task.get("calibration") or {}
     camera_shifts = (body.get("camera_imu") or {}).get(
@@ -445,7 +434,7 @@ def _validate_strategy_requirements(body, task, strategy):
     if (camera_shifts
             and calibration.get("calibrate_time_offset", True) is False):
         raise InitializationError(
-            "refine camera time-shift initialization requires "
+            "camera time-shift seed requires "
             "calibration.calibrate_time_offset: true")
     imu_time_seeds = [
         imu_id for imu_id, block in (body.get("imus") or {}).items()
@@ -454,28 +443,24 @@ def _validate_strategy_requirements(body, task, strategy):
     if (imu_time_seeds
             and not calibration.get("estimate_multi_imu_delay", False)):
         raise InitializationError(
-            "refine inter-IMU time initialization for {} requires "
+            "inter-IMU time seed for {} requires "
             "calibration.estimate_multi_imu_delay: true".format(
                 _field_list(imu_time_seeds)))
 
 
-def validate_initialization(document, expected_job, task, strategy="refine",
-                            camera_ids=None):
+def validate_initialization(document, expected_job, task, camera_ids=None):
     """Validate and canonicalize one public initialization document.
 
-    ``strategy`` is supplied by the task/CLI rather than by the public document.
-    The returned mapping intentionally does not yet contain it; callers add it to
-    the ephemeral legacy-facing document.
+    Supplied values are always refinement starting points; initialization has
+    no selectable strategy.
     """
     document = _mapping(document, "initialization document")
-    if strategy not in INITIALIZATION_STRATEGIES:
-        raise InitializationError("initialization strategy must be refine or direct")
     kind = _validate_header(document, expected_job)
     if expected_job in CAMERA_CALIBRATION_JOBS:
-        body = _validate_camera_document(document, task, strategy)
+        body = _validate_camera_document(document, task)
     else:
         body = _validate_camera_imu_document(document, task, camera_ids)
-    _validate_strategy_requirements(body, task, strategy)
+    _validate_time_seed_requirements(body, task)
     result = {
         "schema_version": INITIALIZATION_SCHEMA_VERSION,
         "kind": kind,
@@ -484,8 +469,7 @@ def validate_initialization(document, expected_job, task, strategy="refine",
     return result
 
 
-def load_initialization(path, expected_job, task, strategy="refine",
-                        camera_ids=None):
+def load_initialization(path, expected_job, task, camera_ids=None):
     """Load, strictly validate, and canonicalize an initialization YAML file."""
     path = Path(path)
     try:
@@ -495,17 +479,14 @@ def load_initialization(path, expected_job, task, strategy="refine",
         raise InitializationError(
             "could not read initialization file {}: {}".format(path, error)) from error
     return validate_initialization(
-        document, expected_job, task, strategy=strategy, camera_ids=camera_ids)
+        document, expected_job, task, camera_ids=camera_ids)
 
 
-def canonical_initialization(document, strategy):
-    """Add the effective strategy in stable top-level order for legacy code."""
-    if strategy not in INITIALIZATION_STRATEGIES:
-        raise InitializationError("initialization strategy must be refine or direct")
+def canonical_initialization(document):
+    """Return the stable legacy-facing initialization document."""
     result = {
         "schema_version": document["schema_version"],
         "kind": document["kind"],
-        "strategy": strategy,
     }
     for field in ("cameras", "camera_imu", "imus"):
         if field in document:
@@ -514,7 +495,7 @@ def canonical_initialization(document, strategy):
 
 
 def _rolling_shutter_camera_stage_decisions(
-        document, strategy, task, solver_backend):
+        document, task, solver_backend):
     """Describe only stages that the selected pure-visual RS solver owns."""
     if solver_backend not in {"system", "native"}:
         raise InitializationError(
@@ -542,7 +523,7 @@ def _rolling_shutter_camera_stage_decisions(
             field for field in cameras.get(native_id, {})
             if field in {"intrinsics", "distortion_coeffs"})
         if solver_backend == "system":
-            if strategy == "direct" or freeze_intrinsics:
+            if freeze_intrinsics:
                 geometry_initialization = "complete_seed"
             elif fields:
                 geometry_initialization = "observations_with_seed"
@@ -581,9 +562,7 @@ def _rolling_shutter_camera_stage_decisions(
                 if "T_cam_from_previous" in cameras.get(
                     "cam{}".format(index), {})
             ]
-            if strategy == "direct":
-                baseline_initialization = "complete_seed"
-            elif supplied:
+            if supplied:
                 baseline_initialization = "view_graph_with_seed_overrides"
             else:
                 baseline_initialization = "view_graph"
@@ -623,69 +602,58 @@ def _rolling_shutter_camera_stage_decisions(
     return decisions
 
 
-def initialization_stage_decisions(
-        document, strategy, task, camera_ids=None, solver_backend=None):
-    """Describe how supplied blocks alter initialization, not final activity.
-
-    The report is deliberately derived from the validated canonical document.
-    It therefore remains available even when the native command fails before
-    producing a calibration result.
-    """
-    job = task["job"]
+def _camera_calibration_stage_decisions(document, task):
     decisions = []
-    if job == CAMERA_RS_JOB:
-        return _rolling_shutter_camera_stage_decisions(
-            document, strategy, task, solver_backend)
-    if job == "camera_calibration":
-        freeze_intrinsics = (task.get("calibration") or {}).get(
-            "freeze_intrinsics", False) is True
-        cameras = document.get("cameras", {})
-        for index, camera in enumerate(task["cameras"]):
-            native_id = "cam{}".format(index)
-            camera_id = camera.get("id", native_id)
-            fields = sorted(cameras.get(native_id, {}))
-            decisions.append({
-                "stage": "single_camera_intrinsics.{}".format(camera_id),
-                "supplied_fields": [
-                    field for field in fields
-                    if field in {"intrinsics", "distortion_coeffs"}
-                ],
-                "analytic_projection": (
-                    "skipped_seeded_geometry_from_observation_resolution"
-                    if "intrinsics" in fields else "native"
-                ),
-                "single_camera_lm": (
-                    "skipped"
-                    if strategy == "direct" or freeze_intrinsics else "run"
-                ),
-                "final_incremental_state": (
-                    "fixed" if freeze_intrinsics else "active"
-                ),
-            })
-        if len(task["cameras"]) > 1:
-            supplied = [
-                task["cameras"][index].get("id", "cam{}".format(index))
-                for index in range(1, len(task["cameras"]))
-                if "T_cam_from_previous" in cameras.get(
-                    "cam{}".format(index), {})
-            ]
-            complete = len(supplied) == len(task["cameras"]) - 1
-            baseline_decision = {
-                "stage": "camera_chain_baselines",
-                "supplied_transforms": supplied,
-                "pairwise_stereo_lm": (
-                    "skipped" if strategy == "direct" or complete else "run"
-                ),
-                "full_batch_lm": "skipped" if strategy == "direct" else "run",
-                "final_incremental_state": "active",
-            }
-            if freeze_intrinsics:
-                baseline_decision["camera_intrinsics_state"] = "fixed"
-            decisions.append(baseline_decision)
-        return decisions
+    freeze_intrinsics = (task.get("calibration") or {}).get(
+        "freeze_intrinsics", False) is True
+    cameras = document.get("cameras", {})
+    for index, camera in enumerate(task["cameras"]):
+        native_id = "cam{}".format(index)
+        camera_id = camera.get("id", native_id)
+        fields = sorted(cameras.get(native_id, {}))
+        decisions.append({
+            "stage": "single_camera_intrinsics.{}".format(camera_id),
+            "supplied_fields": [
+                field for field in fields
+                if field in {"intrinsics", "distortion_coeffs"}
+            ],
+            "analytic_projection": (
+                "skipped_seeded_geometry_from_observation_resolution"
+                if "intrinsics" in fields else "native"
+            ),
+            "single_camera_lm": (
+                "skipped" if freeze_intrinsics else "run"
+            ),
+            "final_incremental_state": (
+                "fixed" if freeze_intrinsics else "active"
+            ),
+        })
+    if len(task["cameras"]) > 1:
+        supplied = [
+            task["cameras"][index].get("id", "cam{}".format(index))
+            for index in range(1, len(task["cameras"]))
+            if "T_cam_from_previous" in cameras.get(
+                "cam{}".format(index), {})
+        ]
+        complete = len(supplied) == len(task["cameras"]) - 1
+        baseline_decision = {
+            "stage": "camera_chain_baselines",
+            "supplied_transforms": supplied,
+            "pairwise_stereo_lm": (
+                "skipped" if complete else "run"
+            ),
+            "full_batch_lm": "run",
+            "final_incremental_state": "active",
+        }
+        if freeze_intrinsics:
+            baseline_decision["camera_intrinsics_state"] = "fixed"
+        decisions.append(baseline_decision)
+    return decisions
 
-    camera_ids = list(camera_ids or ())
-    camera_imu = document.get("camera_imu", {})
+
+def _camera_imu_time_stage_decisions(
+        camera_imu, task, camera_ids):
+    decisions = []
     shifts = camera_imu.get("timeshift_cam_imu_s", {})
     time_calibration = (task.get("calibration") or {}).get(
         "calibrate_time_offset", True) is not False
@@ -693,8 +661,6 @@ def initialization_stage_decisions(
         supplied = "cam{}".format(index) in shifts
         if not time_calibration:
             correlation = "disabled"
-        elif supplied and strategy == "direct":
-            correlation = "skipped"
         elif supplied:
             correlation = "residual_about_seed"
         else:
@@ -705,27 +671,25 @@ def initialization_stage_decisions(
             "cross_correlation": correlation,
             "final_joint_state": "active" if time_calibration else "inactive",
         })
+    return decisions
 
-    imu0 = document.get("imus", {}).get("imu0", {})
+
+def _camera_imu_alignment_stage_decision(camera_imu, imu0):
     transform_supplied = "T_cam0_imu" in camera_imu
     gyro_bias_supplied = "gyroscope_bias_rad_s" in imu0
-    if strategy == "direct" and transform_supplied and gyro_bias_supplied:
-        preliminary = "skipped"
-    elif strategy == "direct" and transform_supplied:
-        preliminary = "rotation_fixed_bias_solved"
-    elif strategy == "direct" and gyro_bias_supplied:
-        preliminary = "bias_fixed_rotation_solved"
-    else:
-        preliminary = "run_from_seed" if (
-            transform_supplied or gyro_bias_supplied) else "native"
-    decisions.append({
+    preliminary = "run_from_seed" if (
+        transform_supplied or gyro_bias_supplied) else "native"
+    return {
         "stage": "camera_imu_rotation_and_gyro_bias",
         "T_cam0_imu_supplied": transform_supplied,
         "imu0_gyro_bias_supplied": gyro_bias_supplied,
         "preliminary_lm": preliminary,
         "final_joint_state": "active",
-    })
+    }
 
+
+def _imu_stage_decisions(document, task):
+    decisions = []
     for index, _imu in enumerate(task.get("imus") or ()):  # final joint seeds
         imu_id = "imu{}".format(index)
         block = document.get("imus", {}).get(imu_id, {})
@@ -745,13 +709,7 @@ def initialization_stage_decisions(
         if index:
             transform_supplied = "T_imu_from_reference" in block
             gyro_bias_supplied = "gyroscope_bias_rad_s" in block
-            if strategy == "direct" and transform_supplied and gyro_bias_supplied:
-                rotation_bias_lm = "skipped"
-            elif strategy == "direct" and transform_supplied:
-                rotation_bias_lm = "rotation_fixed_bias_solved"
-            elif strategy == "direct" and gyro_bias_supplied:
-                rotation_bias_lm = "bias_fixed_rotation_solved"
-            elif transform_supplied or gyro_bias_supplied:
+            if transform_supplied or gyro_bias_supplied:
                 rotation_bias_lm = "run_from_seed"
             else:
                 rotation_bias_lm = "native"
@@ -761,27 +719,47 @@ def initialization_stage_decisions(
                 "T_imu_from_reference_supplied": transform_supplied,
                 "gyro_bias_supplied": gyro_bias_supplied,
                 "rotation_and_gyro_bias_lm": rotation_bias_lm,
-                "relative_rotation": (
-                    "fixed_in_preliminary"
-                    if strategy == "direct"
-                    and transform_supplied else "solved"
-                ),
+                "relative_rotation": "solved",
                 "time_correlation": (
-                    "skipped"
-                    if strategy == "direct"
-                    and "time_offset_to_reference_s" in block
-                    else ("residual_about_seed"
-                          if "time_offset_to_reference_s" in block
-                          else "native")
+                    "residual_about_seed"
+                    if "time_offset_to_reference_s" in block else "native"
                 ),
                 "final_joint_state": "fixed_precomputed_offset",
             })
     return decisions
 
 
-def build_initialization_report(document, strategy, task, *, source_path,
-                                source_sha256, path_origin,
-                                strategy_origin, camera_ids=None,
+def _camera_imu_stage_decisions(document, task, camera_ids):
+    camera_imu = document.get("camera_imu", {})
+    imus = document.get("imus", {})
+    decisions = _camera_imu_time_stage_decisions(
+        camera_imu, task, camera_ids)
+    decisions.append(_camera_imu_alignment_stage_decision(
+        camera_imu, imus.get("imu0", {})))
+    decisions.extend(_imu_stage_decisions(document, task))
+    return decisions
+
+
+def initialization_stage_decisions(
+        document, task, camera_ids=None, solver_backend=None):
+    """Describe how supplied blocks alter initialization, not final activity.
+
+    The report is deliberately derived from the validated canonical document.
+    It therefore remains available even when the native command fails before
+    producing a calibration result.
+    """
+    job = task["job"]
+    if job == CAMERA_RS_JOB:
+        return _rolling_shutter_camera_stage_decisions(
+            document, task, solver_backend)
+    if job == "camera_calibration":
+        return _camera_calibration_stage_decisions(document, task)
+    return _camera_imu_stage_decisions(
+        document, task, list(camera_ids or ()))
+
+
+def build_initialization_report(document, task, *, source_path,
+                                source_sha256, path_origin, camera_ids=None,
                                 solver_backend=None):
     """Build the stable provenance report written before native execution."""
     job = task.get("job")
@@ -823,12 +801,10 @@ def build_initialization_report(document, strategy, task, *, source_path,
         "kind": "calibration_initialization_report",
         "job": task["job"],
         "status": "configured",
-        "strategy": strategy,
         "source": {
             "path": str(source_path),
             "sha256": str(source_sha256),
             "path_origin": str(path_origin),
-            "strategy_origin": str(strategy_origin),
         },
         "semantics": {
             "role": (
@@ -844,7 +820,7 @@ def build_initialization_report(document, strategy, task, *, source_path,
         },
         "configured": copy.deepcopy(document),
         "stage_decisions": initialization_stage_decisions(
-            document, strategy, task, camera_ids=camera_ids,
+            document, task, camera_ids=camera_ids,
             solver_backend=solver_backend),
     }
     if task["job"] == CAMERA_RS_JOB:

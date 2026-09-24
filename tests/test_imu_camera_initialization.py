@@ -117,15 +117,14 @@ class CameraImuInitializationLoaderTest(unittest.TestCase):
         return path
 
     @staticmethod
-    def base_document(strategy="refine"):
+    def base_document():
         return {
             "schema_version": "1.0.0",
             "kind": "camera_imu_calibration_initialization",
-            "strategy": strategy,
         }
 
-    def test_partial_direct_document_is_valid(self):
-        document = self.base_document("direct")
+    def test_partial_document_is_valid(self):
+        document = self.base_document()
         document["camera_imu"] = {
             "timeshift_cam_imu_s": {"cam1": 0.002},
             "gravity_direction_target": [0.0, 0.0, -2.0],
@@ -138,8 +137,15 @@ class CameraImuInitializationLoaderTest(unittest.TestCase):
             str(self.write_document(document)), num_cameras=2,
             imu_models=["calibrated", "calibrated"])
 
-        self.assertEqual(loaded["strategy"], "direct")
+        self.assertNotIn("strategy", loaded)
         self.assertNotIn("T_cam0_imu", loaded["camera_imu"])
+
+    def test_removed_strategy_is_rejected(self):
+        document = self.base_document()
+        document["strategy"] = "direct"
+        with self.assertRaisesRegex(RuntimeError, "unsupported field.*strategy"):
+            SENSORS.loadCameraImuCalibrationInitialization(
+                str(self.write_document(document)))
 
     def test_loader_rejects_scalar_time_map_and_bad_model_fields(self):
         document = self.base_document()
@@ -209,7 +215,6 @@ class CameraImuInitializationHookTest(unittest.TestCase):
         imu.A_gyro_accel_prior = np.zeros((3, 3))
         imu.ry_i_prior = np.zeros(3)
         imu.rz_i_prior = np.zeros(3)
-        imu.initializationStrategy = None
         imu.initializationFields = set()
         imu.hasGyroBiasInitialization = False
         imu.hasTransformInitialization = False
@@ -232,7 +237,7 @@ class CameraImuInitializationHookTest(unittest.TestCase):
             "A_gyro_accel": (np.eye(3) * 0.1).tolist(),
             "ry_i_m": [0.0, 0.01, 0.0],
             "rz_i_m": [0.0, 0.0, 0.02],
-        }, "direct")
+        })
 
         np.testing.assert_allclose(imu.r_b_prior, [-1.0, 2.0, -3.0])
         np.testing.assert_allclose(imu.GyroBiasPrior, [0.1, 0.2, 0.3])
@@ -247,13 +252,13 @@ class CameraImuInitializationHookTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "only valid for non-reference"):
             reference.applyInitialization({
                 "T_imu_from_reference": np.eye(4).tolist(),
-            }, "direct")
+            })
 
         imu = self.new_imu(estimate_delay=False)
         with self.assertRaisesRegex(ValueError, "imu-delay-by-correlation"):
             imu.applyInitialization({
                 "time_offset_to_reference_s": 0.01,
-            }, "refine")
+            })
 
     def test_multi_imu_time_seed_uses_reference_clock_spline_domain(self):
         stamp = lambda value: types.SimpleNamespace(toSec=lambda: value)
@@ -273,7 +278,7 @@ class CameraImuInitializationHookTest(unittest.TestCase):
             (110.0, 120.0),
         )
         imu.applyInitialization(
-            {"time_offset_to_reference_s": -100.0}, "direct")
+            {"time_offset_to_reference_s": -100.0})
         self.assertEqual(
             imu._referenceAngularVelocitySplineBounds(reference),
             (10.0, 20.0),
@@ -356,23 +361,16 @@ class CameraImuInitializationHookTest(unittest.TestCase):
         np.testing.assert_allclose(
             _BSpline.instances[1].constant, imu.AccelBiasPrior)
 
-    def test_camera_time_direct_skips_and_refine_adds_residual(self):
+    def test_camera_time_seed_is_refined_as_a_residual_offset(self):
         camera = SENSORS.IccCamera.__new__(SENSORS.IccCamera)
         camera.hasTimeshiftInitialization = True
-        camera.initializationStrategy = "direct"
         camera.timeshiftCamToImuPrior = 0.25
-        camera.initPoseSplineFromCamera = mock.Mock(
-            side_effect=AssertionError("correlation spline was constructed"))
-        camera.findTimeshiftCameraImuPrior(object())
-        camera.initPoseSplineFromCamera.assert_not_called()
-
         pose = types.SimpleNamespace(
             t_min=lambda: -10.0,
             t_max=lambda: 10.0,
             angularVelocityBodyFrame=lambda time: np.array([1.0, 0.0, 0.0]),
         )
         seen_priors = []
-        camera.initializationStrategy = "refine"
         camera.initPoseSplineFromCamera = lambda timeOffsetPadding=0.0: (
             seen_priors.append(camera.timeshiftCamToImuPrior) or pose)
         stamp = lambda value: types.SimpleNamespace(toSec=lambda: value)
@@ -389,7 +387,7 @@ class CameraImuInitializationHookTest(unittest.TestCase):
 
     def test_gravity_seed_is_normalized_to_kalibr_magnitude(self):
         camera = SENSORS.IccCamera.__new__(SENSORS.IccCamera)
-        camera.setGravityInitialization([0.0, 0.0, -2.0], "direct")
+        camera.setGravityInitialization([0.0, 0.0, -2.0])
         np.testing.assert_allclose(camera.gravity_w, [0.0, 0.0, -9.80655])
 
     def test_transform_seed_is_not_applied_twice_to_orientation_spline(self):
@@ -404,7 +402,6 @@ class CameraImuInitializationHookTest(unittest.TestCase):
             addDesignVariable=lambda design_variable: None)
         imu = types.SimpleNamespace(
             GyroBiasPrior=np.zeros(3),
-            initializationStrategy=None,
             hasGyroBiasInitialization=False,
         )
 
@@ -417,7 +414,6 @@ class CameraImuInitializationHookTest(unittest.TestCase):
         ])
         camera.T_extrinsic = _Transformation(transform)
         camera.hasTransformInitialization = True
-        camera.initializationStrategy = "direct"
         camera.initPoseSplineFromCamera = mock.Mock(
             side_effect=StopAfterSplineSelection)
 

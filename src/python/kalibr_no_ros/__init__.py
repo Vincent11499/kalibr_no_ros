@@ -1,6 +1,9 @@
 """ROS-free Kalibr application and lazily loaded dataset adapters."""
 
-from .version import VERSION as __version__
+from .version import VERSION as _VERSION
+
+__version__ = _VERSION
+del _VERSION
 
 __all__ = ["BagImageDatasetReader", "BagImuDatasetReader"]
 

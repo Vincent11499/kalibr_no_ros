@@ -47,8 +47,11 @@ class NativeObservabilityAnalysisTest(unittest.TestCase):
             problem, [transforms[1].q, transforms[1].t], 1)
 
     def test_analysis_reports_actual_m_estimator_usage(self):
-        self.assertFalse(self._m_estimator_report(False)["uses_m_estimator"])
-        self.assertTrue(self._m_estimator_report(True)["uses_m_estimator"])
+        plain = self._m_estimator_report(False)
+        robust = self._m_estimator_report(True)
+        self.assertFalse(plain["uses_m_estimator"])
+        self.assertTrue(robust["uses_m_estimator"])
+        self.assertNotIn("covariance", plain)
 
     def _transformation_spectrum(self, weight_rotation, weight_translation):
         problem = backend.OptimizationProblem()
@@ -104,7 +107,7 @@ class NativeObservabilityAnalysisTest(unittest.TestCase):
             for index in range(problem.numDesignVariables())
         ]
         result = incremental.analyzeObservability(
-            problem, [transforms[1].q, transforms[1].t], 2)
+            problem, [transforms[1].q, transforms[1].t], 2, True)
 
         self.assertEqual(result["calibration_dimensions"], 6)
         self.assertEqual(result["rank"], 5)
@@ -112,6 +115,9 @@ class NativeObservabilityAnalysisTest(unittest.TestCase):
         self.assertEqual(result["operational_rank"], 5)
         self.assertEqual(result["operational_deficiency"], 1)
         self.assertEqual(np.asarray(result["nullspace"]).shape, (6, 1))
+        covariance = np.asarray(result["covariance"])
+        self.assertEqual(covariance.shape, (6, 6))
+        self.assertTrue(np.all(np.isfinite(covariance)))
         for transform, expected in zip(transforms, before_values):
             np.testing.assert_array_equal(transform.T(), expected)
         self.assertEqual([
@@ -138,13 +144,14 @@ class NativeObservabilityAnalysisTest(unittest.TestCase):
             spline_dv, np.eye(3), 0))
 
         result = incremental.analyzeObservability(
-            problem, [transform.q, transform.t], 2)
+            problem, [transform.q, transform.t], 2, True)
 
         self.assertEqual(result["rank"], 6)
         self.assertEqual(result["deficiency"], 0)
         self.assertEqual(result["operational_rank"], 6)
         self.assertEqual(result["operational_deficiency"], 0)
         self.assertEqual(result["expanded_quadratic_error_terms"], 1)
+        self.assertEqual(np.asarray(result["covariance"]).shape, (6, 6))
         self.assertGreater(
             result["linearized_error_terms"],
             result["original_error_terms"],

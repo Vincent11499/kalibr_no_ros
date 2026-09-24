@@ -42,6 +42,132 @@ def _write_matrix_file(path, values):
         storage.release()
 
 
+def _install_camera_model(
+    cr,
+    cv,
+    distortion_models,
+    coefficient_count,
+    distortion_type,
+    projection_type,
+    geometry_type,
+    frame_type,
+    reprojection_error_type,
+):
+    original_check_distortion = cr.CameraParameters.checkDistortion
+
+    def check_distortion(self, model, coefficients):
+        if model in distortion_models:
+            if len(coefficients) != coefficient_count:
+                self.raiseError(
+                    "distortion model '{}' requires {} coefficients; {} given".format(
+                        model, coefficient_count, len(coefficients)
+                    )
+                )
+            return
+        return original_check_distortion(self, model, coefficients)
+
+    cr.CameraParameters.checkDistortion = check_distortion
+    original_aslam_camera_init = cr.AslamCamera.__init__
+
+    def aslam_camera_init(
+        self, camera_model, intrinsics, distortion_model, coefficients, resolution
+    ):
+        if camera_model != "pinhole" or distortion_model not in distortion_models:
+            return original_aslam_camera_init(
+                self,
+                camera_model,
+                intrinsics,
+                distortion_model,
+                coefficients,
+                resolution,
+            )
+        distortion = distortion_type(*coefficients)
+        projection = projection_type(
+            intrinsics[0],
+            intrinsics[1],
+            intrinsics[2],
+            intrinsics[3],
+            resolution[0],
+            resolution[1],
+            distortion,
+        )
+        self.geometry = geometry_type(projection)
+        self.frameType = frame_type
+        self.keypointType = cv.Keypoint2
+        self.reprojectionErrorType = reprojection_error_type
+        self.undistorterType = None
+
+    cr.AslamCamera.__init__ = aslam_camera_init
+
+
+def _projection_intrinsics(model, projection):
+    if model == "omni":
+        return [
+            projection.xi(), projection.fu(), projection.fv(),
+            projection.cu(), projection.cv(),
+        ]
+    if model == "pinhole":
+        return [
+            projection.fu(), projection.fv(), projection.cu(), projection.cv(),
+        ]
+    if model == "eucm":
+        return [
+            projection.alpha(), projection.beta(), projection.fu(),
+            projection.fv(), projection.cu(), projection.cv(),
+        ]
+    if model == "ds":
+        return [
+            projection.xi(), projection.alpha(), projection.fu(),
+            projection.fv(), projection.cu(), projection.cv(),
+        ]
+    raise RuntimeError("Invalid camera model {}.".format(model))
+
+
+def _write_camchain(
+    calibrator,
+    result_file,
+    graph,
+    camera_models,
+    distortion_models,
+    export_opencv,
+    owner=None,
+):
+    from kalibr_common import ConfigReader as cr
+    import sm
+
+    chain = cr.CameraChainParameters(result_file, createYaml=True)
+    for camera in calibrator.cameras:
+        try:
+            model = camera_models[camera.model]
+            distortion_model = distortion_models[camera.model]
+        except KeyError:
+            if owner is None:
+                raise
+            raise RuntimeError(
+                "{} integration cannot serialize camera model {}".format(
+                    owner, camera.model
+                )
+            )
+        parameters = cr.CameraParameters(result_file, createYaml=True)
+        parameters.setRosTopic(camera.dataset.topic)
+        projection = camera.geometry.projection()
+        parameters.setIntrinsics(model, _projection_intrinsics(model, projection))
+        parameters.setResolution([projection.ru(), projection.rv()])
+        parameters.setDistortion(
+            distortion_model,
+            projection.distortion().getParameters().flatten(),
+        )
+        chain.addCameraAtEnd(parameters)
+    for camera_id in range(len(calibrator.cameras)):
+        chain.setCamOverlaps(camera_id, graph.getCamOverlaps(camera_id))
+    for baseline_id, baseline in enumerate(calibrator.baselines):
+        chain.setExtrinsicsLastCamToHere(
+            baseline_id + 1, sm.Transformation(baseline.T())
+        )
+    chain.writeYaml()
+    export_opencv()
+
+
 def _export_opencv_files(calibrator, result_file, distorted_pinhole, radtan5_model):
     if not any(camera.model is radtan5_model for camera in calibrator.cameras):
         return []
@@ -165,47 +291,17 @@ def install():
     except ImportError:
         PinholeRadtan8 = None
 
-    original_check_distortion = cr.CameraParameters.checkDistortion
-
-    def check_distortion(self, model, coeffs):
-        if model == "radtan5":
-            if len(coeffs) != 5:
-                self.raiseError(
-                    "distortion model 'radtan5' requires 5 coefficients; {} given".format(
-                        len(coeffs)
-                    )
-                )
-            return
-        return original_check_distortion(self, model, coeffs)
-
-    cr.CameraParameters.checkDistortion = check_distortion
-
-    original_aslam_camera_init = cr.AslamCamera.__init__
-
-    def aslam_camera_init(
-        self, camera_model, intrinsics, dist_model, dist_coeff, resolution
-    ):
-        if camera_model != "pinhole" or dist_model != "radtan5":
-            return original_aslam_camera_init(
-                self, camera_model, intrinsics, dist_model, dist_coeff, resolution
-            )
-        distortion = RadialTangentialDistortion5(*dist_coeff)
-        projection = Radtan5PinholeProjection(
-            intrinsics[0],
-            intrinsics[1],
-            intrinsics[2],
-            intrinsics[3],
-            resolution[0],
-            resolution[1],
-            distortion,
-        )
-        self.geometry = Radtan5PinholeCameraGeometry(projection)
-        self.frameType = Radtan5PinholeFrame
-        self.keypointType = cv.Keypoint2
-        self.reprojectionErrorType = Radtan5PinholeReprojectionErrorSimple
-        self.undistorterType = None
-
-    cr.AslamCamera.__init__ = aslam_camera_init
+    _install_camera_model(
+        cr,
+        cv,
+        ("radtan5",),
+        5,
+        RadialTangentialDistortion5,
+        Radtan5PinholeProjection,
+        Radtan5PinholeCameraGeometry,
+        Radtan5PinholeFrame,
+        Radtan5PinholeReprojectionErrorSimple,
+    )
 
     original_save_chain_parameters_yaml = CameraUtils.saveChainParametersYaml
 
@@ -243,65 +339,15 @@ def install():
             cvb.ExtendedUnified: "none",
             cvb.DoubleSphere: "none",
         }
-        chain = cr.CameraChainParameters(result_file, createYaml=True)
-        for camera_id, camera in enumerate(calibrator.cameras):
-            model = camera_models[camera.model]
-            params = cr.CameraParameters(result_file, createYaml=True)
-            params.setRosTopic(camera.dataset.topic)
-            projection = camera.geometry.projection()
-            if model == "omni":
-                intrinsics = [
-                    projection.xi(),
-                    projection.fu(),
-                    projection.fv(),
-                    projection.cu(),
-                    projection.cv(),
-                ]
-            elif model == "pinhole":
-                intrinsics = [
-                    projection.fu(),
-                    projection.fv(),
-                    projection.cu(),
-                    projection.cv(),
-                ]
-            elif model == "eucm":
-                intrinsics = [
-                    projection.alpha(),
-                    projection.beta(),
-                    projection.fu(),
-                    projection.fv(),
-                    projection.cu(),
-                    projection.cv(),
-                ]
-            elif model == "ds":
-                intrinsics = [
-                    projection.xi(),
-                    projection.alpha(),
-                    projection.fu(),
-                    projection.fv(),
-                    projection.cu(),
-                    projection.cv(),
-                ]
-            else:
-                raise RuntimeError("Invalid camera model {}.".format(model))
-            params.setIntrinsics(model, intrinsics)
-            params.setResolution([projection.ru(), projection.rv()])
-            params.setDistortion(
-                distortion_models[camera.model],
-                projection.distortion().getParameters().flatten(),
-            )
-            chain.addCameraAtEnd(params)
-        for camera_id in range(len(calibrator.cameras)):
-            chain.setCamOverlaps(camera_id, graph.getCamOverlaps(camera_id))
-        for baseline_id, baseline_dv in enumerate(calibrator.baselines):
-            import sm
-
-            chain.setExtrinsicsLastCamToHere(
-                baseline_id + 1, sm.Transformation(baseline_dv.T())
-            )
-        chain.writeYaml()
-        _export_opencv_files(
-            calibrator, result_file, cvb.DistortedPinhole, PinholeRadtan5
+        _write_camchain(
+            calibrator,
+            result_file,
+            graph,
+            camera_models,
+            distortion_models,
+            lambda: _export_opencv_files(
+                calibrator, result_file, cvb.DistortedPinhole, PinholeRadtan5
+            ),
         )
 
     CameraUtils.saveChainParametersYaml = save_chain_parameters_yaml

@@ -21,6 +21,7 @@ import tempfile
 from kalibr_bag_io.directory import DirectoryReader
 
 from .rolling_shutter import JOB as CAMERA_IMU_RS_JOB
+from .filesystem import file_sha256
 from .task import (
     TaskError,
     dump_yaml,
@@ -69,12 +70,7 @@ _TEMPLATES = {
 _REVISION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")
 
 
-def _sha256(path):
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+_sha256 = file_sha256
 
 
 def _json_sha256(value):

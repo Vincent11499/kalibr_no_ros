@@ -38,7 +38,7 @@ kalibr-noros calibrate imu-camera-rs --config camera_imu_rolling_shutter_calibra
 初始行时间不会自动从历史诊断或采集端 `meta/` 读取。
 
 原初始化文档 `camera_imu_calibration_initialization` 仍可用于外参、时间偏移及 IMU seed；
-`direct/refine` 语义不变。新任务的相机整体时间偏移以参考行的有效采样时刻为参考，
+所有 seed 均继续 refinement。新任务的相机整体时间偏移以参考行的有效采样时刻为参考，
 已有全局快门任务的时间偏移只能作为近似初值，不应当作相同物理事件的精确值。
 
 ## 输入、求解与输出的分层

@@ -6,7 +6,7 @@ import csv
 import math
 from pathlib import Path
 import time
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Dict, Iterator, List
 
 import cv2
 import numpy as np
@@ -14,7 +14,14 @@ import yaml
 
 from kalibr_no_ros.version import SCHEMA_VERSION
 
-from .model import FileImageIndex, ImageRecord, ImuRecord, TopicInfo
+from .model import (
+    FileImageIndex,
+    ImageRecord,
+    ImuRecord,
+    TopicInfo,
+    crop_records,
+    decimate_records,
+)
 
 
 MANIFEST_NAME = "dataset.yaml"
@@ -434,35 +441,8 @@ class DirectoryReader:
             result.append(TopicInfo(topic, "sensor_msgs/msg/Imu", count))
         return sorted(result, key=lambda info: (info.name, info.msgtype))
 
-    @staticmethod
-    def _crop(records, from_to: Optional[Tuple[float, float]]):
-        if from_to is None:
-            return records
-        start_offset, end_offset = map(float, from_to)
-        if start_offset >= end_offset:
-            raise RuntimeError("Bag start time must be smaller than end time.")
-        if not records:
-            return records
-        start = records[0].header_timestamp_ns
-        lower = start + int(round(start_offset * 1e9))
-        upper = start + int(round(end_offset * 1e9))
-        return [item for item in records if lower <= item.header_timestamp_ns <= upper]
-
-    @staticmethod
-    def _decimate(records, frequency: Optional[float]):
-        if frequency is None:
-            return records
-        frequency = float(frequency)
-        if frequency <= 0.0:
-            raise RuntimeError("Frequency must be greater than zero")
-        minimum_delta = 1e9 / frequency
-        selected = []
-        last = None
-        for record in records:
-            if last is None or record.header_timestamp_ns - last >= minimum_delta:
-                selected.append(record)
-                last = record.header_timestamp_ns
-        return selected
+    _crop = staticmethod(crop_records)
+    _decimate = staticmethod(decimate_records)
 
     def index_images(self, topic: str, *, grayscale: bool = True):
         stream = self._cameras.get(topic)

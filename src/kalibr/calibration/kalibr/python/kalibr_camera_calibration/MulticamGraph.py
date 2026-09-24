@@ -24,6 +24,8 @@ class MulticamCalibrationGraph(object):
         #observation database
         self.obs_db = obs_db
         self.numCams = self.obs_db.numCameras()
+        self.full_batch_calibration = None
+        self.full_batch_success = False
         
         #initialize the graph
         self.initializeGraphFromObsDb(self.obs_db)
@@ -136,7 +138,7 @@ class MulticamCalibrationGraph(object):
             sys.exit(0)
 
         # A complete chain seed does not need pairwise stereo calibration, but
-        # refine mode still runs the original full-batch initialization (and
+        # a supplied seed still runs the original full-batch initialization (and
         # therefore its target-pose PnP guesses).
         if (baseline_overrides is not None and
                 all(baseline is not None
@@ -146,8 +148,10 @@ class MulticamCalibrationGraph(object):
                 sm.Transformation(np.array(baseline.T(), copy=True))
                 for baseline in baseline_overrides
             ]
-            success, baselines = kcc.solveFullBatch(
+            success, baselines, calibration = kcc.solveFullBatch(
                 cameras, baselines, self)
+            self.full_batch_success = success
+            self.full_batch_calibration = calibration
             if not success:
                 sm.logWarn("Full batch refinement failed!")
             return baselines
@@ -246,7 +250,7 @@ class MulticamCalibrationGraph(object):
             #store in graph
             baselines.append(baseline_HL)
 
-        # Partial refine-mode seeds use the native stereo path for the missing
+        # Partial seeds use the native stereo path for the missing
         # chain values, then replace only explicitly supplied transforms before
         # the full-batch refinement.
         if baseline_overrides is not None:
@@ -258,7 +262,10 @@ class MulticamCalibrationGraph(object):
         #################################################################
         ## STEP 4: refine guess in full batch
         #################################################################
-        success, baselines = kcc.solveFullBatch(cameras, baselines, self)
+        success, baselines, calibration = kcc.solveFullBatch(
+            cameras, baselines, self)
+        self.full_batch_success = success
+        self.full_batch_calibration = calibration
         
         if not success:
             sm.logWarn("Full batch refinement failed!")

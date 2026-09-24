@@ -43,11 +43,6 @@ def _add_runtime_arguments(parser):
         "--initialization",
         help="camera or camera-IMU initialization YAML (relative to the current directory)",
     )
-    parser.add_argument(
-        "--initialization-strategy",
-        choices=("refine", "direct"),
-        help="use seeds as refinement starting points or direct initial values",
-    )
     _add_execution_arguments(parser)
     if profiling_enabled():
         parser.add_argument("--timing-json", help="profile-build timing output")
@@ -170,8 +165,6 @@ def _runtime_overrides(arguments, output_dir):
         initialization = Path(initialization).expanduser().resolve()
     return {
         "initialization": initialization,
-        "initialization_strategy": getattr(
-            arguments, "initialization_strategy", None),
         "parallelism": getattr(arguments, "parallelism", None),
         "detector_processes": getattr(arguments, "detector_processes", None),
         "optimizer_threads": getattr(arguments, "optimizer_threads", None),
@@ -271,7 +264,7 @@ def main(argv=None, prefix=None):
             return 0 if report["status"] == "passed" else 2
         if arguments.group == "evaluate":
             from .reporting import evaluate_run, validate_output_options
-            from .task import load_yaml, require_document_version, prepare_output_directory, write_run_manifest
+            from .task import load_yaml, require_document_version
             options = None
             if arguments.config:
                 document = load_yaml(arguments.config)

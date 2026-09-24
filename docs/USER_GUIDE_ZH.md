@@ -130,21 +130,17 @@ execution:
 ```yaml
 initialization:
   path: camera_calibration_initialization.yaml
-  strategy: refine
 ```
 
-`strategy` 省略时为 `refine`。也可以不改 task，用 CLI 字段级覆盖：
+也可以不改 task，通过 CLI 覆盖初始化文件路径：
 
 ```bash
 kalibr-noros calibrate cameras --config task.yaml --output-dir output \
-  --initialization camera_calibration_initialization.yaml \
-  --initialization-strategy direct
+  --initialization camera_calibration_initialization.yaml
 ```
 
-- `refine`：seed 作为原生前置初始化优化的起点，允许只给部分参数；
-- `direct`：可信 seed 直接进入后续阶段；相机标定要求所有相机内参、畸变和相邻
-  baseline 完整；
-- 两种策略都只是初始化，最终联合问题的原有 active 参数不会因此被固定，也不会
+- seed 作为原生前置初始化优化的起点，允许只给部分参数；
+- seed 只用于初始化，最终联合问题的原有 active 参数不会因此被固定，也不会
   增加“靠近 seed”的先验残差；
 - 相机任务若需要固定已知内参和畸变、只重新估计多相机 baseline，可另外设置
   `calibration.freeze_intrinsics: true`；它要求每台相机有完整内参和畸变 seed，默认

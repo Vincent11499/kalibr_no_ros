@@ -18,9 +18,9 @@ cameras: # 列表顺序固定相机身份；cam0左目、cam1右目。
 
 # initialization: # 默认不启用；必须先用真实可信物理参数替换模板占位值。
 #   path: ../initialization_stereo.yaml # 独立相机seed，不是结果文件。
-#   strategy: refine # 默认refine保留原生refinement；direct需满足完整性要求。
 
 calibration: # 仅求解和观测选择参数；保存与显示选项放output。
+  solver_mode: incremental # incremental保留原生增量选择；full_batch在S3全量联合优化后直接输出。
   freeze_intrinsics: false # 默认false；true只适用于至少双目且每台提供完整seed。
   window_half_size_px: 7 # 像素，正整数；本例实际亚像素窗口15×15，省略时默认2（5×5）。
   max_displacement_px: 1.0 # 像素，>0；本例内部平方阈值1.0，省略时默认sqrt(1.5)像素。
