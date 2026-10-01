@@ -172,11 +172,6 @@ def validate_options(task):
                 raise TaskError(
                     "camera_rolling_shutter_calibration supports pinhole-equi and pinhole-radtan")
             topics.add(topic)
-        if (task["job"] == "camera_calibration"
-                and calibration.get("solver_mode", "incremental") == "full_batch"
-                and len(task["cameras"]) < 2):
-            raise TaskError(
-                "calibration.solver_mode: full_batch requires at least two cameras")
     else:
         if "camera_calibration" in task:
             _input_path(task["camera_calibration"], "camera_calibration")

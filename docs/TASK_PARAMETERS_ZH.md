@@ -15,9 +15,14 @@ CLI 映射、作用阶段、内部算法和有效范围。字段校验以当前 
 | 显式物理初值 | `initialization.path` | 是；改变前置阶段的初始点，所有 seed 均继续 refinement |
 | 参数活动策略 | `freeze_intrinsics`、`recompute_camera_chain_extrinsics` | 是；改变进入优化器的 active 物理参数块 |
 | 执行资源 | `detector_processes`、`optimizer_threads` | 理论算法不变，但并行浮点归约可能造成末位差异 |
-| 显示与输出 | `verbose`、`export_poses`、`interactive_report` | 不应改变目标函数，但会明显影响耗时，部分选项会关闭多进程检测 |
+| 显示与输出 | `verbose`、`export_poses`、`interactive_report` | 不应改变目标函数；交互显示选项会影响耗时和检测执行方式 |
 
 本文中的“默认值”指不在 task 和 CLI 中指定该字段时，当前程序最终采用的值。
+下方“完整示例”用于展示字段位置，也包含数据区间、`shuffle: false` 和 4/4 线程预算等
+显式操作值，并不是默认值清单；各字段真实默认值以对应参数表为准。
+[`config/examples/v1.0.0/all_params/`](../config/examples/v1.0.0/all_params/)
+对有固定默认值的字段直接填写默认值；没有固定数值默认的字段填写一个合法示例并列出
+可选集合或范围。
 “有效范围”分为：
 
 - **已强制校验**：不满足时会在 task 适配层或数据读取层报错；
@@ -269,7 +274,7 @@ baseline 可跳过相机对初始化，S3 full-batch 始终执行。参数是否
 
 | 字段 | 默认值 | 程序接受/算法有效范围 | 作用阶段与影响 |
 |---|---:|---|---|
-| `solver_mode` | `incremental` | `incremental` 或 `full_batch`；后者要求至少两台普通相机 | 选择最终结果来自原生 S4 增量估计器，或来自使用全部同步 view 的 S3 full-batch |
+| `solver_mode` | `incremental` | `incremental` 或 `full_batch`；普通单目、双目和多目均支持 | 选择最终结果来自原生 S4 增量估计器，或来自使用全部 view 的 S3 full-batch |
 | `freeze_intrinsics` | `false` | 严格布尔值；`true` 要求至少两台相机，且每台有完整内参和畸变 initialization seed | 同时固定 projection/intrinsics 与 distortion；跳过单相机内参 LM，后续只放开 baseline 和 target pose |
 | `window_half_size_px` | `2` px | 强制整数 `>= 1` | AprilGrid `cornerSubPix` 半窗口；实际搜索区域为 $(2w+1)\times(2w+1)$ |
 | `max_displacement_px` | $\sqrt{1.5}\approx1.224745$ px | 强制有限数 `> 0` | AprilGrid 亚像素角点相对原始检测的最大允许位移 |
@@ -286,12 +291,17 @@ baseline 可跳过相机对初始化，S3 full-batch 始终执行。参数是否
 #### `solver_mode`
 
 `incremental` 保留 S3 后的原生增量接受、信息增益、回滚和异常点语义。
-`full_batch` 只支持普通双目/多目，直接采用 S3 终值，使用全部同步 view 和全部检测成功
-角点，不创建增量估计器。该模式下 `shuffle`、`qr_tolerance`、
+`full_batch` 在普通单目、双目和多目中直接采用 S3 终值，使用全部 view 和全部检测成功
+角点，不创建增量估计器。单目 S3 联合优化 K/D 与逐帧标定板位姿；多目 S3 还包含
+相邻 baseline。该模式下 `shuffle`、`qr_tolerance`、
 `information_gain_tolerance`、`min_views_for_outlier_statistics`、`remove_outliers`、
 `final_filtering` 和 `blake_zisserman` 可被模板读取，但不会应用，终端会列出这些字段。
 终值协方差与可观性由只读重线性化产生，不再次更新参数。完整阶段表见
-[普通多目标定求解模式](MULTICAMERA_SOLVER_MODES_AND_FULL_BATCH_PLAN_ZH.md)。
+[普通单目与多目标定求解模式](MULTICAMERA_SOLVER_MODES_AND_FULL_BATCH_PLAN_ZH.md)。
+
+单目 `full_batch` 在 S1 单目 LM 后，以其 K/D 为起点调用与多目相同的
+`solveFullBatch()`；baseline 列表为空，全部检测成功 view 的 K/D 和逐帧标定板位姿进入
+同一个最终问题。结果继续复用相同的只读协方差、可观性和输出适配层。
 
 #### `freeze_intrinsics`
 
@@ -698,7 +708,7 @@ helper group，不会出现在当前打印的标定 covariance 中。恢复过�
 
 | 字段 | 默认值 | 作用 | 性能注意事项 |
 |---|---:|---|---|
-| `verbose` | `false` | Debug 日志，并自动打开 extraction 显示 | 关闭多进程检测，需要 GUI，I/O 很多 |
+| `verbose` | `false` | 在原终端增加阶段、参数、求解摘要和耗时信息，不打开原生交互图窗 | 增加少量终端输出，不改变检测进程数 |
 | `show_extraction` | `false` | 显示角点检测和重投影视图 | 关闭多进程检测 |
 | `extraction_stepping` | `false` | 每帧等待用户单步确认 | 关闭多进程检测，需人工操作 |
 | `export_poses` | `false` | 输出优化轨迹到 `poses.csv` | 只增加结果序列化 |

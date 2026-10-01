@@ -638,6 +638,26 @@ class CameraInitializationTest(unittest.TestCase):
         self.assertIsNotNone(graph.full_batch_calibration)
         np.testing.assert_allclose(result[0].T(), transform)
 
+    def test_single_camera_graph_runs_and_retains_full_batch(self):
+        graph = multicam_graph.MulticamCalibrationGraph.__new__(
+            multicam_graph.MulticamCalibrationGraph
+        )
+        graph.full_batch_success = False
+        graph.full_batch_calibration = None
+        calibration = object()
+
+        with mock.patch.object(
+            multicam_graph.kcc,
+            "solveFullBatch",
+            return_value=(True, [], calibration),
+        ) as full_batch:
+            baselines = graph.refineAllViews(["cam0"], [])
+
+        full_batch.assert_called_once_with(["cam0"], [], graph)
+        self.assertEqual(baselines, [])
+        self.assertTrue(graph.full_batch_success)
+        self.assertIs(graph.full_batch_calibration, calibration)
+
     def test_partial_seed_baselines_overlay_before_full_batch(self):
         class ObservationDatabase:
             @staticmethod

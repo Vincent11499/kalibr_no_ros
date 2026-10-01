@@ -1,70 +1,73 @@
-schema_version: "1.0.0" # 软件、配置和结果统一字符串版本。
-kind: calibration_task # 本文件是标定任务，不是结果或初始化文件。
-job: camera_imu_calibration # 相机任务与相机–IMU任务分别运行。
+# 有固定默认值的字段填写程序默认值；无固定默认值的字段填写合法示例并注明可选范围。
+schema_version: "1.0.0" # 必填，无默认值；唯一合法值为字符串"1.0.0"。
+kind: calibration_task # 默认calibration_task；本例显式写出文档种类。
+job: camera_imu_calibration # 必填，无默认值；可选四种公开job，本文件选camera_imu_calibration。
 
 dataset: # 所有相对路径均以当前 task YAML 所在目录为基准。
-  type: directory # 直接读取采集目录；bag 需显式改为 bag。
-  path: ../data/stereo_imu_YYMMDD_hhmm # 替换为本次新格式数据目录，不能指向历史整数schema目录。
+  type: directory # 必填，无默认值；directory直接读取采集目录，也可填bag。
+  path: ../data/stereo_imu_YYMMDD_hhmm # 必填，无默认值；可选任意有效数据文件/目录路径。
 #   time_range_s: [0.0, 60.0] # 可选裁剪秒数，[起点,终点]且终点>起点；默认不裁剪，IMU需保留前后覆盖。
 #   frequency_hz: 5.0 # 可选相机读取降采样Hz，>0；默认不额外降采样，更改会影响数据选择与可比性。
 target: # AprilGrid 参数独立维护，复用同一块实体板。
-  path: aprilgrid.yaml # 已知板：8×8、边长65mm、间距比例0.3、起始ID80。
+  path: aprilgrid.yaml # 必填，无默认值；可选任意有效标定板YAML路径。
 
-# camera_calibration: # 省略时从本次 --output-dir 查找唯一匹配的双目/多目相机结果。
+# camera_calibration: # 可选，无固定默认值；省略时从--output-dir查找唯一匹配结果。
 #   path: ../output/camera_calibration_cam0_cam1.yaml # 多个候选时须显式指定；不能填初始化模板。
 imus: # 本例一台IMU，收到的原始样本全部进入读取流程。
-  - id: imu0 # 与dataset.yaml中的imu0对应。
-    path: imu.yaml # 噪声密度、随机游走和100Hz采样率。
-    model: calibrated # 已校正六轴模型；不添加尺度或轴不正交参数。
+  - id: imu0 # 默认按列表位置为imu0；目录输入须与dataset.yaml传感器ID对应。
+    path: imu.yaml # 必填，无默认值；可选任意有效IMU配置YAML路径。
+    model: calibrated # 默认calibrated；已校正六轴模型，不添加尺度或轴不正交参数。
 
 # initialization: # 默认不启用；必须先用真实可信物理参数替换模板占位值。
 #   path: ../initialization_imu.yaml # 独立Camera–IMUseed，不是结果文件。
 
 calibration: # 保持原生时间相关、旋转/gyro bias、spline和最终联合LM顺序。
-  window_half_size_px: 7 # 像素，正整数；本例实际亚像素窗口15×15，省略时默认2（5×5）。
-  max_displacement_px: 1.0 # 像素，>0；本例内部平方阈值1.0，省略时默认sqrt(1.5)像素。
-  max_iterations: 30 # 最终联合LM最大迭代数，正整数；保留原生默认。
-  time_offset_padding_s: 0.03 # 秒，>0；spline时间参数支持范围，不是残差正则项。
-  reprojection_sigma_px: 1.0 # 像素，>0；重投影残差协方差权重。
-  synchronize_clocks: false # 保留原始时间戳；true启用header到record时钟映射。
-  estimate_multi_imu_delay: false # 本例单IMU；多IMU互相关延迟初值默认关闭。
-  calibrate_time_offset: true # 联合估计相机–IMU时间偏移，原生默认。
-  recover_covariance: false # 可选最终协方差计算，会增加耗时和内存。
-  recompute_camera_chain_extrinsics: false # 固定已标定双目baseline；true仅在联合阶段放开它。
+  window_half_size_px: 2 # 默认2 px；整数>=1，实际窗口5×5。
+  max_displacement_px: 1.224744871391589 # 默认sqrt(1.5) px；有限且>0。
+  max_iterations: 30 # 默认30；最终联合LM最大迭代数，正整数。
+  time_offset_padding_s: 0.03 # 默认0.03 s；spline时间参数支持范围，不是残差正则项。
+  reprojection_sigma_px: 1.0 # 默认1.0 px；>0，重投影残差协方差权重。
+  synchronize_clocks: false # 默认false；true启用header到record时钟映射。
+  estimate_multi_imu_delay: false # 默认false；多IMU时可启用互相关延迟初值。
+  calibrate_time_offset: true # 默认true；联合估计相机–IMU时间偏移。
+  recover_covariance: false # 默认false；true增加最终协方差计算、耗时和内存。
+  recompute_camera_chain_extrinsics: false # 默认false；true仅在联合阶段放开baseline。
 
 execution: # 固定可重复线程预算，不改动数据选择或算法超参数。
-  detector_processes: 8 # 检测工作进程数，正整数；本例8进程，省略时保留原生检测执行方式。
-  optimizer_threads: 4 # 已接入的原生优化阶段线程数，正整数。
-  detector_inflight_per_worker: 2 # 每worker允许在途帧数，正整数。
-  detector_opencv_threads: 1 # 每个检测worker的OpenCV线程数，防止超配。
-  profiling_memory_sample_interval_s: 0.25 # 秒，>0；仅profile构建且显式启用时采样。
+  parallelism: 4 # 无固定数值默认；可选任意正整数，本例取4；组件专用字段优先。
+  detector_processes: 4 # 无固定数值默认；可选任意正整数，本例取4。
+  optimizer_threads: 4 # 无固定数值默认；可选任意正整数，本例取4。
+  detector_inflight_per_worker: 2 # 默认2；正整数，每worker允许的在途帧数。
+  detector_opencv_threads: 1 # 默认1；正整数，每个检测worker的OpenCV线程数。
+  profiling_memory_sample_interval_s: 0.25 # 默认0.25 s；仅profile构建且显式请求计时时采样。
 
 output: # 后处理与证据保存，不反馈修改求解问题或最终观测。
+  name: null # 默认null；派生名称；显式值须为1~160位安全文件名stem。
   save_diagnostics: false # 默认false；按需保存日志、输入校验、可观性、判定、运行清单及任务/初始化诊断。
   save_metrics: false # 默认false；按需另存metrics.json，供没有观测归档时离线读取汇总指标。
   export_text: false # 默认false；按需另存人可读results.txt，结果YAML与HTML/PDF仍正常生成。
-  archive_observations: true # 默认false；本例按需开启最终帧、view、角点与残差归档，供离线重新评价。
-  archive_selection_history: true # 保存可用的选择/过滤事件；依赖archive_observations=true。
-  copy_used_images: false # 不复制原图；重新可视化时需要可访问的源数据。
+  archive_observations: false # 默认false；true归档最终帧、view、角点与残差。
+  archive_selection_history: false # 默认false；true时还要求archive_observations=true。
+  copy_used_images: false # 默认false；重新可视化时需要可访问的源数据。
   export_opencv: false # 默认false；按需另存OpenCV相机参数及可用双目校正矩阵。
-  export_poses: false # 可选poses.csv；启用后增加序列化。
+  export_poses: false # 默认false；可选poses.csv，启用后增加序列化。
   verbose: false # 默认false；开启后增加终端阶段、参数与耗时信息，不启用原生交互绘图。
-  show_extraction: false # 默认不显示检测窗口，启用会影响运行方式与耗时。
-  extraction_stepping: false # 默认不逐帧交互检测。
-  interactive_report: false # 生成报告但不弹出交互图窗。
-  evaluation_pairing_tolerance_s: 0.0001 # 秒，>=0；本例100µs，省略时默认200µs；仅最终观测后处理配对，不改变原生求解。
+  show_extraction: false # 默认false；不显示检测窗口，启用会影响运行方式与耗时。
+  extraction_stepping: false # 默认false；不逐帧交互检测。
+  interactive_report: false # 默认false；生成报告但不弹出交互图窗。
+  evaluation_pairing_tolerance_s: 0.0002 # 默认0.0002 s；>=0，仅后处理配对。
   visualizations: # 从最终使用帧按稳定时间顺序均匀抽样。
-    enabled: true # 默认false；本例按需开启角点/残差覆盖图及可用双目校正示意。
-    max_frames_per_camera: 30 # 每相机最大可视化帧数，正整数；不影响统计总体。
-    max_pairs: 30 # 最大双目可视化对数，正整数；统计仍用全部最终共同角点。
-    sampling: uniform # 当前唯一支持的确定性均匀抽样方法。
+    enabled: false # 默认false；true生成角点/残差覆盖图及可用双目校正示意。
+    max_frames_per_camera: 30 # 默认30；每相机最大可视化帧数，不影响统计总体。
+    max_pairs: 30 # 默认30；最大双目可视化对数，统计仍用全部最终共同角点。
+    sampling: uniform # 默认且当前唯一支持uniform；确定性均匀抽样。
     undistortion:
       enabled: true # 默认true；父级enabled=true时生成每目独立去畸变图，不改变标定或指标。
       crop: false # 默认false；布尔值；false保留最大视场且可能有黑边，true缩放裁去无效边，输出像素尺寸不变。
   rectification: # 双目评价、对齐图及OpenCV双目标定导出共用；不影响求解结果。
-    balance: 0.0 # 无量纲，[0,1]；fisheye校正视场平衡参数。
-    fov_scale: 1.0 # 无量纲，>0；OpenCV fisheye校正视场倍率。
-    size: null # null沿用源尺寸；也可显式[正整数宽,正整数高]，单位像素。
+    balance: 0.0 # 默认0.0；无量纲，[0,1]；fisheye校正视场平衡参数。
+    fov_scale: 1.0 # 默认1.0；无量纲，>0；OpenCV fisheye校正视场倍率。
+    size: null # 默认null，沿用源尺寸；也可显式[正整数宽,正整数高]。
   assessment: # 参考评级和业务验收分别保存。
-    reference_grading: true # 开启参考显示等级；它不是经验证的产线验收结论。
-    rules: [] # 未配置业务阈值，status为not_evaluated，不能自动宣称合格。
+    reference_grading: true # 默认true；开启参考显示等级，不是产线验收结论。
+    rules: [] # 默认空列表；status为not_evaluated，不能自动宣称合格。

@@ -437,6 +437,21 @@ class InitializationValidationTest(unittest.TestCase):
                     expected,
                 )
 
+    def test_single_camera_full_batch_stage_is_reported(self):
+        task = self.camera_task("pinhole-equi")
+        task["job"] = "camera_calibration"
+        task["calibration"] = {"solver_mode": "full_batch"}
+
+        decisions = initialization_stage_decisions({"cameras": {}}, task)
+
+        self.assertEqual(
+            [stage["stage"] for stage in decisions],
+            ["single_camera_intrinsics.cam0", "single_camera_full_batch"],
+        )
+        self.assertEqual(decisions[0]["final_solver"], "full_batch")
+        self.assertEqual(decisions[1]["full_batch_lm"], "run")
+        self.assertEqual(decisions[1]["camera_intrinsics_state"], "active")
+
     def test_report_records_frozen_intrinsics_activity_policy(self):
         task = self.camera_task("pinhole-radtan", "pinhole-radtan")
         task["job"] = "camera_calibration"
@@ -1110,6 +1125,11 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
         self.assertEqual(
             arguments[arguments.index("--solver-mode") + 1], "full_batch")
         self.assertNotIn("--shuffle-seed", arguments)
+
+        task["cameras"] = [task["cameras"][0]]
+        arguments = _camera_arguments(task, "bag", "target", {})
+        self.assertEqual(
+            arguments[arguments.index("--solver-mode") + 1], "full_batch")
 
         task["calibration"] = {}
         arguments = _camera_arguments(task, "bag", "target", {})

@@ -1,7 +1,9 @@
-schema_version: "1.0.0" # 项目配置版本，字符串。
-kind: imu_configuration # IMU噪声与采样配置，不是外参结果。
-update_rate: 100.0 # Hz，>0；现有EVT3.1 imu.yaml的标称采样频率。
-accelerometer_noise_density: 0.0096720633620552 # m/s²/√Hz，>0；继承现有参数，需适配实际IMU。
-accelerometer_random_walk: 5.854489100633343e-05 # m/s³/√Hz，>0；加速度bias随机游走，非外参先验。
-gyroscope_noise_density: 0.0001995062098784993 # rad/s/√Hz，>0；继承现有参数，未在本次重做Allan分析。
-gyroscope_random_walk: 2.0524199104523207e-06 # rad/s²/√Hz，>0；gyro bias随机游走。
+# 有固定默认值的字段填写程序默认值；以下物理字段无默认值，填写合法示例并注明范围。
+schema_version: "1.0.0" # 必填，无默认值；唯一合法值为字符串"1.0.0"。
+kind: imu_configuration # 默认imu_configuration；本例显式写出文档种类。
+# rostopic: /imu0 # bag输入必填且无默认值；可选任意非空话题字符串；directory可省略。
+update_rate: 100.0 # 必填，无默认值；可选任意>0 Hz，本例取100.0。
+accelerometer_noise_density: 0.0096720633620552 # 必填，无默认值；可选任意>0 m/s²/√Hz实测值。
+accelerometer_random_walk: 5.854489100633343e-05 # 必填，无默认值；可选任意>0 m/s³/√Hz实测值。
+gyroscope_noise_density: 0.0001995062098784993 # 必填，无默认值；可选任意>0 rad/s/√Hz实测值。
+gyroscope_random_walk: 2.0524199104523207e-06 # 必填，无默认值；可选任意>0 rad/s²/√Hz实测值。

@@ -70,13 +70,16 @@ def reportFullBatchStatus(calibrator):
             index, 'fixed' if camera.freezeIntrinsics else 'active')
         for index, camera in enumerate(calibrator.cameras)
     ]
+    baseline_state = (
+        'active' if calibrator.baselines else 'not_applicable')
     native_runtime.status(
         'full-batch summary: views={}, corners={}, {}'.format(
             len(calibrator.views), corners, ', '.join(values)),
         detail=True)
     native_runtime.status(
-        'full-batch blocks: baselines=active, target_poses=active, {}, '
-        'shutters=fixed'.format(', '.join(camera_states)),
+        'full-batch blocks: baselines={}, target_poses=active, {}, '
+        'shutters=fixed'.format(
+            baseline_state, ', '.join(camera_states)),
         detail=True)
 
 def signal_exit(signal, frame):
@@ -193,9 +196,6 @@ def parseArgs():
         
     if parsed.minViewOutlier<1:
         sm.logError("Please specify a positive integer (--min-views-outlier).")
-        sys.exit(2)
-    if parsed.solverMode == 'full_batch' and len(parsed.topics) < 2:
-        sm.logError("--solver-mode full_batch requires at least two cameras.")
         sys.exit(2)
     if parsed.windowHalfSizePx is not None and parsed.windowHalfSizePx < 1:
         sm.logError("Please specify a positive integer (--window-half-size-px).")
@@ -408,6 +408,9 @@ def main():
                             graph.getInitialGuesses, cameraList)
             else:
                 baseline_guesses=[]
+                if parsed.solverMode == 'full_batch':
+                    baseline_guesses = graph.refineAllViews(
+                        cameraList, baseline_guesses)
                 
             if (parsed.verbose and len(cameraList)>1
                     and not parsed.dontShowReport):

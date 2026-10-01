@@ -90,8 +90,10 @@ extrinsics:
 - 提供部分或完整 K/D：先将参数写入相机对象，再运行同一单目 LM；未提供字段保留原生初始值。
 - 相邻 baseline 不完整：对缺失链运行原生相机对初始化，再用显式 seed 覆盖对应边。
 - 相邻 baseline 完整：跳过相机对 baseline 初始化。
-- 无论 baseline 是否完整，普通相机任务都会运行 S3 full-batch refinement。
-- `solver_mode: incremental` 随后运行 S4；`solver_mode: full_batch` 直接采用 S3 终值。
+- 多目无论 baseline 是否完整都会运行 S3 full-batch refinement；单目只在
+  `solver_mode: full_batch` 下运行 S3。
+- 多目 `solver_mode: incremental` 在 S3 后运行 S4；单目 incremental 在 S1 后直接
+  运行 S4；`solver_mode: full_batch` 统一采用 S3 终值。
 
 ### 2.3 固定内参
 

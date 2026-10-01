@@ -148,13 +148,7 @@ class MulticamCalibrationGraph(object):
                 sm.Transformation(np.array(baseline.T(), copy=True))
                 for baseline in baseline_overrides
             ]
-            success, baselines, calibration = kcc.solveFullBatch(
-                cameras, baselines, self)
-            self.full_batch_success = success
-            self.full_batch_calibration = calibration
-            if not success:
-                sm.logWarn("Full batch refinement failed!")
-            return baselines
+            return self.refineAllViews(cameras, baselines)
         
         #################################################################
         ## STEP 1: get baseline initial guesses by calibrating good 
@@ -262,14 +256,16 @@ class MulticamCalibrationGraph(object):
         #################################################################
         ## STEP 4: refine guess in full batch
         #################################################################
+        return self.refineAllViews(cameras, baselines)
+
+    def refineAllViews(self, cameras, baselines):
+        """Run and retain the shared full-batch camera problem."""
         success, baselines, calibration = kcc.solveFullBatch(
             cameras, baselines, self)
         self.full_batch_success = success
         self.full_batch_calibration = calibration
-        
         if not success:
             sm.logWarn("Full batch refinement failed!")
-    
         return baselines
     
     def getTargetPoseGuess(self, timestamp, cameras, baselines_HL=[]):

@@ -1,28 +1,35 @@
-schema_version: "1.0.0" # 离线评价配置，与标定任务分开。
-kind: calibration_evaluation # 使用kalibr-noros evaluate，不调用优化器。
+# 有固定默认值的字段填写程序默认值；无固定默认值的字段填写合法示例并注明可选范围。
+schema_version: "1.0.0" # 必填，无默认值；唯一合法值为字符串"1.0.0"。
+kind: calibration_evaluation # 默认calibration_evaluation；使用kalibr-noros evaluate，不调用优化器。
 output: # 只能改变后处理、可视化或判定，不改原运行目录。
+  name: null # 默认null；派生评价名；显式值须为1~160位安全文件名stem。
   save_diagnostics: false # 默认false；按需另存判定、运行清单及可用诊断文件。
   save_metrics: false # 默认false；按需另存metrics.json，供后续离线读取汇总指标。
   export_text: false # 默认false；按需另存人可读results.txt。
-  archive_observations: true # 默认false；本例按需保留源运行已保存的observations，不能事后补造证据。
-  archive_selection_history: true # 保留源运行已保存的历史，无法事后补造未采集事件。
-  copy_used_images: false # 不复制原图；搬动数据后用--dataset指定新根。
+  archive_observations: false # 默认false；true保留源运行已有observations，但不能事后补造证据。
+  archive_selection_history: false # 默认false；true保留源运行已有历史且要求观测归档。
+  copy_used_images: false # 默认false；不复制原图，搬动数据后用--dataset指定新根。
   export_opencv: false # 默认false；按需重新导出OpenCV相机与双目校正参数，标定结果数值不变。
-  evaluation_pairing_tolerance_s: 0.0001 # 秒，>=0；本例100µs，省略时默认200µs；仅Camera–IMU观测后处理配对，非优化参数。
+  export_poses: false # 默认false；evaluate不重新求解，不能补造源运行未归档的poses。
+  verbose: false # 默认false；共享输出字段，evaluate当前没有求解阶段摘要。
+  show_extraction: false # 默认false；共享输出字段，evaluate不重新检测图像。
+  extraction_stepping: false # 默认false；共享输出字段，evaluate没有逐帧检测阶段。
+  interactive_report: false # 默认false；生成HTML/PDF但不弹出交互图窗。
+  evaluation_pairing_tolerance_s: 0.0002 # 默认0.0002 s；>=0，仅Camera–IMU后处理配对。
   visualizations: # 重绘必须有归档观测及可读取原始图像。
-    enabled: true # 默认false；本例按需输出角点/残差及校正图。
-    max_frames_per_camera: 30 # 每相机均匀采样上限，正整数。
-    max_pairs: 30 # 双目图对均匀采样上限，正整数。
-    sampling: uniform # 确定性采样，不影响总体指标。
+    enabled: false # 默认false；true输出角点/残差及校正图。
+    max_frames_per_camera: 30 # 默认30；每相机均匀采样上限，正整数。
+    max_pairs: 30 # 默认30；双目图对均匀采样上限，正整数。
+    sampling: uniform # 默认且当前唯一支持uniform；确定性采样，不影响总体指标。
     undistortion:
       enabled: true # 默认true；父级enabled=true时生成每目独立去畸变图。
       crop: false # 默认false；布尔值；false保留最大视场且可能有黑边，true缩放裁去无效边，输出像素尺寸不变。
   rectification: # 改变设置会重算极线误差、双目对齐图及OpenCV双目校正矩阵。
-    balance: 0.0 # 无量纲，[0,1]；fisheye视场平衡。
-    fov_scale: 1.0 # 无量纲，>0；校正视场倍率。
-    size: null # null使用源分辨率，或填写[宽,高]像素。
+    balance: 0.0 # 默认0.0；无量纲，[0,1]；fisheye视场平衡。
+    fov_scale: 1.0 # 默认1.0；无量纲，>0；校正视场倍率。
+    size: null # 默认null，使用源分辨率；也可填写[宽,高]像素。
   assessment: # 没有业务阈值时不自动给出产线合格结论。
-    reference_grading: true # 历史工具风格的参考等级，仅显示用途。
+    reference_grading: true # 默认true；历史工具风格的参考等级，仅显示用途。
     rules: [] # 默认not_evaluated；下方只是规则语法演示，阈值必须由业务确认。
 #   rules: # 如需正式规则，替换上方rules: []后再使用，不得保留重复键。
 #     - metric: cameras.cam0.reprojection.rms_px # 最终左目二维点距离RMS，单位像素。

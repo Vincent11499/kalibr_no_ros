@@ -115,12 +115,15 @@ class V1ContractTest(unittest.TestCase):
         for calibration in (
                 {"shuffle": True, "shuffle_seed": 17},
                 {"solver_mode": "batch"},
-                {"solver_mode": True},
-                {"solver_mode": "full_batch"}):
+                {"solver_mode": True}):
             self.task["calibration"] = calibration
             self.write_inputs()
             with self.subTest(calibration=calibration):
                 self.assertEqual(validate_task(self.task_path)["status"], "failed")
+
+        self.task["calibration"] = {"solver_mode": "full_batch"}
+        self.write_inputs()
+        self.assertEqual(validate_task(self.task_path)["status"], "passed")
 
     def test_directory_id_is_checked_even_when_a_topic_is_supplied(self):
         self.manifest['cameras'][0]['id'] = 'different_camera'

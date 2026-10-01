@@ -604,8 +604,10 @@ def _rolling_shutter_camera_stage_decisions(
 
 def _camera_calibration_stage_decisions(document, task):
     decisions = []
-    freeze_intrinsics = (task.get("calibration") or {}).get(
+    calibration = task.get("calibration") or {}
+    freeze_intrinsics = calibration.get(
         "freeze_intrinsics", False) is True
+    final_solver = calibration.get("solver_mode", "incremental")
     cameras = document.get("cameras", {})
     for index, camera in enumerate(task["cameras"]):
         native_id = "cam{}".format(index)
@@ -627,6 +629,7 @@ def _camera_calibration_stage_decisions(document, task):
             "final_incremental_state": (
                 "fixed" if freeze_intrinsics else "active"
             ),
+            "final_solver": final_solver,
         })
     if len(task["cameras"]) > 1:
         supplied = [
@@ -644,10 +647,20 @@ def _camera_calibration_stage_decisions(document, task):
             ),
             "full_batch_lm": "run",
             "final_incremental_state": "active",
+            "final_solver": final_solver,
         }
         if freeze_intrinsics:
             baseline_decision["camera_intrinsics_state"] = "fixed"
         decisions.append(baseline_decision)
+    elif final_solver == "full_batch":
+        decisions.append({
+            "stage": "single_camera_full_batch",
+            "full_batch_lm": "run",
+            "camera_intrinsics_state": (
+                "fixed" if freeze_intrinsics else "active"),
+            "target_poses_state": "active",
+            "final_solver": "full_batch",
+        })
     return decisions
 
 

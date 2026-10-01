@@ -4,6 +4,28 @@
 cam0 表示左目、cam1 表示右目；单目示例只使用 cam0。
 根目录所有 YAML 配置均不带注释；`all_params/` 提供带注释的完整任务和配套配置。
 
+根目录 YAML 是简洁操作模板，可以显式采用非默认参数；`all_params/` 则按以下规则：
+
+- 有固定程序默认值的字段直接填写该默认值；
+- 没有固定数值默认的字段填写一个合法示例，并在行内列出可选集合或范围；
+- 只能通过省略表示的自动行为保留为注释，并说明省略后的行为；
+- 数据路径、标定板和 IMU 物理量仍必须按实际设备修改。
+
+主要无固定默认值字段的合法选择如下；`all_params/` 已从中填写一个示例：
+
+| 字段 | 合法选择或范围 | 示例值 |
+|---|---|---|
+| `schema_version` | 当前唯一合法字符串 `"1.0.0"` | `"1.0.0"` |
+| `job` | `camera_calibration`、`camera_rolling_shutter_calibration`、`camera_imu_calibration`、`camera_imu_rolling_shutter_calibration` | 按文件用途选择 |
+| `dataset.type` | `directory` 或 `bag` | `directory` |
+| `dataset.path`、各类 `path` | 对应类型的非空有效路径 | 示例相对路径 |
+| 普通相机 `model` | `pinhole-radtan`、`pinhole-radtan5`、`pinhole-radtan8`、`pinhole-equi`、`pinhole-fov`、`pinhole-opencv-fisheye`、`omni-none`、`omni-radtan`、`eucm-none`、`ds-none` | `pinhole-equi` |
+| 纯视觉 RS 相机 `model` | `pinhole-equi` 或 `pinhole-radtan` | `pinhole-equi` |
+| `parallelism`、`detector_processes`、`optimizer_threads` | 任意正整数 | `4` |
+| `rolling_shutter.*.max_abs_line_delay_s` | 有限正数且严格大于行时间初值绝对值 | `0.00002 s/行` |
+| `knots_per_second` | 任意有限正数 Hz；省略时自动取观测中位频率 | `1.0 Hz` |
+| 标定板和 IMU 物理量 | 满足行内范围的实测正数 | 当前板／IMU 示例值 |
+
 目录任务按 dataset.yaml 中的传感器 ID 读取，不需要 topic 或 IMU rostopic。
 改成 bag 输入时，须补齐相机 topic 和 imu.yaml 的 rostopic，值对应 bag 中的话题。
 
@@ -14,6 +36,10 @@ cam0 表示左目、cam1 表示右目；单目示例只使用 cam0。
 | 双目＋IMU 外参 | camera_imu_calibration_task.yaml | all_params/camera_imu_calibration_task_full.yaml | 相机–IMU 外参、时间偏移与 IMU 参数 |
 | 单目／多目滚动快门相机 | camera_rolling_shutter_calibration_task.yaml | all_params/camera_rolling_shutter_calibration_task_full.yaml | K/D、相邻外参、每目行时间与RS残差 |
 | 滚动快门双目＋IMU | camera_imu_rolling_shutter_calibration_task.yaml | all_params/camera_imu_rolling_shutter_calibration_task_full.yaml | 每目行时间、相机–IMU 外参、整体时间偏移与 IMU 参数 |
+
+普通单目和多目任务的 `solver_mode` 默认均为 `incremental`，也都可以改为
+`full_batch`。单目 full-batch 联合优化全部 view 的 K/D 和板位姿；多目还联合优化相邻
+baseline。`freeze_intrinsics: true` 仍只适用于至少双目且每目提供完整 K/D 的任务。
 
 根目录还提供以下无注释配置：
 
@@ -50,9 +76,11 @@ task 的 `dataset.path` 都指向根目录下的占位数据目录
 程序据此找到数据；它不是标定任务，也不保存标定结果。
 task 的 `dataset.path` 应指向包含该清单的真实数据集目录，无需手动复制示例清单。
 
-AprilGrid 参数来自现有 EVT3.1 数据旁的配置：8×8、tagSize 0.065 m、
-tagSpacing 0.3、tagStartId 80。使用前核对实体板。IMU 参数沿用同处现有
-100 Hz 配置，仅作为已知输入示例；本次升级没有重新执行 Allan 噪声估计。
+根目录 AprilGrid 参数来自现有 EVT3.1 数据旁的配置：8×8、tagSize 0.065 m、
+tagSpacing 0.3、tagStartId 80。`all_params/aprilgrid.yaml` 为展示程序默认值，将
+`tagStartId` 写为默认 `0`；其余板尺寸没有程序默认值。两份都必须在使用前核对实体板。
+IMU 参数沿用同处现有 100 Hz 配置，仅作为无默认物理量的合法示例；本次升级没有
+重新执行 Allan 噪声估计。
 
 ## 运行顺序
 
@@ -105,10 +133,23 @@ kalibr-noros evaluate --run output/stereo --config evaluation.yaml --output-dir 
 
 ## 默认值与比较边界
 
-示例显式使用 4 个检测进程、4 个优化线程、每 worker 两个在途任务、一个 OpenCV
-线程；相机 `shuffle: false`。相机同步容差 0.0002 s 对齐采集的 200 µs，
-这是示例的显式配对策略；省略时原生默认仍为 0.02 s，不应混为同一数据选择条件。
-`output.evaluation_pairing_tolerance_s` 只影响 Camera–IMU 后处理配对，不反馈求解。
-默认完整帧焦距初始化、亚像素窗口和位移阈值保留原生行为。
+以下非默认值只属于根目录简洁操作模板，不是 `all_params/` 的默认值。根目录简洁 task
+显式使用 4 个检测进程、4 个优化线程；这两个字段没有统一数值默认，
+省略时保留各原生阶段行为。普通相机简洁 task 还把 `shuffle` 从默认 `true` 改为
+`false`，把同步容差从默认 0.02 s 改为 0.0002 s。RS 相机简洁 task 使用
+`window_half_size_px=7`、`max_displacement_px=1.0 px` 和 0.0001 s 同步容差，
+分别覆盖默认的 `2`、$\sqrt{1.5}$ px 和 0.02 s。
+
+`all_params/` 中的固定默认值已经展开：亚像素半窗口 `2 px`、最大位移
+$\sqrt{1.5}$ px、相机同步容差 `0.02 s`、评价配对容差 `0.0002 s`、
+`shuffle: true`，观测归档、选择历史和可视化均为 `false`。detector、optimizer 和
+公共 parallelism 没有统一数值默认，因此示例选用合法的 `4`，注释中明确允许任意
+正整数。RS 行时间上界、轨迹 knot 频率等无固定默认数值的字段同样给出合法示例及范围。
+
+根目录 `evaluation.yaml` 主动开启观测归档、选择历史、OpenCV 导出和可视化；这些开关
+的程序默认均为 `false`。标定板行列、尺寸、间距以及 IMU 采样率和噪声参数属于实物
+输入，没有通用程序默认值。AprilGrid 仅 `tagStartId` 可省略且默认 `0`；根目录简洁
+模板的 `80` 是当前板参数。`output.evaluation_pairing_tolerance_s` 的程序默认是 0.0002 s，只影响
+Camera–IMU 后处理配对，不反馈求解。
 
 详见 [统一输入／求解／输出契约](../../../docs/V1_INTERFACE_ZH.md)。

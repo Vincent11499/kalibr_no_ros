@@ -1,8 +1,9 @@
-schema_version: "1.0.0" # 项目配置版本，字符串；不是tag family版本。
-kind: calibration_target # 标定板配置，与task和result分别识别。
-target_type: aprilgrid # 原生AprilGrid，固定tag36h11。
-tagRows: 8 # 行数，正整数；此示例来自现有EVT3.1标定板参数。
-tagCols: 8 # 列数，正整数；理论角点数量为8×8×4=256。
-tagSize: 0.065 # 米，>0；实测单tag边长65mm，使用前核对实体板。
-tagSpacing: 0.3 # 无量纲，>=0；tag间空隙与tagSize之比，间隙19.5mm。
-tagStartId: 80 # 连续起始ID，>=0且80+8×8<=587；不支持离散ID或其他family。
+# 有固定默认值的字段填写程序默认值；无固定默认值的物理字段填写合法示例并注明范围。
+schema_version: "1.0.0" # 必填，无默认值；唯一合法值为字符串"1.0.0"。
+kind: calibration_target # 默认calibration_target；本例显式写出文档种类。
+target_type: aprilgrid # 必填，无默认值；可选aprilgrid/checkerboard/circlegrid，本文件选aprilgrid并使用对应字段。
+tagRows: 8 # 必填，无默认值；可选任意整数>=3，本例取8。
+tagCols: 8 # 必填，无默认值；可选任意整数>=3，本例取8，理论角点256个。
+tagSize: 0.065 # 必填，无默认值；可选任意>0的实测米值，本例取0.065。
+tagSpacing: 0.3 # 必填，无默认值；可选任意>0比例，本例取0.3，间隙19.5mm。
+tagStartId: 0 # 默认0；>=0且tagStartId+tagRows*tagCols<=587。

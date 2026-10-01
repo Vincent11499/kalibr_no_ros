@@ -33,7 +33,7 @@
 [`ROLLING_SHUTTER_CAMERA_CALIBRATION_ZH.md`](ROLLING_SHUTTER_CAMERA_CALIBRATION_ZH.md)。
 
 默认 `camera_calibration` 流程中，这 10 种模型的全部投影参数和畸变参数都会进入每台
-相机的单目标定 LM，并在全相机 full-batch 与最终增量联合优化中保持 active。相机对
+相机的单目标定 LM，并在任务实际执行的 full-batch 或最终增量联合优化中保持 active。相机对
 baseline 初始化 LM 是一个原生例外：该阶段投影参数 active、畸变参数暂时 fixed，随后
 会重新放开。只有显式设置 `calibration.freeze_intrinsics: true`，才会从头到尾同时
 固定这两个参数块。

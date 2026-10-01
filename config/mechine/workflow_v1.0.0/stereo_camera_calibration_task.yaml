@@ -13,7 +13,6 @@ cameras:
     model: pinhole-equi
 initialization:
   path: initialization_pinhole_equi.yaml
-  strategy: refine
 calibration:
   window_half_size_px: 7
   max_displacement_px: 2.0
