@@ -1,0 +1,6 @@
+interface:
+  display_name: "Kalibr 双目老化振动验证"
+  short_description: "运行双目标定、固定参数验证与前后对比报告"
+  default_prompt: "Use $kalibr-stereo-aging-validation to process a stereo camera aging/vibration study from the supplied machine data."
+policy:
+  allow_implicit_invocation: true

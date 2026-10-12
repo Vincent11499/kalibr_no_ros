@@ -975,7 +975,9 @@ solver_mode
 `camera_calibration_initialization`，另要求 `rolling_shutter`。正式
 `calibrate cameras-rs` 支持单目／多目，临时 `calibrate native-rs-cameras` 仅支持单目。
 完整原理、时间基准和两种求解器差异见
-[RS 相机标定](ROLLING_SHUTTER_CAMERA_CALIBRATION_ZH.md)。
+[RS 相机标定](ROLLING_SHUTTER_CAMERA_CALIBRATION_ZH.md)；残差、Jacobian、样条、运动先验、
+adaptive covariance 和最终默认值覆盖见
+[纯视觉 RS 源码实现说明](ROLLING_SHUTTER_IMPLEMENTATION_REFERENCE_ZH.md)。
 
 ### 10.1 `rolling_shutter`
 

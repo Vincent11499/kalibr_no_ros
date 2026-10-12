@@ -80,17 +80,47 @@ $$
 
 这里每个二维角点计为一个样本，不把 x、y 当成两个样本。
 
-### 1.2 双目综合 RMS
+### 1.2 两目独立 PnP 合并 RMS
 
-双目综合 RMS 只合并两目的二维重投影残差：
+当前 JSON 字段名为 `stereo_combined_rms_px`。它只把两次独立单目 PnP 的二维重投影
+残差合并为一个数：
 
 $$
 \operatorname{RMS}_{stereo}=
 \sqrt{\frac{N_0\operatorname{RMS}_0^2+N_1\operatorname{RMS}_1^2}{N_0+N_1}}.
 $$
 
-右目板位姿由右目测试图像独立 PnP 得到；该指标用于验证两套内参在新图像上的拟合，
-不会用待测外参重新构造右目位姿。双目外参由下面的 Alignment RMS 单独验证。
+实现位于 `fixed_camera_validation.py` 的 `combined_reprojection_rms()`：先累加两目的
+`squared_error_px2` 和 `corner_count`，再计算上式。因此代码与公式一致，而且两目角点
+数量不同时也不会把两个相机 RMS 简单取平均。
+
+这个量适合回答“固定的两套 $\mathbf K,\mathbf D$ 对新图像各自拟合得怎样”。右目板位姿
+由右目测试图像独立 PnP 得到，不会用待测外参从左目板位姿推导；所以它**不是双目联合
+重投影 RMS，也不检验双目外参**。双目外参由下面的 Alignment RMS 单独诊断。结果中应
+同时保留 cam0、cam1 各自的 RMS，避免合并值掩盖某一目明显较差的问题。
+
+普通双目标定的残差构造不同。每个同步 view 只有一个共享的标定板位姿
+${}^{cam0}_{target}\mathbf T_i$，右目位姿由相邻外参得到：
+
+$$
+{}^{cam1}_{target}\mathbf T_i =
+{}^{cam1}_{cam0}\mathbf T\,{}^{cam0}_{target}\mathbf T_i.
+$$
+
+因此正式结果 YAML 中每目的 `rms` 来自同一个最终联合问题：右目残差同时受共享板位姿
+和双目外参约束。项目当前没有另行发布一个“双目标定综合 RMS”字段。若用最终联合问题中
+两目的有效角点数和每目 RMS 代入上式，可以得到该联合问题的合并 RMS；但它仍不同于
+`verify cameras` 的 `stereo_combined_rms_px`，因为后者允许左右目各自估计板位姿。
+
+若要在独立测试集上得到与标定几何含义一致的指标，应固定
+$\mathbf K_0,\mathbf D_0,\mathbf K_1,\mathbf D_1,{}^{cam1}_{cam0}\mathbf T$，每个同步图像对
+只联合估计一个 ${}^{cam0}_{target}\mathbf T_i$，然后合并两目的残差。当前
+`verify cameras` 尚未计算这个“固定 K/D/T 的联合双目重投影 RMS”。在完全相同角点上，
+独立 PnP 比共享位姿拥有更多自由度，理论最优残差通常不大于联合残差；若比较的是训练集
+与新测试集、或使用角点集合不同，则两者没有固定的大小关系。
+
+本项目上述 RMS 都以“一个二维角点”为一个样本，分母为角点数 $N$。不要与把 x、y
+两个坐标分别计数、分母使用 $2N$ 的 API 数值直接混用。
 
 ### 1.3 Alignment RMS
 

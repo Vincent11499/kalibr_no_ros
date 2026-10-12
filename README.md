@@ -118,6 +118,11 @@ Alignment RMS 时，使用 `kalibr-noros verify cameras`。该命令会重新检
 同一 task schema，但只接受文档列出的原生后端参数子集。时间基准、配置和两种算法差异见
 [滚动快门相机标定](docs/ROLLING_SHUTTER_CAMERA_CALIBRATION_ZH.md)。
 
+不确定一组动态数据是否足以支持行时间模型时，先使用
+`python3 tools/kalibr_rolling_shutter_diagnosis.py`。它从普通标定观测做严格分块筛查，
+只有证据通过才运行正式 RS 正反值、多初值及轨迹带宽对照；配置、门槛与输出见
+[滚动快门行时间诊断工具](docs/ROLLING_SHUTTER_DIAGNOSIS_TOOL_ZH.md)。
+
 ## 模型与输出
 
 支持原生 Kalibr 模型以及 OpenCV 参数顺序的 radtan5/radtan8。鱼眼使用原生

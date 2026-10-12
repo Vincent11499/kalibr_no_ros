@@ -122,7 +122,9 @@ view 同时要求同步容差和共同全局角点 ID。第三台及后续相机
 协方差、运动先验和 DogLeg；本工程补上 no-ROS 数据入口、公开 `pinhole-equi` 映射、
 显式行时间 seed 和结构化输出。该后端的 `max_abs_line_delay_s` 只在求解后检查，不能
 理解为优化过程中的边界。完整算法和结果口径见
-[纯视觉 RS 相机标定](ROLLING_SHUTTER_CAMERA_CALIBRATION_ZH.md)。
+[纯视觉 RS 相机标定](ROLLING_SHUTTER_CAMERA_CALIBRATION_ZH.md)。需要核对残差、Jacobian、
+样条、运动先验、adaptive covariance、可观性和公共默认值覆盖时，见
+[纯视觉 RS 源码实现说明](ROLLING_SHUTTER_IMPLEMENTATION_REFERENCE_ZH.md)。
 
 ## 5. Camera–IMU 标定
 

@@ -5,6 +5,11 @@
 Camera–IMU Rolling Shutter 联合标定见
 [ROLLING_SHUTTER_ZH.md](ROLLING_SHUTTER_ZH.md)，不要把三种任务的参数或指标混用。
 
+需要逐行核对当前实现中的 design variable、残差、解析 Jacobian、样条、运动先验、
+adaptive covariance、可观性和三层默认值覆盖时，参见
+[纯视觉 RS 源码实现说明](ROLLING_SHUTTER_IMPLEMENTATION_REFERENCE_ZH.md)。该说明以当前源码
+调用链为准；本文保留面向使用者的配置、流程和结果解释。
+
 项目保留两条 RS 相机入口：
 
 | 入口 | 用途 | 相机数量 | 正式交付建议 |
@@ -498,6 +503,8 @@ task 中加入 `solver_mode`；`cameras-rs` 的最终核心求解本身就是连
 - 每目独立的行时间；
 - 连续目标位姿样条控制点。
 
+### 6.1 完整相机链与各目实际时间
+
 每台相机使用自己的源时间戳，不把同一 view 内的各目时间戳强行改成 cam0 时间。对第 i
 台相机，先按列表顺序累计相邻外参：
 
@@ -506,9 +513,42 @@ T_ci_c0 = T_ci_c(i-1) × ... × T_c1_c0
 T_ci_target(t) = T_ci_c0 × T_c0_target(t)
 ```
 
-因此第三台及后续相机使用完整相机链，不会只使用最后一段 baseline。多目建 view 时要求
-时间差在 `synchronization_tolerance_s` 内并具有共同全局角点 ID；这个容差只决定哪些
-观测能组成共视关系，不会把两目的实际角点时刻设成相同值。
+以三目为例，结果保存的是两段相邻外参：
+
+```text
+cam0 --T_c1_c0--> cam1 --T_c2_c1--> cam2
+```
+
+把 cam0 坐标中的点转换到 cam2 时必须依次经过两段变换：
+
+```text
+T_c2_c0 = T_c2_c1 × T_c1_c0
+T_c2_target(t) = T_c2_c1 × T_c1_c0 × T_c0_target(t)
+```
+
+只使用最后一段 `T_c2_c1`，等于把 cam0 坐标中的点错误地当成 cam1 坐标中的点。双目只有
+一段 baseline，看不出这个区别；第三台及后续相机必须累计从 cam0 到当前相机的完整链。
+
+`synchronization_tolerance_s` 只用于判断不同相机的图像能否组成同一个共视 view。例如：
+
+```text
+cam0 图像时间戳：1.000000 s
+cam1 图像时间戳：1.000050 s
+同步容差：       0.000100 s
+```
+
+两幅图相差 50 us，可以组成同一个 view，但求解器仍分别保留 `1.000000 s` 和
+`1.000050 s`。同一个物理角点在两幅图中的纵坐标通常也不同，因此实际角点时刻分别是：
+
+```text
+t_cam0_corner = 1.000000 + y_cam0 × tau_cam0
+t_cam1_corner = 1.000050 + y_cam1 × tau_cam1
+```
+
+它们不必相等。共同全局角点 ID 表示两目检测的是 AprilGrid 上的同一个物理角点；只有
+时间接近但没有共同角点的图像不能提供双目几何约束。
+
+### 6.2 行时间为什么使用有界内部变量
 
 估计模式使用光滑有界状态：
 
@@ -516,11 +556,67 @@ T_ci_target(t) = T_ci_c0 × T_c0_target(t)
 tau = max_abs_line_delay_s × tanh(q)
 ```
 
-$q$ 是优化变量。该写法对更新和 Jacobian 一致，不在更新后硬截断参数，也没有给行时间
-增加先验残差。初值按 `atanh(seed / bound)` 转换；估计接近范围边缘时任务失败并要求
-检查激励、范围和可观性。`estimate: false` 固定 `line_delay_s`，可构造同一求解器的
-0、正值和反向值对照。要让这些控制实验的样条支持完全相同，应保留相同的
-`max_abs_line_delay_s`。
+这里的 `tau` 是最终物理行时间，单位为 s/row；`q` 是优化器内部使用的无量纲变量；
+`max_abs_line_delay_s` 是允许的最大绝对行时间，下面简称 `bound`。因为
+`-1 < tanh(q) < 1`，所以无论优化器怎样更新 `q`，始终满足：
+
+```text
+-bound < tau < bound
+```
+
+例如 `bound = 20 us/row`：
+
+| `q` | `tau` |
+|---:|---:|
+| `0` | `0 us/row` |
+| `0.4236` | `8 us/row` |
+| `1` | `15.23 us/row` |
+| `2` | `19.28 us/row` |
+| 趋近正无穷 | 趋近 `20 us/row` |
+
+如果初值是 `8 us/row`、边界是 `20 us/row`，内部初值为：
+
+```text
+q_seed = atanh(8 / 20) = atanh(0.4) ≈ 0.4236
+```
+
+最终结果仍输出物理量 `tau`，不会向用户输出 `q`。该参数化的导数为：
+
+```text
+d tau / d q = bound × (1 - tanh(q)^2)
+```
+
+因此实际参数更新和 Jacobian 使用同一个连续公式。若直接优化 `tau`，再把越界值硬裁剪到
+正负边界，裁剪点会不光滑，而且优化器计算的更新与真正应用的更新不一致；system 后端不
+采用这种做法。
+
+有界参数化只限制搜索范围，不是行时间先验。目标函数中没有
+`(tau - tau_seed)^2 / sigma^2` 之类把结果拉回初值的残差；行时间由重投影数据、K/D、
+外参和共享轨迹共同决定。接近边界时 `d tau / d q` 会变小，而且结果可能只是被搜索范围
+挡住，并不能证明真实行时间位于边界。因此估计值进入配置范围的边缘区域时任务失败，要求
+检查范围、扫描方向、时间戳语义、运动激励、轨迹设置和可观性。
+
+### 6.3 固定行时间对照
+
+`estimate: false` 时不优化 `q`，`line_delay_s` 固定为配置值。可以使用同一个求解器做：
+
+| 对照 | 配置 | 用途 |
+|---|---|---|
+| 零行时间 | `line_delay_s: 0` | 近似全局快门模型 |
+| 正向固定值 | 例如 `+8e-6` | 验证已知正向扫描理论值 |
+| 反向固定值 | 例如 `-8e-6` | 检查扫描方向或图像上下翻转语义 |
+| 自由估计 | `estimate: true` | 由数据估计行时间 |
+
+公平对比时应保持 K/D/T 初值、帧和角点集合、`spline_order`、`knots_per_second`、
+`time_padding_s`、运动先验权重及 `max_abs_line_delay_s` 相同，只改变行时间值和
+`estimate`。这样各组使用相同的轨迹带宽、边界定义和时间支持检查，自由估计组的搜索范围
+也保持不变，误差变化才主要对应行时间模型。
+
+### 6.4 轨迹带宽与运动先验
+
+本节涉及的 pose sample、control point、knot、segment、order、轨迹二阶导数和运动先验
+可先阅读[连续轨迹、样条与运动先验入门](ROLLING_SHUTTER_SPLINE_TUTORIAL_ZH.md)。该文按
+当前 `SystemCalibrator.py` 实现给出数值例子和代码调用链。
 
 目标轨迹默认使用四阶样条。由于联合问题始终加入二阶运动先验，`spline_order` 至少为 3。
 system 求解器没有 native 后端的 adaptive knot 插入。省略 `knots_per_second` 时，自动
@@ -541,6 +637,8 @@ knot 网格相对观测的相位，可能使行时间与轨迹出现数值共振
 `time_padding_s` 必须严格大于任一相机在配置范围内的首末行跨度，防止优化更新后角点
 时刻离开样条支持域。
 
+### 6.5 求解停止与失败条件
+
 联合求解沿用 Optimizer2 的原生停止条件：参数增量 `dX` 或目标函数变化绝对值 `|dJ|`
 达到阈值即可停止。若实际迭代数达到 `max_iterations`，则表示预算耗尽而不是满足上述
 停止条件；任务会失败，不发布正式结果，错误中同时记录 `iterations`、`dXFinal` 和
@@ -553,14 +651,81 @@ knot 网格相对观测的相位，可能使行时间与轨迹出现数值共振
 
 ## 7. 初始化
 
-RS 相机任务复用 `camera_calibration_initialization`：
+### 7.1 四类初值来自哪里
+
+RS 相机任务的“初始化”包含四类状态，它们的来源不同：
+
+| 状态 | 初值来源 | 能否由初始化文件提供 | 联合阶段默认状态 |
+|---|---|---:|---|
+| 每目 K/D | 图像观测，或 `camera_calibration_initialization` | 可以 | active |
+| 相邻 `T_cn_cnm1` | 多目共视图，或 `camera_calibration_initialization` | 可以 | active |
+| 每目 `line_delay_s` | task 的 `rolling_shutter.<camera_id>` | 不可以 | 由 `estimate` 决定 |
+| 目标位姿 spline | 使用当前 K/D/T 对有效观测做 PnP 后自动拟合 | 不可以 | active |
+
+因此 `initialization.path` 只负责相机光学参数和相邻外参，不包含行时间或轨迹。RS 相机任务
+复用 `camera_calibration_initialization`：
 
 ```yaml
 initialization:
   path: initialization_stereo.yaml
 ```
 
-初始化文件中的键使用 task 的相机 ID，加载后按 task 列表顺序映射为内部 cam0、cam1……。
+一个双目初始化文件可以写成：
+
+```yaml
+schema_version: "1.0.0"
+kind: camera_calibration_initialization
+cameras:
+  cam0:
+    intrinsics: [2400.0, 2400.0, 1919.5, 1079.5]
+    distortion_coeffs: [0.0, 0.0, 0.0, 0.0]
+  cam1:
+    intrinsics: [2400.0, 2400.0, 1919.5, 1079.5]
+    distortion_coeffs: [0.0, 0.0, 0.0, 0.0]
+    T_cn_cnm1:
+      - [1.0, 0.0, 0.0, -0.38]
+      - [0.0, 1.0, 0.0, 0.0]
+      - [0.0, 0.0, 1.0, 0.0]
+      - [0.0, 0.0, 0.0, 1.0]
+```
+
+参数维数必须与 task 中的模型一致。`pinhole-equi` 和项目公开的 `pinhole-radtan` 都使用
+四个投影参数 `[fu,fv,cu,cv]`；本任务支持的畸变参数维数由所选模型严格检查，不能通过
+补零或截断把另一模型的 seed 直接套用。
+
+初始化文件中的键使用 task 的相机 ID，加载后再按 `task.cameras` 的列表顺序映射为内部
+cam0、cam1……。例如 task 的 ID 是 `left`、`right`，初始化文件也必须写 `left`、
+`right`；内部求解时它们分别成为 cam0、cam1。初始化文件中出现 task 未声明的相机 ID、
+重复 ID 或模型维数不符都会在检测和优化之前报错。
+
+### 7.2 K/D 初值怎样使用
+
+未设置 `calibration.freeze_intrinsics` 时，每台相机按以下规则初始化：
+
+1. K/D 都未提供：从该相机的 AprilGrid 观测执行原生单目初始化和单目 LM；
+2. 只提供 K：跳过解析焦距估计，先从观测取得图像分辨率，再以给定 K 和模型默认 D
+   启动单目 LM；
+3. 只提供 D：先从观测初始化 K，再覆盖给定 D，随后执行单目 LM；
+4. K/D 都提供：以完整 seed 启动单目 LM。
+
+这里的单目 LM 仍会更新 K/D。完成多目 baseline 初始化后，传统全 view refinement 还会
+同时更新共享的相机几何对象；随后 RS 联合问题继续把同一组 K/D 作为 active 状态。因此
+初始化文件中的数值可能在三个位置发生变化：单目 LM、baseline 的全 view refinement 和
+最终 RS 联合求解。seed 的作用是给非线性求解器一个起点，并不要求最终结果保持靠近 seed。
+
+`calibration.freeze_intrinsics: true` 是另一种活动状态策略。它要求：
+
+- 至少有两台相机；
+- 初始化文件为每台相机提供完整 K 和 D；
+- 参数维数与各目模型完全一致。
+
+此时跳过单目内参 LM，K/D 在 baseline 初始化、传统全 view refinement 和 RS 联合阶段都
+固定；相邻外参、目标轨迹和配置为 `estimate: true` 的行时间仍然 active。它适合验证一套
+可信内参下的外参和行时间，不代表“完全固定所有相机参数”。当前公共 CLI 不支持 RS 单目
+固定 K/D。
+
+### 7.3 相邻外参初值怎样使用
+
 推荐在第 2 台及后续相机块使用 `T_cn_cnm1`，它表示前一相机到当前相机：
 
 $$
@@ -568,14 +733,70 @@ $$
 $$
 
 兼容键 `T_cam_from_previous` 含义相同，但同一个相机块不能同时写两个键。外参只能属于
-第 2 台及后续相机。可以只提供部分 K/D 或外参；未提供的量仍由观测初始化。所有 seed
-只作为起点，不添加隐式先验，联合求解时仍可变化。
+第 2 台及后续相机。cam0 没有前一台相机，因此不能包含该字段。三目时应分别提供
+`cam1.T_cn_cnm1 = T_c1_c0` 和 `cam2.T_cn_cnm1 = T_c2_c1`，不能把 `T_c2_c0`
+写进 cam2。
 
-`calibration.freeze_intrinsics: true` 是独立的活动状态开关：它要求至少双目，且初始化
-包含每目完整 K/D；此时 K/D 固定，baseline、轨迹和按 `rolling_shutter.*.estimate` 配置的
-行时间仍参与求解。当前公共 CLI 不支持单目固定 K/D。初始化文件不包含行时间；行时间只
-在 task 的 `rolling_shutter` 中配置，便于用同一光学初值执行 $\tau=0$、固定理论值和自由
-估计对照。`initialization.strategy` 已删除，不要填写 `refine` 或 `direct`。
+baseline 初始化的实际顺序是：
+
+1. 始终先检查所有相机能否通过“时间同步且具有共同全局角点 ID”的观测形成连通图；外参
+   seed 不会绕过该数据检查；
+2. 没有 seed 时，选择共视信息较强的相机对执行成对 stereo 初始化，再换算为相邻相机链；
+3. 只提供部分相邻外参时，缺失项由上述共视图生成，提供项覆盖对应链段；
+4. 提供完整相邻链时，跳过成对 stereo 初始化，直接采用完整链 seed；
+5. 无论外参 seed 是部分还是完整，随后都执行包含全部共视 view 的传统全批量 refinement；
+6. refinement 后的 baseline 才用于 PnP 轨迹初始化，并作为 RS 联合问题的 active 起点。
+
+所以“提供完整 baseline”只会跳过成对初始化，不会固定 baseline，也不会跳过全 view
+refinement。当前 `cameras-rs` 没有冻结外参的配置。若 seed 方向写反、量级错误或偏差过大，
+全 view refinement 及后续 RS 求解仍可能进入错误局部解，不能把“成功收敛”视为 seed 正确。
+
+### 7.4 目标轨迹初值怎样生成
+
+初始化文件不能直接写目标轨迹。完成 K/D 和 baseline 初始化后，程序遍历共视 view：
+
+1. 优先选择检测角点较多的相机观测；
+2. 用该相机当前 K/D 对标定板执行 PnP；
+3. 使用完整相机链把该目标位姿换算到 cam0 参考系；
+4. 将成功的 `(相机原始时间戳, 目标位姿)` 样本拟合为连续位姿 spline。
+
+PnP 失败的 view 不提供轨迹样本；有效样本必须至少达到 `max(4, spline_order)`。K/D seed
+会影响 PnP，baseline seed 会影响非 cam0 位姿换算，因此不合理的光学或外参初值会继续
+污染 spline 初值。进入联合问题后 spline 控制点是 active 的，初始 PnP 位姿不是固定测量，
+也不是额外先验；真正保留在目标函数中的轨迹约束是第 6 节所述二阶运动先验。
+
+### 7.5 行时间初值与初始化文件无关
+
+每目的行时间从 task 读取，例如：
+
+```yaml
+rolling_shutter:
+  cam0:
+    line_delay_s: 8.0e-6
+    estimate: true
+    max_abs_line_delay_s: 2.0e-5
+```
+
+当 `estimate: true` 时，`line_delay_s` 是有界 latent 状态的初值，并按
+$q_0=\operatorname{atanh}(\tau_0/\tau_{max})$ 转换；它必须严格位于正负边界内部。设置
+`estimate: false` 时，`line_delay_s` 在联合问题中固定，`max_abs_line_delay_s` 若存在则
+只用于支持域和合法性检查。为了公平比较 $\tau=0$、固定理论值和自由估计，应使用同一份
+K/D/T 初始化文件、同一帧集合、同一 spline 和运动先验，只修改行时间配置。
+
+### 7.6 怎样选择初始化方式
+
+| 已知条件 | 推荐配置 | 含义 |
+|---|---|---|
+| 没有可信历史参数 | 省略 `initialization` | K/D/T 全部由当前观测初始化 |
+| 有粗略 K/D 或某段 baseline | 只填写可信字段 | 其余字段由观测补齐，所有字段继续优化 |
+| 有完整历史 K/D/T，希望重新联合标定 | 提供完整文件，`freeze_intrinsics: false` | 全部作为起点，K/D/T 都可变化 |
+| K/D 已单独验证可信，只估计外参、轨迹和行时间 | 提供完整 K/D/T，`freeze_intrinsics: true` | K/D 固定，T、轨迹和可估计行时间 active |
+| 比较 0 延迟、理论延迟和自由 RS | 复用同一初始化文件 | 行时间只在 task 中改变，避免同时改变光学起点 |
+
+所有 seed 都不增加隐式先验残差。`initialization.strategy` 已删除，不要填写 `refine` 或
+`direct`。若保存了运行诊断，`initialization_report.yaml` 会记录实际提供字段、K/D 是否
+固定、baseline 使用共视图还是 seed 覆盖，以及每目行时间是 active 还是 fixed；它用于
+追溯初始化路径，不代表这些 seed 最终被求解器接受为真值。
 
 ## 8. 原生 Kalibr RS 单目实现与异同
 
@@ -613,6 +834,10 @@ Levenberg–Marquardt。可选最终四倍标准差角点过滤会重建问题�
 外参以及 active 的行时间 latent；hard rank 失败不发布成功结果，行时间达到配置范围
 99.5% 也作为不可信边界解拒绝。
 
+这里的可观性分析调用 `analyze_write_require()`，当前只输出 reduced Fisher information
+的谱、秩和弱模态，不请求或序列化 K/D/T/行时间的后验 covariance。`feature_sigma_px² I`
+只是观测噪声权重；它与参数 covariance 不是同一概念。
+
 ### 8.2 原生 `kalibr_calibrate_rs_cameras` 的状态与目标函数
 
 原生单目后端的活动状态为：
@@ -642,6 +867,11 @@ $$
 正式 system 后端不同。求解器使用 Optimizer2、Schur complement、Block Cholesky 和
 DogLeg。初次联合求解后，`ReprojectionErrorKnotSequenceUpdateStrategy` 根据残差决定是否
 重排 spline knot；每次变化后重建完整问题并再次求解，直至无需更新或达到次数限制。
+
+这个 adaptive covariance 是残差的运动相关权重，不是参数后验 covariance。当前 C++ 实现
+在每次误差评价时按当前状态刷新有效逆协方差，但残差 Jacobian 不继续对该权重矩阵本身
+求导；本次线性化把刷新后的权重视为固定量。矩阵公式和源码位置见
+[纯视觉 RS 源码实现说明](ROLLING_SHUTTER_IMPLEMENTATION_REFERENCE_ZH.md)。
 
 native 后端没有 system 后端等价的多目外参状态、最终角点四倍标准差过滤、
 Blake–Zisserman 开关和 reduced-Fisher 可观性输出。项目包装器在保留上述核心求解流程的
@@ -750,7 +980,84 @@ Camera–IMU 可以从纯视觉 RS 结果读取 K/D/T 和相邻外参，但结�
 保持全局快门残差；需要逐行时间模型时必须选择 `imu-camera-rs`，并在它自己的 task 中
 显式配置完整 `rolling_shutter`。这样不会因引用了带快门元数据的结果而静默切换算法。
 
+### 9.1 运行时如何用于双目三角化
+
+`line_delay_s` 不能单独把 RS 图像变成全局快门图像。它只把原始像素行转换为采样时刻；运行
+时还需要该时刻的相机运动。以 Camera–IMU 输出口径为例，对相机 $i$ 的原始像素
+$(u_i,v_i)$：
+
+$$
+t_i=t_{i,\mathrm{frame}}
++\Delta t_{\mathrm{cam\rightarrow imu},i}
++(v_i-y_{\mathrm{ref},i})\tau_i.
+$$
+
+这里 $\tau_i$ 是 `line_delay_s`，$y_{\mathrm{ref},i}$ 是 `reference_row_px`，
+$\Delta t_{\mathrm{cam\rightarrow imu},i}$ 是结果中的 `timeshift_cam_imu`；实现内部和诊断指标
+有时用带单位后缀的名称 `timeshift_cam_imu_s` 表示同一数值。当前 Camera–IMU 输出明确采用
+`t_row_imu = t_frame + timeshift_cam_imu + (y-reference_row_px)*line_delay_s`。必须使用畸变、
+缩放和极线校正前的原始传感器行号；若只能取得缩放后的行号，必须同时换算行坐标和每行时间，
+不能直接套用原分辨率的 $\tau$。
+
+设 ${}^{W}_{I}\mathbf T(t)$ 是 IMU 到世界的运行时连续位姿，标定输出
+`T_cam_imu` 为 ${}^{C_i}_{I}\mathbf T$，则：
+
+$$
+{}^{W}_{C_i}\mathbf T(t_i)
+={}^{W}_{I}\mathbf T(t_i)
+\left({}^{C_i}_{I}\mathbf T\right)^{-1}.
+$$
+
+对左右观测分别执行以下步骤：
+
+1. 用各自 K/D 反投影原始像素，得到相机坐标系单位射线 $\mathbf r_i$；
+2. 用各自角点时刻 $t_i$ 插值 IMU/视觉惯性轨迹；不能只取整帧时间戳处的位姿；
+3. 将射线变换到共同世界坐标：
+
+$$
+\mathbf o_i=\operatorname{trans}({}^{W}_{C_i}\mathbf T(t_i)),\qquad
+\mathbf d_i=\operatorname{R}({}^{W}_{C_i}\mathbf T(t_i))\mathbf r_i;
+$$
+
+4. 对两个不同时刻、不同光心的世界射线做最近点三角化：
+
+$$
+\min_{\lambda_L,\lambda_R}
+\left\|
+(\mathbf o_L+\lambda_L\mathbf d_L)
+-(\mathbf o_R+\lambda_R\mathbf d_R)
+\right\|^2;
+$$
+
+5. 取两条射线最近点的中点作为静态场景点 $\mathbf p_W$。若业务需要参考时刻 $t_*$ 下的
+   cam0 坐标，再计算
+   $\mathbf p_{C_0(t_*)}=({}^{W}_{C_0}\mathbf T(t_*))^{-1}\mathbf p_W$。
+
+这种“异步射线三角化”直接使用左右像素各自的真实采样时刻，通常比先把像素强行搬到同一
+时刻更清楚。若选择先做图像或角点运动补偿，平移造成的像素位移依赖未知深度，通常需要：
+静态双目给出初始深度、按轨迹搬移到共同时间、重新匹配/三角化，再迭代。仅使用陀螺仪可以
+较好补偿旋转，不能完整补偿平移视差。
+
+标准 `stereoRectify + disparity + Q` 默认左右观测来自同一时刻且一组固定 R/T 对整幅图像
+成立。相机运动明显、首末行跨度较大时，直接使用这条全局快门管线不会自动使用
+`line_delay_s`。稠密深度需要逐行位姿、运动补偿或专用 RS stereo 算法；稀疏特征可直接使用
+上面的异步射线方法。
+
+还需满足以下边界：
+
+- 设备静止时，不同行虽然时间不同，但位姿不变，普通三角化已经足够；
+- 对静态场景，两个不同时刻射线仍指向同一世界点；对运动物体还需要物体运动模型，IMU 只能
+  修正相机自身运动；
+- 相机帧时间戳事件、扫描方向和 `timeshift_cam_imu_s` 符号必须与标定输出一致；
+- 若运行时没有 IMU、视觉惯性轨迹或其他运动估计，只有 K/D/T/$\tau$ 仍无法完整修正动态 RS
+  三角化误差。
+
 ## 10. 数据要求和结论边界
+
+需要从一份普通相机或普通 Camera–IMU task 自动完成分块筛查、列方向负对照、bootstrap、
+多初值及 knot 敏感性对照时，使用
+[滚动快门行时间诊断工具](ROLLING_SHUTTER_DIAGNOSIS_TOOL_ZH.md)。该工具只在证据通过时
+生成建议 RS task，不会把离线拟合值直接发布成正式标定结果。
 
 静止数据适合建立稳定 K/D/T 参考，却几乎不能单独辨识行时间。RS 数据应满足：
 

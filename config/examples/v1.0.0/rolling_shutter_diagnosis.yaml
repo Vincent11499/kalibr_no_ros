@@ -1,0 +1,12 @@
+schema_version: "1.0.0"
+kind: rolling_shutter_diagnosis
+source_task:
+  path: stereo_camera_calibration_task.yaml
+capture:
+  motion: continuous
+  camera_timestamp_event: row0_exposure_end
+rolling_shutter:
+  cam0:
+    max_abs_line_delay_s: 0.00002
+  cam1:
+    max_abs_line_delay_s: 0.00002

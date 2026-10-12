@@ -36,6 +36,7 @@ cam0 表示左目、cam1 表示右目；单目示例只使用 cam0。
 | 双目＋IMU 外参 | camera_imu_calibration_task.yaml | all_params/camera_imu_calibration_task_full.yaml | 相机–IMU 外参、时间偏移与 IMU 参数 |
 | 单目／多目滚动快门相机 | camera_rolling_shutter_calibration_task.yaml | all_params/camera_rolling_shutter_calibration_task_full.yaml | K/D、相邻外参、每目行时间与RS残差 |
 | 滚动快门双目＋IMU | camera_imu_rolling_shutter_calibration_task.yaml | all_params/camera_imu_rolling_shutter_calibration_task_full.yaml | 每目行时间、相机–IMU 外参、整体时间偏移与 IMU 参数 |
+| RS 行时间诊断 | rolling_shutter_diagnosis.yaml | all_params/rolling_shutter_diagnosis_full.yaml | 分块筛查、正式对照、证据分类和建议RS任务 |
 
 普通单目和多目任务的 `solver_mode` 默认均为 `incremental`，也都可以改为
 `full_batch`。单目 full-batch 联合优化全部 view 的 K/D 和板位姿；多目还联合优化相邻
@@ -52,6 +53,7 @@ baseline。`freeze_intrinsics: true` 仍只适用于至少双目且每目提供�
 | `initialization_imu.yaml` | Camera–IMU 初值，默认不启用 |
 | `evaluation.yaml` | 从已归档观测重新生成指标、判定和图像 |
 | `machine_calibration_workflow.yaml` | 机器级入口的最小 `user.yaml`；复制后填写机器目录和 Camera–IMU 模式 |
+| `rolling_shutter_diagnosis.yaml` | 输入普通任务，自动判断数据是否支持逐行时间模型 |
 
 `all_params/` 中的 `aprilgrid.yaml`、`imu.yaml`、`evaluation.yaml` 保留参数解释与规则示例。
 相机与 Camera–IMU 的 job 分开，不把完整相机标定嵌入 Camera–IMU 任务。

@@ -1,0 +1,24 @@
+# 输入一个普通相机或普通Camera–IMU任务，先离线筛查，再按证据决定是否运行正式RS对照。
+schema_version: "1.0.0" # 必填，无默认值；唯一合法值为字符串"1.0.0"。
+kind: rolling_shutter_diagnosis # 必填，无默认值；唯一合法值rolling_shutter_diagnosis。
+
+source_task:
+  path: ../stereo_camera_calibration_task.yaml # 必填，无默认值；普通camera_calibration或camera_imu_calibration任务。
+
+capture:
+  motion: continuous # 必填，无默认值；continuous、stop_and_go或unknown；仅continuous允许自动判为important。
+  camera_timestamp_event: row0_exposure_end # 可选，无默认值；记录采集端真实语义，不参与修改求解公式。
+
+rolling_shutter: # 键必须与source task最终相机ID完全一致；工具不知道硬件行时间，不接受line_delay_s输入。
+  cam0:
+    max_abs_line_delay_s: 0.00002 # 必填，无默认值；有限正数s/行；正式自由估计不得接近此边界。
+  cam1:
+    max_abs_line_delay_s: 0.00002 # 必填，无默认值；有限正数s/行；每目可使用不同物理上界。
+
+screening:
+  bootstrap_samples: 1000 # 默认1000；整数>=100；按帧有放回重采样，计算改善量95%区间。
+  bootstrap_seed: 0 # 默认0；非负整数；只控制离线bootstrap，不改变检测、普通标定或RS求解。
+
+formal_controls:
+  freeze_intrinsics: true # 默认true；仅相机源任务有效。false使10组正式RS对照继续优化K/D，便于研究动态RS内参与普通/静态内参差异。
+  max_iterations: 5000 # 省略时相机RS至少5000次、Camera–IMU RS至少100次；正整数。显式值直接作为各正式对照的迭代上限。
