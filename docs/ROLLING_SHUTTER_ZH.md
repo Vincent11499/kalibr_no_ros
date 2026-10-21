@@ -102,7 +102,8 @@ r_ij = measurement_ij − projection(p_camera)
 
 默认文件前缀为新 job 加相机与 IMU ID，也可用 `output.name` 指定独立名称。结果继续采用
 `schema_version: "1.0.0"`、`kind: calibration_result`、`calibration_type: camera_imu`，
-每个相机新增 `shutter` 映射，现有内参、rms、T_cam_imu 与相邻 T_cn_cnm1/alignment 保留。
+每个相机新增 `shutter` 映射，现有内参、rms、`T_cam_imu` 与相邻
+`T_cn_cnm1`/alignment 保留，并输出 `T_imu_cam = inverse(T_cam_imu)`。
 
 | 结果字段 | 含义 |
 |---|---|

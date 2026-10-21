@@ -169,7 +169,9 @@ Camera–IMU task 省略 `camera_calibration` 时，先在 `--output-dir` 根目
 
 报告采用分组表格、分页图形，包含 Camera system、Estimated poses、Polar error、
 Azimuthal error 与 Reprojection errors。图形使用已有最终观测，不重跑求解；缺证据明确
-标为不可用。上述统计图内嵌 HTML/PDF；启用可视化时两种报告使用相同的随机选取的最多
+标为不可用。Camera–IMU 报告还包含原生 Kalibr 风格的
+`imuN: sample inertial rate` 图：横轴为相对时间，纵轴实际表示相邻保留 IMU 样本间隔，
+单位 ms，并显示平均值与标准差。上述统计图内嵌 HTML/PDF；启用可视化时两种报告使用相同的随机选取的最多
 5 组图，随机选取后按原始帧顺序排列。每组上方为左右双目原图，下方为同一对图像的
 极线对齐结果；原图直接嵌入报告，不另存原图目录，也不引用角点检测图或单目去畸变图。抽样使用固定随机种子以便复查，
 极线辅助线为绿色、3 像素宽。PDF 每组单独一页，上原图、下对齐图，图像内嵌且可放大查看，
@@ -220,7 +222,7 @@ kalibr-noros evaluate --run output/camera_calibration_cam0_cam1.yaml --output-di
 
 | 文件 | 含义与使用场景 |
 |---|---|
-| <名称>.yaml | 最终数值参数；双目包含内参、畸变和相机间变换，Camera–IMU 另含 T_cam_imu、时间偏移和 IMU 参数；下游读取此文件 |
+| <名称>.yaml | 最终数值参数；双目包含内参、畸变和相机间变换，Camera–IMU 另含互逆的 T_cam_imu/T_imu_cam、时间偏移和 IMU 参数；下游读取此文件 |
 | <名称>.results.txt | 人可读的标定结果和误差摘要 |
 | <名称>/metrics.json | 可量化的重投影、双目校正、IMU 残差、bias 及可用优化状态；包含总体和逐帧统计 |
 | <名称>/assessment.json | 根据显式规则判定 pass/fail/not_evaluated；参考评级独立保存，不能等同生产验收 |

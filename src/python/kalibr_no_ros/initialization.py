@@ -210,7 +210,9 @@ def _camera_models(task):
     return result
 
 
-def _inverse_transform(transform):
+def _inverse_transform(transform, field=None):
+    if field is not None:
+        transform = _transform(transform, field)
     rotation = [[transform[column][row] for column in range(3)] for row in range(3)]
     translation = [-sum(rotation[row][column] * transform[column][3] for column in range(3))
                    for row in range(3)]

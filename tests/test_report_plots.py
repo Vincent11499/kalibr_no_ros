@@ -11,7 +11,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "python"))
 
-from kalibr_no_ros.report_plots import camera_frames, camera_observations, observation_rays, render_reports, stereo_comparison_page
+from kalibr_no_ros.report_plots import camera_frames, camera_observations, observation_rays, render_reports, report_figures, stereo_comparison_page
 
 
 class ReportPlotsTest(unittest.TestCase):
@@ -76,6 +76,23 @@ class ReportPlotsTest(unittest.TestCase):
         np.testing.assert_array_equal(indices, [0])
         np.testing.assert_array_equal(rms, [5.])
 
+    def test_imu_sample_inertial_rate_uses_each_retained_timestamp_once(self):
+        timestamps = [10., 10.01, 10.022]
+        residuals = []
+        for kind in ("accel", "gyro"):
+            residuals.extend({"imu_id": "imu0", "kind": kind,
+                              "solver_timestamp_s": stamp}
+                             for stamp in timestamps)
+        metrics = {"cameras": {}, "imus": {"imu0": {}}}
+        figures = list(report_figures(metrics, {"imu_residuals": residuals}))
+        title, caption, figure = next(item for item in figures
+                                      if item[0] == "imu0: sample inertial rate")
+        offsets = figure.axes[0].collections[0].get_offsets()
+        np.testing.assert_allclose(offsets[:, 0], [.01, .022], atol=1e-12)
+        np.testing.assert_allclose(offsets[:, 1], [10., 12.], atol=1e-9)
+        self.assertIn("interval", caption)
+        figure.clear()
+
     def test_summary_only_report_does_not_invent_missing_plots(self):
         metrics = {"calibration_type": "cameras", "cameras": {
             "left": {"model": "pinhole-equi", "resolution": [640, 480], "used_frames": 1,
@@ -89,7 +106,12 @@ class ReportPlotsTest(unittest.TestCase):
         files += ['visualizations/cam0_cam1/original_{:04d}.jpg'.format(i) for i in range(12)]
         files += ['visualizations/cam0_det/corners_0.jpg',
                   'visualizations/cam0_dist/undistorted_0.jpg']
-        document, pdf = render_reports(metrics, assessment, files)
+        calibration = {"cameras": [{
+            "id": "left", "T_cam_imu": np.eye(4).tolist(),
+            "T_imu_cam": np.eye(4).tolist(),
+        }]}
+        document, pdf = render_reports(
+            metrics, assessment, files, calibration=calibration)
         import re
         referenced = re.findall(r'<img[^>]+src="(visualizations/[^\"]+)"', document)
         self.assertEqual(len(referenced), 10)
@@ -105,6 +127,8 @@ class ReportPlotsTest(unittest.TestCase):
         self.assertNotIn("<pre>", document)
         for title in ("Camera system", "Estimated poses", "Polar error", "Azimuthal error", "Reprojection errors"):
             self.assertIn(title, document)
+        self.assertIn("IMU → left · T_cam_imu", document)
+        self.assertIn("left → IMU · T_imu_cam", document)
         self.assertIn("No final corner measurements and residuals were saved", document)
         self.assertIn("No final camera-to-target pose evidence was saved", document)
         with tempfile.TemporaryDirectory() as directory:
@@ -117,7 +141,9 @@ class ReportPlotsTest(unittest.TestCase):
                 cv2.imwrite(str(original), np.full((12, 48, 3), i, dtype=np.uint8))
                 cv2.imwrite(str(aligned), np.full((12, 48, 3), i + 30, dtype=np.uint8))
             with mock.patch('kalibr_no_ros.report_plots.stereo_comparison_page', wraps=stereo_comparison_page) as pages:
-                html_with_images, pdf_with_images = render_reports(metrics, assessment, files, output_dir=root)
+                html_with_images, pdf_with_images = render_reports(
+                    metrics, assessment, files, calibration=calibration,
+                    output_dir=root)
             self.assertEqual(pages.call_count, 5)
             expected = [int(Path(path).stem.split('_')[-1]) for path in referenced[1::2]]
             for call, index in zip(pages.call_args_list, expected):

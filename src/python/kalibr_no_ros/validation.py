@@ -5,7 +5,7 @@ import re
 
 from kalibr_bag_io import open_dataset, DirectoryReader
 from .version import SCHEMA_VERSION
-from .initialization import CAMERA_MODEL_DIMENSIONS, _transform
+from .initialization import CAMERA_MODEL_DIMENSIONS, _inverse_transform, _transform
 from .rolling_shutter import (
     CAMERA_RS_JOB,
     CAMERA_CALIBRATION_JOBS,
@@ -356,7 +356,7 @@ def load_cameras(task):
     camera_ids = set()
     for index, camera in enumerate(cameras):
         _fields(camera, {"id", "camera_model", "distortion_model", "intrinsics", "distortion_coeffs",
-                         "resolution", "rostopic", "T_cn_cnm1", "T_cam_imu", "timeshift_cam_imu",
+                         "resolution", "rostopic", "T_cn_cnm1", "T_cam_imu", "T_imu_cam", "timeshift_cam_imu",
                          "cam_overlaps", "line_delay", "from_camera", "rms", "alignment", "shutter",
                          "rs_compensated_pair_residual"}, "camera result entry")
         _camera_id(camera.get("id"), camera_ids, "camera result id")
@@ -407,9 +407,16 @@ def load_cameras(task):
         if "from_camera" in camera and (index == 0 or "T_cn_cnm1" not in camera
                                         or camera["from_camera"] != cameras[index - 1]["id"]):
             raise TaskError("camera result from_camera must identify the preceding camera of T_cn_cnm1")
-        for field in ("T_cn_cnm1", "T_cam_imu"):
+        for field in ("T_cn_cnm1", "T_cam_imu", "T_imu_cam"):
             if field in camera:
                 _transform(camera[field], field)
+        if "T_imu_cam" in camera and "T_cam_imu" not in camera:
+            raise TaskError("camera result T_imu_cam requires T_cam_imu")
+        if "T_cam_imu" in camera and "T_imu_cam" in camera:
+            expected = _inverse_transform(camera["T_cam_imu"], "T_cam_imu")
+            if any(abs(expected[row][column] - camera["T_imu_cam"][row][column]) > 1e-6
+                   for row in range(4) for column in range(4)):
+                raise TaskError("camera result T_imu_cam must be the inverse of T_cam_imu")
     reader = _directory_reader(task)
     return [dict(camera, topic=(reader.sensor_topic(camera["id"], "camera")
                                 if reader is not None else camera["rostopic"]))

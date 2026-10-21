@@ -56,6 +56,7 @@ p_target = T_target_source * p_source
 ```
 
 ${}^{A}_{B}\mathbf T$ 将 B 系点变到 A 系。`T_cam_imu` 将 IMU 点变到相机，
+`T_imu_cam` 将相机点变到 IMU，且严格等于 `T_cam_imu` 的逆矩阵；
 `T_cn_cnm1` 将前一相机点变到当前相机。连续变换按坐标匹配相乘，反向使用逆矩阵；
 平移统一为 m，角速度为 rad/s，加速度为 m/s²。
 

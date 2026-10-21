@@ -38,6 +38,7 @@ except ImportError:
 
 from .initialization import (
     InitializationError,
+    _inverse_transform,
     build_initialization_report,
     canonical_initialization,
     load_initialization,
@@ -979,7 +980,7 @@ def _legacy_camchain(task, temporary):
         item.pop("id", None)
         for field in (
                 "rms", "alignment", "rs_compensated_pair_residual",
-                "from_camera", "shutter", "line_delay"):
+                "from_camera", "shutter", "line_delay", "T_imu_cam"):
             item.pop(field, None)
         item["rostopic"] = item.pop("topic")
         legacy["cam{}".format(index)] = item
@@ -1111,6 +1112,9 @@ def _native_cameras_to_result(data, calibration_type, imus=None):
     for key in sorted((key for key in data if key.startswith("cam")), key=lambda value: int(value[3:])):
         camera = {"id": key}
         camera.update(data[key])
+        if "T_cam_imu" in camera:
+            camera["T_imu_cam"] = _inverse_transform(
+                camera["T_cam_imu"], "{}.T_cam_imu".format(key))
         cameras.append(camera)
     result = {
         "schema_version": CALIBRATION_RESULT_VERSION,

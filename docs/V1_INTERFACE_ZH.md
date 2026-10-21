@@ -207,7 +207,9 @@ OpenCV 导出放在 `opencv/`。观测归档包含 `observations/manifest.json` 
 输入失败和正式质量不达标应分别理解，不能把生成报告成功等同于标定合格。
 
 统一坐标约定为 `p_target = T_target_source * p_source`。`T_cam_imu` 为
-${}^{C}_{I}\mathbf T$，`T_cn_cnm1` 为 ${}^{C_n}_{C_{n-1}}\mathbf T$；平移单位米。
+${}^{C}_{I}\mathbf T$，`T_imu_cam` 为 ${}^{I}_{C}\mathbf T=({}^{C}_{I}\mathbf T)^{-1}$，
+`T_cn_cnm1` 为 ${}^{C_n}_{C_{n-1}}\mathbf T$；平移单位米。普通与滚动快门
+Camera–IMU 结果均同时输出两个方向，报告也分别列出两张矩阵表。
 结果 YAML 保持块映射、行内一维数组、矩阵逐行数组与 17 位有效数字，不用排版截断精度。
 
 ```bash

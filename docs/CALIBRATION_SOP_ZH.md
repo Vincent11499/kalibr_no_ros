@@ -509,7 +509,8 @@ Windows 中打开：`Q:\File\machine_data\kalibr_no_ros\mechine-00\result`。
 - 相机 ID、分辨率、模型、输入设备和标定板版本必须正确。
 - 每目 `rms` 为二维重投影 RMS，单位 px；不是米或相对误差百分比。
 - 相机顺序为 `[cam0, cam1]` 时，cam1 的 `T_cn_cnm1` 将 cam0 点变换到 cam1，平移单位 m。
-- `T_cam_imu` 将 IMU 点变换到对应相机；不能直接与未统一坐标系的机械尺寸逐分量比较。
+- `T_cam_imu` 将 IMU 点变换到对应相机；`T_imu_cam` 将相机点变换到 IMU，且为
+  `T_cam_imu` 的逆矩阵。两者只是同一外参的两个方向，不能直接与未统一坐标系的机械尺寸逐分量比较。
 - `alignment` 为极线校正后的非视差方向误差 RMS，单位 px。`null/unavailable` 是缺少证据，不是 0。
 - 滚动快门 `shutter.line_delay_s` 为带符号秒/行；`first_to_last_row_span_s=(H−1)×abs(line_delay_s)`。
   2160 行的参考行为 1079.5；首末行跨度不是曝光持续时间、帧周期或包含消隐的完整传感器读出周期。

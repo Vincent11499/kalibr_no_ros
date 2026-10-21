@@ -293,6 +293,33 @@ def _reprojection_plot(camera, data, summary):
     return title, "{} final retained corners with measurements and residuals. 2D corner RMS = sqrt(mean(dx² + dy²)); no discarded observations are included.".format(len(pixels)), figure
 
 
+def _imu_sample_rate_plot(artifacts, imu_id):
+    residuals = [row for row in (artifacts or {}).get("imu_residuals", [])
+                 if row.get("imu_id", "imu0") == imu_id]
+    gyro = [row for row in residuals if row.get("kind") == "gyro"]
+    source = gyro or [row for row in residuals if row.get("kind") == "accel"]
+    timestamps = sorted(float(row["solver_timestamp_s"]) for row in source
+                        if isinstance(row.get("solver_timestamp_s"), (int, float))
+                        and not isinstance(row.get("solver_timestamp_s"), bool)
+                        and np.isfinite(row["solver_timestamp_s"]))
+    if len(timestamps) < 2:
+        return None
+    timestamps = np.asarray(timestamps)
+    intervals_ms = np.diff(timestamps) * 1000.0
+    relative_times = timestamps[1:] - timestamps[0]
+    title = "{}: sample inertial rate".format(imu_id)
+    figure = _figure(title)
+    axis = figure.subplots()
+    axis.scatter(relative_times, intervals_ms, s=4, color=_BLUE, marker="x")
+    axis.text(.1, .9, "avg dt (ms) = {:.2f} +- {:.4f}".format(
+        np.mean(intervals_ms), np.std(intervals_ms)), transform=axis.transAxes)
+    axis.set(xlabel="time (s)", ylabel="sample rate (ms)", ylim=(0., None))
+    axis.grid(alpha=.2)
+    return title, ("Kalibr sample inertial rate plot. Each point is the interval "
+                   "between consecutive retained IMU measurements; despite the native "
+                   "label, the vertical axis is sample interval in milliseconds."), figure
+
+
 def report_figures(metrics, artifacts=None, calibration=None):
     cameras = merged_cameras(artifacts or {}, calibration or {})
     if not cameras:
@@ -305,6 +332,9 @@ def report_figures(metrics, artifacts=None, calibration=None):
             yield _angular_plot(camera, data[0], data[1], kind)
         yield _reprojection_plot(camera, data, metrics.get("cameras", {}).get(camera["id"], {}))
     for imu_id, imu in metrics.get("imus", {}).items():
+        sample_rate = _imu_sample_rate_plot(artifacts, imu_id)
+        if sample_rate is not None:
+            yield sample_rate
         for kind, values in imu.items():
             bias = values.get("bias_spline")
             if not bias:
@@ -401,11 +431,14 @@ def _summary_sections(metrics, assessment, calibration):
             if "line_delay_std_s" in shutter:
                 rows.append(["Local line-delay std [s/row]", shutter["line_delay_std_s"]])
             yield name + " · Rolling shutter timing", ["Parameter", "Value"], rows
-        for field, source in (("T_cn_cnm1", "previous camera"), ("T_cam_imu", "IMU")):
+        for field, source, target in (
+                ("T_cn_cnm1", "previous camera", name),
+                ("T_cam_imu", "IMU", name),
+                ("T_imu_cam", name, "IMU")):
             transform = _matrix(final.get(field))
             if transform is not None:
                 source = final.get("from_camera", final.get("source_camera", previous_ids.get(name, source))) if field == "T_cn_cnm1" else source
-                yield "{} → {} · {} (translation in m)".format(source, name, field), ["", "x", "y", "z", "translation"], [[str(index), *row] for index, row in enumerate(transform)]
+                yield "{} → {} · {} (translation in m)".format(source, target, field), ["", "x", "y", "z", "translation"], [[str(index), *row] for index, row in enumerate(transform)]
     if assessment.get("rules"):
         yield "Configured assessment rules", ["Metric", "Value", "Minimum", "Maximum", "Status"], [
             [rule["metric"], rule.get("value"), rule.get("min"), rule.get("max"), rule.get("status")]

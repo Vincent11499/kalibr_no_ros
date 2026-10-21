@@ -12,6 +12,7 @@
 | [任务参数](TASK_PARAMETERS_ZH.md) | 字段、默认值、单位、范围与算法作用 |
 | [相机模型](CAMERA_MODELS_ZH.md) | 参数顺序、投影公式、各阶段是否参与优化 |
 | [初始化](INITIALIZATION_ZH.md) | 物理初值、固定内参、坐标约定与可观性 |
+| [标定可观性入门](CALIBRATION_OBSERVABILITY_TUTORIAL_ZH.md) | 面向初学者推导残差、Jacobian、临时状态消元和信息谱，并分别解释单目、双目、Camera–IMU 与 RS 任务 |
 | [普通单目与多目标定求解模式](MULTICAMERA_SOLVER_MODES_AND_FULL_BATCH_PLAN_ZH.md) | 单目/多目在不同初值、固定内参与求解模式下的阶段和输出语义 |
 | [滚动快门联合标定](ROLLING_SHUTTER_ZH.md) | 独立任务、逐角点时间模型、架构与输出含义 |
 | [滚动快门相机标定](ROLLING_SHUTTER_CAMERA_CALIBRATION_ZH.md) | validate/evaluate、单目／多目纯视觉RS任务、两种光学模型、正式 system 与原生单目后端原理和指标 |

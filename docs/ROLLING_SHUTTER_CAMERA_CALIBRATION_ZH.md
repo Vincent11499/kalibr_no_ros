@@ -1000,12 +1000,13 @@ $\Delta t_{\mathrm{cam\rightarrow imu},i}$ 是结果中的 `timeshift_cam_imu`�
 不能直接套用原分辨率的 $\tau$。
 
 设 ${}^{W}_{I}\mathbf T(t)$ 是 IMU 到世界的运行时连续位姿，标定输出
-`T_cam_imu` 为 ${}^{C_i}_{I}\mathbf T$，则：
+`T_cam_imu` 为 ${}^{C_i}_{I}\mathbf T$，同时直接输出
+`T_imu_cam = (T_cam_imu)^{-1}`，则：
 
 $$
 {}^{W}_{C_i}\mathbf T(t_i)
-={}^{W}_{I}\mathbf T(t_i)
-\left({}^{C_i}_{I}\mathbf T\right)^{-1}.
+={}^{W}_{I}\mathbf T(t_i)\,{}^{I}_{C_i}\mathbf T
+={}^{W}_{I}\mathbf T(t_i)\,\mathbf T_{\mathrm{imu\_cam}}.
 $$
 
 对左右观测分别执行以下步骤：

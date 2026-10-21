@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT / "src/python"))
 
 from kalibr_no_ros import artifacts, reporting
 from kalibr_no_ros.task import (
-    TaskError, dump_yaml, load_task, load_yaml, prepare_output_directory,
+    TaskError, _native_cameras_to_result, dump_yaml, load_task, load_yaml, prepare_output_directory,
     require_document_version, resolve_initialization, run_task, write_run_manifest,
 )
 from kalibr_no_ros.validation import load_cameras, load_imu, load_target, validate_options, validate_task
@@ -468,13 +468,35 @@ class V1ContractTest(unittest.TestCase):
                 self.assert_validation_failed(field)
         valid = copy.deepcopy(original)
         valid["cameras"][0].update(cam_overlaps=[], T_cam_imu=np.eye(4).tolist(),
+                                   T_imu_cam=np.eye(4).tolist(),
                                    timeshift_cam_imu=0.001, line_delay=0.0)
         dump_yaml(valid, path)
         self.assertEqual(validate_task(self.task_path)["status"], "passed")
+        invalid_inverse = copy.deepcopy(valid)
+        invalid_inverse["cameras"][0]["T_imu_cam"][0][3] = 0.01
+        dump_yaml(invalid_inverse, path)
+        self.assert_validation_failed("T_imu_cam must be the inverse")
+        dump_yaml(valid, path)
         duplicate = dict(valid["cameras"][0], id="cam1", T_cn_cnm1=np.eye(4).tolist())
         valid["cameras"].append(duplicate)
         dump_yaml(valid, path)
         self.assert_validation_failed("rostopic.*unique")
+
+    def test_camera_imu_result_publishes_exact_inverse_transform(self):
+        transform = np.eye(4)
+        transform[:3, :3] = cv2.Rodrigues(np.asarray([.13, -.21, .08]))[0]
+        transform[:3, 3] = [.14, -.03, .27]
+        native = {"cam0": {
+            "camera_model": "pinhole", "distortion_model": "equidistant",
+            "intrinsics": [7., 7., 5., 4.],
+            "distortion_coeffs": [0., 0., 0., 0.],
+            "resolution": [10, 8], "rostopic": "/cam0/image_raw",
+            "T_cam_imu": transform.tolist(),
+        }}
+        result = _native_cameras_to_result(native, "camera_imu", {})
+        np.testing.assert_allclose(
+            result["cameras"][0]["T_imu_cam"], np.linalg.inv(transform),
+            atol=1e-15, rtol=0.)
 
     def test_camera_ids_select_one_named_directory_camera_and_reject_unsafe_ids(self):
         self.manifest["cameras"][0]["id"] = "cam1"
