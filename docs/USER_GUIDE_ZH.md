@@ -18,12 +18,20 @@ kalibr-cedarobot machine --config user.yaml
 
 `user.yaml` 由开发者提供。工作流会发现唯一的 `stereo_*` 与 `stereo_imu_*`、生成 task、
 先完成或复用双目结果，再运行用户明确选择的普通或 RS Camera–IMU。当动态数据以后才
-采集时，重复同一命令即可继续。输出固定在机器目录的 `result/`。
+采集时，重复同一命令即可继续。配置 `camera_baselink` 并提供
+`stereo_base_link_YYMMDD_hhmm`（也接受 `stereo_baselink_YYMMDD_hhmm`）后，另外复用双目
+K/D 运行 BaseLink 旋转标定；不需要 IMU 数据，平移由配置明确指定。
+输出固定在机器目录的 `result/`。
+
+同一机器另一个独立单目模组使用 `usb_YYMMDD_HHMM` 标定 K/D，再用
+`usb_baselink_YYMMDD_HHMM` 和 `mono_camera_baselink` 配置
+标定其 BaseLink 旋转。单目与双目都使用当前 profile 的 AprilGrid、`pinhole-equi`；
+单目清单只含局部 `cam0`，后续只复用本模组结果，不与双目合成三目任务。
 
 以下场景才直接使用本指南中的 `kalibr-noros`：
 
 - 开发者调试某个阶段或模型；
-- 单目、纯视觉 RS 或多目任务不属于当前双目产线 profile；
+- 单目／双目模组不符合当前机型 profile，或需要纯视觉 RS、三目及更多相机的联合任务；
 - 独立 `verify cameras`、`evaluate` 或格式转换；
 - 根据已生成 task 复现失败。
 
@@ -105,12 +113,13 @@ execution:
 检测队列和 worker 内 OpenCV 线程数有稳定默认值，不要求普通任务逐项重复。
 `release` 不启用性能采样；需要计时或内存诊断时使用 `project-profile` 并显式请求。
 
-当前共有 5 个标定子命令，按标定对象展开后的能力如下：
+当前共有 6 个标定子命令，按标定对象展开后的能力如下：
 
 | 标定对象 | CLI 指令 | task 的 `job` | 支持范围 |
 |---|---|---|---|
 | 普通单目 | `calibrate cameras` | `camera_calibration` | 1 台相机 |
 | 普通双目／多目 | `calibrate cameras` | `camera_calibration` | 2 台及以上相机，联合求内参和相邻外参 |
+| 相机到base_link | `calibrate cameras-baselink` | `camera_baselink_calibration` | 固定K/D；单目或逐目独立的全部帧对直接差分旋转，平移由task给出 |
 | RS 单目 | `calibrate cameras-rs` | `camera_rolling_shutter_calibration` | 正式项目 RS 求解器 |
 | RS 双目／多目 | `calibrate cameras-rs` | `camera_rolling_shutter_calibration` | 共享连续轨迹，联合求 K/D、相邻外参和每目行时间 |
 | 原生 Kalibr RS 单目对照 | `calibrate native-rs-cameras` | `camera_rolling_shutter_calibration` | 只支持 1 台相机，用于上游算法对照 |
@@ -122,6 +131,9 @@ execution:
 `camera_calibration` 结果。工程当前没有脱离相机的“IMU-only”标定命令。
 普通 `imu-camera` 使用全局快门重投影残差；需要逐行时间模型时必须显式使用
 `imu-camera-rs`。
+
+`cameras-baselink` 只接受文件名为 `x_y_z.<扩展名>` 的目录数据集，完整输入、坐标
+方向和直接差分公式见[相机到base_link旋转标定](CAMERA_BASELINK_CALIBRATION_ZH.md)。
 
 ### 2.1 可选的显式物理初值
 

@@ -534,6 +534,12 @@ def _camera_metrics(camera):
     result["distortion_coeffs"] = camera.get("distortion_coeffs")
     if camera.get("shutter"):
         result["shutter"] = dict(camera["shutter"])
+    for field in (
+            "movement_residual_mm", "effective_pairs",
+            "platform_second_first_ratio", "camera_second_first_ratio",
+            "reflection_corrected", "pitch"):
+        if field in camera:
+            result[field] = camera[field]
     shift = camera.get("timeshift_cam_imu_s", camera.get("timeshift_cam_imu"))
     if shift is not None:
         result["timeshift_cam_imu_s"] = shift
@@ -827,10 +833,11 @@ def compute_metrics(artifacts, calibration, options=None):
             artifacts["rolling_shutter_solver_backend"])
     for camera in cameras:
         metrics["cameras"][camera["id"]] = _camera_metrics(camera)
-    for left, right in zip(cameras, cameras[1:]):
-        identifier = left["id"] + "_" + right["id"]
-        metrics["stereo_pairs"][identifier] = _stereo_pair_metrics(
-            artifacts, left, right, calibration_type, options)
+    if calibration_type != "cameras_baselink":
+        for left, right in zip(cameras, cameras[1:]):
+            identifier = left["id"] + "_" + right["id"]
+            metrics["stereo_pairs"][identifier] = _stereo_pair_metrics(
+                artifacts, left, right, calibration_type, options)
     metrics["imus"] = _imu_metrics(artifacts)
     metrics["solver_state"] = artifacts.get("state")
     metrics["optimizer"] = artifacts.get("optimizer")

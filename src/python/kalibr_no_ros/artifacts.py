@@ -136,6 +136,7 @@ class RunContext:
     def __init__(self, calibration_type, capture_history=False):
         calibration_type = {
             "camera_calibration": "cameras",
+            "camera_baselink_calibration": "cameras_baselink",
             "camera_rolling_shutter_calibration": "cameras",
             "camera_imu_calibration": "camera_imu",
             "camera_imu_rolling_shutter_calibration": "camera_imu",

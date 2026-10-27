@@ -12,5 +12,6 @@ __pycache__/
 !/config/examples/
 !/config/mechine/
 /config/mechine/*
+!/config/mechine/aprilgrid_1.yaml
 !/config/mechine/workflow_v1.0.0/
 !/config/mechine/workflow_v1.0.0/**

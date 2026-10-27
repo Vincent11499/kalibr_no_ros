@@ -1,0 +1,70 @@
+# 有固定默认值的字段填写程序默认值；无固定默认值的字段填写合法示例并注明可选范围。
+schema_version: "1.0.0" # 必填，无默认值；唯一合法值为字符串"1.0.0"。
+kind: calibration_task # 默认calibration_task；本例显式写出文档种类。
+job: camera_baselink_calibration # 必填；相机到base_link旋转标定。
+
+dataset: # 当前任务只支持文件名携带平台位置的directory数据集。
+  type: directory # 必填且只能为directory；bag没有可移植的文件名位置契约。
+  path: ../data/stereo_base_link_YYMMDD_hhmm # 必填；相对路径以task所在目录为基准。
+#   time_range_s: [0.0, 60.0] # 可选；默认使用全部图像，单位s。
+#   frequency_hz: 5.0 # 可选；有限正数Hz，默认不额外降采样。
+
+target:
+  path: ../aprilgrid.yaml # 必填；与其他相机任务使用相同标定板格式。
+
+camera_calibration:
+  path: ../output/camera_calibration_cam0_cam1.yaml # 必填；提供固定K/D和分辨率，不在本任务重估。
+
+cameras: # 这里同时选择参与求解的相机，并提供不能由平移实验估计的外参平移。
+  - id: cam0 # 必填；必须同时存在于dataset.yaml和camera_calibration结果。
+    translation_base_camera_m: [0.0, 0.0, 0.0] # 必填；^B t_C，三个有限数，单位m；须替换为实测值。
+  - id: cam1
+    translation_base_camera_m: [0.0, 0.0, 0.0]
+
+base_link:
+  frame_id: base_link # 默认base_link；安全的目标坐标系名称。
+  position_scale_m: 0.01 # 必填且>0；文件名x/y/z每1单位对应的米数，本例表示cm。
+
+calibration:
+  window_half_size_px: 2 # 默认2 px；AprilGrid亚像素窗口半宽。
+  max_displacement_px: 1.224744871391589 # 默认sqrt(1.5) px；有限且>0。
+  rank_ratio_min: 0.0001 # 默认1e-4；范围(0,1)，平台和相机差分的第二/第一奇异值下限。
+
+execution:
+  parallelism: 4 # 无固定数值默认；正整数，组件专用字段优先。
+  detector_processes: 4 # 无固定数值默认；正整数；本任务没有非线性优化器。
+  optimizer_threads: 4 # 可沿用统一运行配置，但直接SVD求解不使用该预算。
+  detector_inflight_per_worker: 2 # 默认2；每个检测worker的最大在途图像数。
+  detector_opencv_threads: 1 # 默认1；每个检测worker的OpenCV线程数。
+  profiling_memory_sample_interval_s: 0.25 # 默认0.25 s；仅profile构建且请求timing时使用。
+
+output: # 与其他标定任务共用正式交付和可选诊断开关。
+  name: null # 默认camera_baselink_calibration加相机ID；也可显式填写安全名称。
+  save_diagnostics: false
+  save_metrics: false
+  export_text: false
+  archive_observations: false
+  archive_selection_history: false
+  copy_used_images: false
+  export_opencv: false
+  export_poses: false # 当前任务不生成poses.csv。
+  verbose: false
+  show_extraction: false
+  extraction_stepping: false
+  interactive_report: false
+  evaluation_pairing_tolerance_s: 0.0002
+  visualizations:
+    enabled: false
+    max_frames_per_camera: 30
+    max_pairs: 30
+    sampling: uniform
+    undistortion:
+      enabled: true
+      crop: false
+  rectification:
+    balance: 0.0
+    fov_scale: 1.0
+    size: null
+  assessment:
+    reference_grading: true # 只评价逐帧PnP重投影显示等级，不代表base_link旋转精度。
+    rules: [] # 可对cameras.cam0.movement_residual_mm等指标配置正式规则。

@@ -1,7 +1,7 @@
 # 标定 Task 参数与超参数完整说明
 
 本文基于 v1.0.0 接口源码，逐项说明
-`camera_calibration`、`camera_rolling_shutter_calibration`、
+`camera_calibration`、`camera_baselink_calibration`、`camera_rolling_shutter_calibration`、
 `camera_imu_calibration` 与 `camera_imu_rolling_shutter_calibration` task 中真正受支持的字段、默认值、
 CLI 映射、作用阶段、内部算法和有效范围。字段校验以当前 `validation.py`、
 `task.py`、`initialization.py` 和 `reporting.py` 为准。
@@ -134,6 +134,25 @@ execution:
 相机任务见第 10 节，RS Camera–IMU 的附加字段见
 [`ROLLING_SHUTTER_ZH.md`](ROLLING_SHUTTER_ZH.md)。
 
+### 1.3 `camera_baselink_calibration`
+
+该任务只接受 `dataset.type: directory`，并要求 `camera_calibration.path`、`cameras` 与
+`base_link`。它不接受 `initialization`，因为 K/D 固定来自已有相机结果；也不使用非线性
+优化器。每台相机独立执行 PnP，并对全部无序帧对执行直接差分。
+
+| 字段 | 默认值 | 单位／范围 | 作用 |
+|---|---:|---|---|
+| `cameras[].id` | 无，必填 | 已有相机结果与目录manifest中的唯一ID | 选择参与求解的相机 |
+| `cameras[].translation_base_camera_m` | 无，必填 | 3个有限数，m | 作为 ${}^{B}t_C$ 写入最终 `T_base_camera` |
+| `base_link.frame_id` | `base_link` | 安全非空frame ID | 命名最终目标坐标系 |
+| `base_link.position_scale_m` | 无，必填 | 有限正数，m/文件名单位 | 将文件名 `x_y_z` 转为米制平台位置 |
+| `calibration.window_half_size_px` | `2` | 整数且 >=1，px | AprilGrid亚像素窗口半宽 |
+| `calibration.max_displacement_px` | `sqrt(1.5)` | 有限正数，px | 亚像素点允许的最大位移 |
+| `calibration.rank_ratio_min` | `1e-4` | 有限数 `(0,1)` | 平台与相机差分第二／第一奇异值下限 |
+
+公共接口不提供 `alpha`：实现固定为全部无序帧对的等权直接差分 `alpha=0`。文件名、
+公式、输出和示例见[相机到base_link旋转标定](CAMERA_BASELINK_CALIBRATION_ZH.md)。
+
 ## 2. 公共 task 字段
 
 ### 2.1 顶层字段
@@ -141,7 +160,7 @@ execution:
 | 字段 | 类型与范围 | 作用 |
 |---|---|---|
 | `schema_version` | 字符串，当前必须为 `"1.0.0"` | 与初始化和结果文档统一版本；由 `job`/`kind` 区分文档用途 |
-| `job` | 四种公开 calibration job 之一 | 选择普通/RS相机或普通/RS Camera–IMU任务，并决定允许的顶层字段 |
+| `job` | 五种公开 calibration job 之一 | 选择普通相机、相机到base_link、RS相机或普通/RS Camera–IMU任务，并决定允许的顶层字段 |
 | `dataset` | mapping，必填 | 数据来源和数据裁剪参数 |
 | `target` | mapping，必填 | 标定板配置 |
 | `initialization` | mapping，可省略 | 独立物理初值文件；seed 始终作为可优化起点 |
@@ -149,7 +168,8 @@ execution:
 | `output` | mapping，可省略 | 日志、显示、观测归档、结果导出和评估控制；完整字段见 [v1.0.0 接口](V1_INTERFACE_ZH.md) |
 | `execution` | mapping，可省略 | 进程、线程、队列和 profiling 配置 |
 
-相机任务额外要求 `cameras`；Camera–IMU 任务可以省略 `camera_calibration`，运行时先从
+相机任务额外要求 `cameras`；`camera_baselink_calibration` 还要求
+`camera_calibration` 与 `base_link`，且不接受 `initialization`。Camera–IMU 任务可以省略 `camera_calibration`，运行时先从
 `--output-dir` 查找唯一匹配的双目/多目结果；没有或存在多个候选时须显式填写路径。
 单独运行 `validate` 没有输出目录上下文，需要显式路径。Camera–IMU 还要求
 `imus`。顶层未知字段会被拒绝。

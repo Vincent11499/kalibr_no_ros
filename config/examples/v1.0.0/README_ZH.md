@@ -16,7 +16,7 @@ cam0 表示左目、cam1 表示右目；单目示例只使用 cam0。
 | 字段 | 合法选择或范围 | 示例值 |
 |---|---|---|
 | `schema_version` | 当前唯一合法字符串 `"1.0.0"` | `"1.0.0"` |
-| `job` | `camera_calibration`、`camera_rolling_shutter_calibration`、`camera_imu_calibration`、`camera_imu_rolling_shutter_calibration` | 按文件用途选择 |
+| `job` | `camera_calibration`、`camera_baselink_calibration`、`camera_rolling_shutter_calibration`、`camera_imu_calibration`、`camera_imu_rolling_shutter_calibration` | 按文件用途选择 |
 | `dataset.type` | `directory` 或 `bag` | `directory` |
 | `dataset.path`、各类 `path` | 对应类型的非空有效路径 | 示例相对路径 |
 | 普通相机 `model` | `pinhole-radtan`、`pinhole-radtan5`、`pinhole-radtan8`、`pinhole-equi`、`pinhole-fov`、`pinhole-opencv-fisheye`、`omni-none`、`omni-radtan`、`eucm-none`、`ds-none` | `pinhole-equi` |
@@ -34,6 +34,7 @@ cam0 表示左目、cam1 表示右目；单目示例只使用 cam0。
 | 单目内参 | mono_camera_calibration_task.yaml | all_params/mono_camera_calibration_task_full.yaml | cam0 内参、四项等距畸变 |
 | 双目内外参 | stereo_camera_calibration_task.yaml | all_params/stereo_camera_calibration_task_full.yaml | 两目内参、畸变、相邻外参 |
 | 双目＋IMU 外参 | camera_imu_calibration_task.yaml | all_params/camera_imu_calibration_task_full.yaml | 相机–IMU 外参、时间偏移与 IMU 参数 |
+| 相机到base_link旋转 | stereo_camera_baselink_calibration_task.yaml／mono_camera_baselink_calibration_task.yaml | all_params/camera_baselink_calibration_task_full.yaml | 配置平移与全部帧对直接差分求得的逐目旋转 |
 | 单目／多目滚动快门相机 | camera_rolling_shutter_calibration_task.yaml | all_params/camera_rolling_shutter_calibration_task_full.yaml | K/D、相邻外参、每目行时间与RS残差 |
 | 滚动快门双目＋IMU | camera_imu_rolling_shutter_calibration_task.yaml | all_params/camera_imu_rolling_shutter_calibration_task_full.yaml | 每目行时间、相机–IMU 外参、整体时间偏移与 IMU 参数 |
 | RS 行时间诊断 | rolling_shutter_diagnosis.yaml | all_params/rolling_shutter_diagnosis_full.yaml | 分块筛查、正式对照、证据分类和建议RS任务 |
@@ -53,10 +54,16 @@ baseline。`freeze_intrinsics: true` 仍只适用于至少双目且每目提供�
 | `initialization_imu.yaml` | Camera–IMU 初值，默认不启用 |
 | `evaluation.yaml` | 从已归档观测重新生成指标、判定和图像 |
 | `machine_calibration_workflow.yaml` | 机器级入口的最小 `user.yaml`；复制后填写机器目录和 Camera–IMU 模式 |
+| `all_params/machine_calibration_workflow_full.yaml` | 机器级完整注释示例；双目模组与独立单目模组分别标定、分别复用结果求 BaseLink，位置单位和实测平移独立配置 |
 | `rolling_shutter_diagnosis.yaml` | 输入普通任务，自动判断数据是否支持逐行时间模型 |
 
 `all_params/` 中的 `aprilgrid.yaml`、`imu.yaml`、`evaluation.yaml` 保留参数解释与规则示例。
 相机与 Camera–IMU 的 job 分开，不把完整相机标定嵌入 Camera–IMU 任务。
+
+`camera_baselink_calibration` 只接受目录数据，读取已有 `camera_calibration.path` 的
+固定 K/D。图像文件名必须为 `x_y_z.<扩展名>`；`base_link.position_scale_m` 明确文件名
+单位到米的比例。双目模板选择 cam0/cam1，单目模板只选择 cam0。两个模板里的
+`translation_base_camera_m: [0.0, 0.0, 0.0]` 是必须替换的可移植占位值。
 
 `camera_rolling_shutter_calibration_task.yaml` 当前写成双目；做单目时同时删除第二个
 `cameras` 项和对应的 `rolling_shutter.cam1`，做三目及以上时按相同 ID 规则成对增加。

@@ -53,7 +53,15 @@ kalibr-cedarobot machine --config user.yaml
 ```
 
 机器目录只有 `stereo_*` 时先完成双目标定并正常等待；以后加入 `stereo_imu_*` 后重复
-同一命令，程序复用双目结果并继续 Camera–IMU。数据发现、重名处理、revision 和输出
+同一命令，程序复用双目结果并继续 Camera–IMU。新增可选 Camera–BaseLink 阶段：配置
+`camera_baselink` 并提供 `stereo_base_link_*` 后复用双目 K/D 求旋转，不需要 IMU 数据。
+同一机器的独立单目模组使用 `usb_*` 标定内参，使用 `usb_baselink_*` 和
+`mono_camera_baselink` 配置复用单目结果求旋转；不会混用双目 `cam0`。两模组共用当前
+AprilGrid，均使用 `pinhole-equi`。
+`user.yaml` 可用 `camera.mode: rolling_shutter` 选择 RS 双目，用
+`camera_imu.recompute_extrinsics: true` 控制 Camera–IMU 联合阶段重新优化相机链外参；
+`target` 只填写安装在 `config/mechine` 下的标定板文件名stem。
+数据发现、重名处理、revision 和输出
 位置见[机器级一键标定工作流](docs/MACHINE_CALIBRATION_WORKFLOW_ZH.md)。
 
 下面的 `kalibr-noros` 是研发维护与单任务接口。
@@ -86,6 +94,7 @@ YAML 所在目录为基准。软件、任务、初始化、目录清单和结果
 
 ```text
 kalibr-noros calibrate cameras
+kalibr-noros calibrate cameras-baselink
 kalibr-noros calibrate cameras-rs
 kalibr-noros calibrate native-rs-cameras
 kalibr-noros calibrate imu-camera
@@ -100,6 +109,11 @@ kalibr-noros convert job
 `convert camera` 提供 OpenCV/Kalibr 参数转换；`evaluate` 只利用已有观测证据重算
 指标、判定和报告，不重新检测或优化。九参数 fisheye 的 alpha/skew 无损转换使用
 `kalibr-noros convert camera --full-fisheye ...`。
+
+固定姿态 XY 平台上的相机到 `base_link` 旋转使用
+`calibrate cameras-baselink`。它读取已有相机 K/D，以图像文件名中的 `x_y_z` 平台位置
+对全部任意两帧做等权直接差分，仅估计旋转；平移在 task 中明确给出。输入和公式见
+[相机到 base_link 旋转标定](docs/CAMERA_BASELINK_CALIBRATION_ZH.md)。
 
 需要在新的目录测试集上固定已有双目 K/D/T 计算每目 RMS、双目综合 RMS 和
 Alignment RMS 时，使用 `kalibr-noros verify cameras`。该命令会重新检测测试图像，

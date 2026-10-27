@@ -1,0 +1,29 @@
+schema_version: "1.0.0"
+kind: calibration_task
+job: camera_baselink_calibration
+dataset:
+  type: directory
+  path: data/stereo_base_link_YYMMDD_hhmm
+target:
+  path: aprilgrid.yaml
+camera_calibration:
+  path: output/camera_calibration_cam0_cam1.yaml
+cameras:
+  - id: cam0
+    translation_base_camera_m: [0.0, 0.0, 0.0]
+  - id: cam1
+    translation_base_camera_m: [0.0, 0.0, 0.0]
+base_link:
+  frame_id: base_link
+  position_scale_m: 0.01
+calibration:
+  window_half_size_px: 2
+  max_displacement_px: 1.224744871391589
+  rank_ratio_min: 0.0001
+execution:
+  detector_processes: 4
+  detector_inflight_per_worker: 2
+  detector_opencv_threads: 1
+output:
+  archive_observations: false
+  archive_selection_history: false

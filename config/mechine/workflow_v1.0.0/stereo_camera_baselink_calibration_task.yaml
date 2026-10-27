@@ -1,0 +1,36 @@
+schema_version: "1.0.0"
+kind: calibration_task
+job: camera_baselink_calibration
+dataset:
+  type: directory
+  path: __DATASET_PATH__
+target:
+  path: aprilgrid.yaml
+camera_calibration:
+  path: __CAMERA_CALIBRATION_PATH__
+base_link:
+  frame_id: base_link
+  position_scale_m: 0.01
+cameras:
+  - id: cam0
+  - id: cam1
+calibration:
+  window_half_size_px: 7
+  max_displacement_px: 2.0
+  rank_ratio_min: 0.0001
+execution:
+  detector_processes: 4
+  detector_inflight_per_worker: 2
+  detector_opencv_threads: 1
+output:
+  name: __OUTPUT_NAME__
+  save_diagnostics: true
+  save_metrics: true
+  visualizations:
+    enabled: true
+    sampling: uniform
+    max_frames_per_camera: 30
+    max_pairs: 30
+    undistortion:
+      enabled: true
+      crop: false

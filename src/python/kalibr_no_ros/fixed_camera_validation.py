@@ -155,7 +155,8 @@ def _native_geometry(camera):
 
 
 def _detector(target_path, camera, window_half_size_px,
-              max_displacement_px):
+              max_displacement_px, show_extraction=False,
+              extraction_stepping=False):
     from kalibr_common.ConfigReader import CalibrationTargetParameters
     from kalibr_camera_calibration.CameraCalibrator import TargetDetector
 
@@ -164,6 +165,8 @@ def _detector(target_path, camera, window_half_size_px,
     detector = TargetDetector(
         target,
         geometry,
+        showCorners=show_extraction,
+        showOneStep=extraction_stepping,
         windowHalfSizePx=window_half_size_px,
         maxDisplacementPx=max_displacement_px,
     ).detector

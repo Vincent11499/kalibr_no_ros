@@ -22,6 +22,7 @@
 | [源码导读](SOURCE_CODE_DEEP_DIVE_ZH.md) | 输入、求解、输出调用链与维护边界 |
 | [输入输出代码修改指南](IO_CODE_MAINTENANCE_ZH.md) | 文件与函数定位、常见修改步骤、报告重生成、构建与验证 |
 | [固定参数验证与标定诊断](FIXED_CAMERA_VALIDATION_ZH.md) | 独立测试集 K/D/T 验证、shuffle、可观性与异常点过滤 |
+| [相机到 base_link 旋转标定](CAMERA_BASELINK_CALIBRATION_ZH.md) | XY平台文件名位置、固定K/D PnP、全部帧对直接差分旋转与配置平移 |
 
 三组重复标定与三组固定参数测试的双目老化／振动实验使用
 `python3 tools/kalibr_stereo_aging_validation.py`。机器目录组织、串行运行和断点复用规则见
@@ -30,7 +31,8 @@ before/after 完成后可用同一工具的 `diagnose-extrinsics` 在三组 afte
 验证 K/D、相对旋转与 cam0 坐标系物理基线分量的贡献；该诊断不重新优化标定参数。
 
 产线常规运行使用 `kalibr-cedarobot machine --config user.yaml`，由程序依次完成或复用
-双目与 Camera–IMU 阶段，见[机器级一键标定](MACHINE_CALIBRATION_WORKFLOW_ZH.md)。
+双目、双目 Camera–IMU、双目 BaseLink，以及独立单目与单目 BaseLink 阶段，见
+[机器级一键标定](MACHINE_CALIBRATION_WORKFLOW_ZH.md)。
 研发维护时再按[工程 README](../README.md)构建 `release`、复制
 [配置示例](../config/examples/v1.0.0/README_ZH.md)，并直接使用 `kalibr-noros`。
 需要定位耗时时使用 `project-profile`，通过 task 或 CLI 显式请求计时。

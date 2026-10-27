@@ -127,6 +127,16 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual((self.output / "stereo.results.txt").read_text(), "Native result summary")
         self.assertIn('href="stereo/metrics.json"', (self.output / "stereo.report.html").read_text())
 
+    def test_rotation_summary_is_always_kept_in_delivery_sidecar(self):
+        self.populate_stage()
+        (self.stage / "rotation_summary.csv").write_text(
+            "camera,pair_index,theta_deg\ncam0,0,0.1\n", encoding="utf-8")
+        publish(self.stage, self.output, "baselink", {})
+        summary = self.output / "baselink/rotation_summary.csv"
+        self.assertEqual(
+            summary.read_text(encoding="utf-8"),
+            "camera,pair_index,theta_deg\ncam0,0,0.1\n")
+
     def test_diagnostics_and_visualizations_are_kept_in_task_subdirectory(self):
         self.populate_stage()
         image = self.stage / "visualizations" / "cam1" / "corners_3.jpg"

@@ -1,7 +1,7 @@
 # 有固定默认值的字段填写程序默认值；无固定默认值的字段填写合法示例并注明可选范围。
 schema_version: "1.0.0" # 必填，无默认值；唯一合法值为字符串"1.0.0"。
 kind: calibration_task # 默认calibration_task；本例显式写出文档种类。
-job: camera_imu_rolling_shutter_calibration # 必填，无默认值；可选四种公开job，本文件选择该RS Camera–IMU job。
+job: camera_imu_rolling_shutter_calibration # 必填，无默认值；可选五种公开job，本文件选择该RS Camera–IMU job。
 dataset: # 相对路径以本 task 所在目录为基准。
   type: directory # 必填，无默认值；directory或bag，目录通过dataset.yaml映射ID。
   path: ../data/stereo_imu_YYMMDD_hhmm # 必填，无默认值；可选任意有效数据文件/目录路径。

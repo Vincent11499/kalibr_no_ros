@@ -177,6 +177,7 @@ file(GLOB_RECURSE _kalibr_fingerprint_files
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/*.cmake"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/*"
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/*"
+  "${CMAKE_CURRENT_SOURCE_DIR}/config/mechine/*.yaml"
   "${CMAKE_CURRENT_SOURCE_DIR}/config/mechine/workflow_v1.0.0/*")
 list(SORT _kalibr_fingerprint_files)
 list(FILTER _kalibr_fingerprint_files EXCLUDE REGEX
@@ -335,6 +336,12 @@ file(REMOVE_RECURSE "${_machine_workflow_profile_build_dir}")
 file(COPY
   "${CMAKE_CURRENT_SOURCE_DIR}/config/mechine/workflow_v1.0.0/"
   DESTINATION "${_machine_workflow_profile_build_dir}")
+file(COPY
+  "${CMAKE_CURRENT_SOURCE_DIR}/config/mechine/aprilgrid_1.yaml"
+  DESTINATION "${CMAKE_BINARY_DIR}/share/kalibr-noros/config/mechine")
+install(FILES
+  "${CMAKE_CURRENT_SOURCE_DIR}/config/mechine/aprilgrid_1.yaml"
+  DESTINATION share/kalibr-noros/config/mechine)
 install(DIRECTORY
   "${CMAKE_CURRENT_SOURCE_DIR}/config/mechine/workflow_v1.0.0/"
   DESTINATION share/kalibr-noros/config/mechine/workflow_v1.0.0

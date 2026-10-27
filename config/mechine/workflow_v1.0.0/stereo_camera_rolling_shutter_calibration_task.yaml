@@ -1,0 +1,60 @@
+schema_version: "1.0.0"
+kind: calibration_task
+job: camera_rolling_shutter_calibration
+dataset:
+  type: directory
+  path: __DATASET_PATH__
+target:
+  path: aprilgrid.yaml
+cameras:
+  - id: cam0
+    model: pinhole-equi
+  - id: cam1
+    model: pinhole-equi
+initialization:
+  path: initialization_pinhole_equi.yaml
+rolling_shutter:
+  cam0:
+    line_delay_s: 0.0
+    estimate: true
+    max_abs_line_delay_s: 0.00002
+  cam1:
+    line_delay_s: 0.0
+    estimate: true
+    max_abs_line_delay_s: 0.00002
+calibration:
+  freeze_intrinsics: false
+  window_half_size_px: 7
+  max_displacement_px: 1.0
+  focal_initialization_min_visible_corner_ratio: 0.75
+  synchronization_tolerance_s: 0.0001
+  min_views_for_outlier_statistics: 20
+  remove_outliers: true
+  final_filtering: true
+  max_iterations: 80
+  spline_order: 4
+  time_padding_s: 0.5
+  feature_sigma_px: 1.0
+  motion_translation_weight: 0.00001
+  motion_rotation_weight: 0.01
+execution:
+  detector_processes: 4
+  optimizer_threads: 4
+  detector_inflight_per_worker: 2
+  detector_opencv_threads: 1
+  profiling_memory_sample_interval_s: 0.25
+output:
+  name: __OUTPUT_NAME__
+  save_diagnostics: true
+  save_metrics: true
+  archive_observations: true
+  archive_selection_history: true
+  export_poses: true
+  visualizations:
+    enabled: true
+    sampling: uniform
+    max_frames_per_camera: 30
+    max_pairs: 30
+    undistortion:
+      enabled: true
+      crop: false

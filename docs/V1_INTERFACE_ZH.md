@@ -90,6 +90,10 @@ K/D、相邻外参、共享连续轨迹与每目 `line_delay_s` 联合求解；�
 Camera–IMU 读取纯视觉 RS 结果时只复用 K/D/T；普通 job 的残差保持全局快门，RS job
 则从自己的 `rolling_shutter` 块显式取得行时间，不从结果元数据静默继承。
 
+`camera_baselink_calibration` 读取已有相机结果的固定 K/D，按目录图片文件名中的平台
+位置对全部无序帧对执行 `alpha=0` 等权直接差分，只求 `T_base_camera` 的旋转；平移由 task 提供。
+该任务的独立契约见[相机到base_link旋转标定](CAMERA_BASELINK_CALIBRATION_ZH.md)。
+
 可重复示例明确 `shuffle: false`、检测 4 进程、优化 4 线程、每 worker 两个在途任务、
 每 worker 一个 OpenCV 线程。相机同步示例为 0.0002 s，用于对齐采集；未配置时仍恢复
 原生 0.02 s。二者可能形成不同配对，数值／性能比较必须保持显式配置一致。

@@ -7,6 +7,7 @@ import sys
 
 from .version import VERSION
 from .rolling_shutter import JOB as ROLLING_SHUTTER_JOB, CAMERA_RS_JOB
+from .jobs import CAMERA_BASELINK_JOB
 
 from kalibr_runtime import profiling_enabled
 from .task import (
@@ -36,13 +37,14 @@ def _add_execution_arguments(parser):
                             dest="profiling_memory_sample_interval_s")
 
 
-def _add_runtime_arguments(parser):
+def _add_runtime_arguments(parser, *, allow_initialization=True):
     parser.add_argument("--config", required=True, help="task schema-version 1.0.0 YAML")
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument(
-        "--initialization",
-        help="camera or camera-IMU initialization YAML (relative to the current directory)",
-    )
+    if allow_initialization:
+        parser.add_argument(
+            "--initialization",
+            help="camera or camera-IMU initialization YAML (relative to the current directory)",
+        )
     _add_execution_arguments(parser)
     if profiling_enabled():
         parser.add_argument("--timing-json", help="profile-build timing output")
@@ -104,6 +106,10 @@ def build_parser():
     calibration_commands = calibrate.add_subparsers(dest="calibration", required=True)
     cameras = calibration_commands.add_parser("cameras", help="camera calibration")
     _add_runtime_arguments(cameras)
+    cameras_baselink = calibration_commands.add_parser(
+        "cameras-baselink",
+        help="camera to base_link rotation calibration from XY platform motion")
+    _add_runtime_arguments(cameras_baselink, allow_initialization=False)
     cameras_rs = calibration_commands.add_parser(
         "cameras-rs", help="rolling-shutter mono/stereo/multicamera calibration")
     _add_runtime_arguments(cameras_rs)
@@ -316,6 +322,16 @@ def main(argv=None, prefix=None):
             print(output)
             return 0
         if arguments.group == "calibrate":
+            if arguments.calibration == "cameras-baselink":
+                from .camera_baselink import run_camera_baselink
+                output = run_camera_baselink(
+                    arguments.config,
+                    arguments.output_dir,
+                    force=arguments.force,
+                    **_runtime_overrides(arguments, arguments.output_dir)
+                )
+                print(output)
+                return 0
             if arguments.calibration == "cameras":
                 job = "camera_calibration"
             elif arguments.calibration in ("cameras-rs", "native-rs-cameras"):

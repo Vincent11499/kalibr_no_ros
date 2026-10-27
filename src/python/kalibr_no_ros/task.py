@@ -30,6 +30,7 @@ from .rolling_shutter import (
     CAMERA_CALIBRATION_JOBS,
     ROLLING_SHUTTER_JOBS,
 )
+from .jobs import CAMERA_BASELINK_JOB
 try:
     from ._build_info import GIT_COMMIT, SOURCE_VARIANT
 except ImportError:
@@ -81,6 +82,7 @@ _COMMON_TASK_KEYS = {
 _JOB_TASK_KEYS = {
     "camera_calibration": {"cameras"},
     CAMERA_RS_JOB: {"cameras", "rolling_shutter"},
+    CAMERA_BASELINK_JOB: {"camera_calibration", "cameras", "base_link"},
     "camera_imu_calibration": {"camera_calibration", "imus"},
     ROLLING_SHUTTER_JOB: {"camera_calibration", "imus", "rolling_shutter"},
 }
@@ -215,6 +217,23 @@ def load_task(path, expected_job=None):
         cameras = task.get("cameras")
         if not isinstance(cameras, list) or not cameras:
             raise TaskError("cameras must be a non-empty list")
+    elif job == CAMERA_BASELINK_JOB:
+        cameras = task.get("cameras")
+        if not isinstance(cameras, list) or not cameras:
+            raise TaskError("cameras must be a non-empty list")
+        camera_calibration = task.get("camera_calibration")
+        if not (
+            isinstance(camera_calibration, str) and camera_calibration
+            or isinstance(camera_calibration, dict)
+            and camera_calibration.get("path")
+        ):
+            raise TaskError("camera_calibration.path is required")
+        if not isinstance(task.get("base_link"), dict):
+            raise TaskError("base_link mapping is required")
+        if "initialization" in task:
+            raise TaskError(
+                "camera_baselink_calibration does not support initialization; "
+                "use camera_calibration.path for fixed K/D")
     else:
         camera_calibration = task.get("camera_calibration")
         if camera_calibration is not None and not (

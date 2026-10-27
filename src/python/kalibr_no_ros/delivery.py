@@ -9,11 +9,12 @@ import shutil
 import tempfile
 from .filesystem import file_sha256
 from .rolling_shutter import CAMERA_IMU_JOBS, CAMERA_CALIBRATION_JOBS
+from .jobs import CAMERA_BASELINK_JOB
 
 
 def _ids(task):
     from .task import load_yaml, resolve_task_path
-    if task['job'] in CAMERA_CALIBRATION_JOBS:
+    if task['job'] in CAMERA_CALIBRATION_JOBS or task['job'] == CAMERA_BASELINK_JOB:
         return [c.get('id', 'cam{}'.format(i)) for i, c in enumerate(task['cameras'])]
     value = task['camera_calibration']
     path = value.get('path') if isinstance(value, dict) else value
@@ -355,6 +356,7 @@ def _destinations(stage, output, name, options, failed=False):
             continue
         retain = p.parts[len(stage.parts)] in {'observations', 'visualizations', 'images', 'opencv'}
         retain |= relative == 'timing.json'
+        retain |= relative == 'rotation_summary.csv'
         retain |= options.get('export_poses', False) and relative == 'poses.csv'
         retain |= options.get('save_metrics', False) and relative == 'metrics.json'
         retain |= options.get('save_diagnostics', False)

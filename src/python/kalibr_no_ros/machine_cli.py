@@ -29,6 +29,8 @@ def _print_stage(label, stage):
     if stage.get("result"):
         text += " -> {}".format(stage["result"])
     print(text)
+    if stage.get("message"):
+        print("  {}".format(stage["message"]))
 
 
 def main(argv=None, prefix=None):
@@ -38,12 +40,15 @@ def main(argv=None, prefix=None):
         summary = run_machine_workflow(
             prefix, arguments.config)
         print("machine: {}".format(summary["machine_dir"]))
-        _print_stage("camera", summary["camera"])
-        _print_stage("camera_imu", summary["camera_imu"])
+        stages = {key: summary[key] for key in (
+            "camera", "camera_imu", "camera_baselink", "mono_camera", "mono_camera_baselink")
+            if key in summary}
+        for label, stage in stages.items():
+            _print_stage(label, stage)
         print("output: {}".format(summary["output_dir"]))
         return (2 if any(
             stage.get("status", "").startswith(("blocked", "failed"))
-            for stage in (summary["camera"], summary["camera_imu"])) else 0)
+            for stage in stages.values()) else 0)
     except (TaskError, ValueError, RuntimeError, OSError) as error:
         print("kalibr-cedarobot: error: {}".format(error), file=sys.stderr)
         return 2

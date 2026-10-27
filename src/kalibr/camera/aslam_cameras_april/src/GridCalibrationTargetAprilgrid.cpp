@@ -361,7 +361,15 @@ bool GridCalibrationTargetAprilgrid::computeObservation(
     }
   }
 
-  //succesful observation
+  const size_t validCornerCount = std::count(
+      outCornerObserved.begin(), outCornerObserved.end(), true);
+  if (validCornerCount <= 20) {
+    SM_DEBUG_STREAM("Aprilgrid observation has only " << validCornerCount
+                    << " valid corners after subpixel filtering; at least 21 "
+                    << "are required (observation removed)\n");
+    success = false;
+  }
+
   return success;
 }
 

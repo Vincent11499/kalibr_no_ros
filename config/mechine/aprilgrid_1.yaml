@@ -1,0 +1,8 @@
+schema_version: "1.0.0"
+kind: calibration_target
+target_type: aprilgrid
+tagRows: 8
+tagCols: 8
+tagSize: 0.065
+tagSpacing: 0.3
+tagStartId: 80

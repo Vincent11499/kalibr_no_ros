@@ -381,7 +381,9 @@ class CameraParameters(ParametersBase):
     ###################################################
     # Helpers
     ###################################################
-    def printDetails(self, dest=sys.stdout):
+    def printDetails(self, dest=None):
+        if dest is None:
+            dest = sys.stdout
         #get the data
         camera_model, intrinsics = self.getIntrinsics()
         dist_model, dist_coeff = self.getDistortion()
@@ -500,7 +502,9 @@ class ImuParameters(ParametersBase):
     ###################################################
     # Helpers
     ###################################################
-    def printDetails(self, dest=sys.stdout):
+    def printDetails(self, dest=None):
+        if dest is None:
+            dest = sys.stdout
         #get the data
         update_rate = self.getUpdateRate()
         accelUncertaintyDiscrete, accelRandomWalk, accelUncertainty = self.getAccelerometerStatistics()
@@ -640,7 +644,9 @@ class CalibrationTargetParameters(ParametersBase):
     ###################################################
     # Helpers
     ###################################################
-    def printDetails(self, dest=sys.stdout):
+    def printDetails(self, dest=None):
+        if dest is None:
+            dest = sys.stdout
         
         targetType = self.getTargetType()
         targetParams = self.getTargetParams()
@@ -767,7 +773,9 @@ class CameraChainParameters(ParametersBase):
     def numCameras(self):
         return len(self.data)
     
-    def printDetails(self, dest=sys.stdout):
+    def printDetails(self, dest=None):
+        if dest is None:
+            dest = sys.stdout
         for camNr in range(0, self.numCameras()):
             print("Camera chain - cam{0}:".format(camNr))
             camConfig = self.getCameraParameters(camNr)

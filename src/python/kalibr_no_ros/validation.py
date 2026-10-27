@@ -11,6 +11,7 @@ from .rolling_shutter import (
     CAMERA_CALIBRATION_JOBS,
     ROLLING_SHUTTER_JOBS,
 )
+from .jobs import CAMERA_BASELINK_JOB
 from .task import (
     TaskError, load_task, load_yaml, require_document_version,
     resolve_execution, resolve_initialization, resolve_task_path,
@@ -112,9 +113,14 @@ def validate_options(task):
         "synchronize_clocks", "estimate_multi_imu_delay", "calibrate_time_offset",
         "recover_covariance", "recompute_camera_chain_extrinsics",
     }
-    _fields(calibration, common | (
-        camera_fields if task["job"] in CAMERA_CALIBRATION_JOBS else imu_fields),
-        "calibration")
+    baselink_fields = {"rank_ratio_min"}
+    if task["job"] == CAMERA_BASELINK_JOB:
+        allowed_calibration = common | baselink_fields
+    else:
+        allowed_calibration = common | (
+            camera_fields
+            if task["job"] in CAMERA_CALIBRATION_JOBS else imu_fields)
+    _fields(calibration, allowed_calibration, "calibration")
     booleans = {
         "freeze_intrinsics", "shuffle", "remove_outliers", "final_filtering", "blake_zisserman",
         "synchronize_clocks", "estimate_multi_imu_delay", "calibrate_time_offset",
@@ -145,6 +151,8 @@ def validate_options(task):
             _positive(value, "calibration." + key, zero=key in {"synchronization_tolerance_s", "information_gain_tolerance"})
             if key == "focal_initialization_min_visible_corner_ratio" and value > 1:
                 raise TaskError("calibration.{} must be in (0, 1]".format(key))
+            if key == "rank_ratio_min" and value >= 1:
+                raise TaskError("calibration.rank_ratio_min must be in (0, 1)")
     resolve_execution(task.get("execution"))
     if task["job"] in CAMERA_CALIBRATION_JOBS:
         topics = set()
@@ -172,6 +180,39 @@ def validate_options(task):
                 raise TaskError(
                     "camera_rolling_shutter_calibration supports pinhole-equi and pinhole-radtan")
             topics.add(topic)
+    elif task["job"] == CAMERA_BASELINK_JOB:
+        if dataset["type"] != "directory":
+            raise TaskError(
+                "camera_baselink_calibration requires dataset.type: directory")
+        _input_path(task.get("camera_calibration"), "camera_calibration")
+        base_link = task.get("base_link")
+        _fields(base_link, {"frame_id", "position_scale_m"}, "base_link")
+        frame_id = base_link.get("frame_id", "base_link")
+        if (not isinstance(frame_id, str)
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_/-]*", frame_id)):
+            raise TaskError("base_link.frame_id must be a safe non-empty frame ID")
+        _positive(
+            base_link.get("position_scale_m"),
+            "base_link.position_scale_m")
+        if task["output"].get("export_poses"):
+            raise TaskError(
+                "camera_baselink_calibration does not support output.export_poses")
+        camera_ids = set()
+        for index, camera in enumerate(task["cameras"]):
+            _fields(
+                camera, {"id", "translation_base_camera_m"},
+                "cameras[{}]".format(index))
+            _camera_id(
+                camera.get("id"), camera_ids,
+                "cameras[{}].id".format(index))
+            translation = camera.get("translation_base_camera_m")
+            if (not isinstance(translation, list) or len(translation) != 3
+                    or any(type(value) not in (int, float)
+                           or not math.isfinite(value)
+                           for value in translation)):
+                raise TaskError(
+                    "cameras[{}].translation_base_camera_m must contain "
+                    "three finite metre values".format(index))
     else:
         if "camera_calibration" in task:
             _input_path(task["camera_calibration"], "camera_calibration")
@@ -417,6 +458,15 @@ def load_cameras(task):
             if any(abs(expected[row][column] - camera["T_imu_cam"][row][column]) > 1e-6
                    for row in range(4) for column in range(4)):
                 raise TaskError("camera result T_imu_cam must be the inverse of T_cam_imu")
+    if task["job"] == CAMERA_BASELINK_JOB:
+        by_id = {camera["id"]: camera for camera in cameras}
+        requested = [camera["id"] for camera in task["cameras"]]
+        missing = [camera_id for camera_id in requested if camera_id not in by_id]
+        if missing:
+            raise TaskError(
+                "camera_calibration is missing requested camera IDs: {}"
+                .format(", ".join(missing)))
+        cameras = [by_id[camera_id] for camera_id in requested]
     reader = _directory_reader(task)
     return [dict(camera, topic=(reader.sensor_topic(camera["id"], "camera")
                                 if reader is not None else camera["rostopic"]))
@@ -473,6 +523,10 @@ def validate_task(config, *, decode_images=True, solver_backend=None):
             raise TaskError("dataset type mismatch")
         if is_directory:
             report["dataset_id"] = reader.dataset_id
+        if task["job"] == CAMERA_BASELINK_JOB:
+            from .camera_baselink import validate_platform_positions
+            report["base_link"] = validate_platform_positions(
+                task, cameras, reader)
         camera_windows = []
         for camera in cameras:
             topic = camera["topic"]
@@ -524,6 +578,11 @@ def validate_task(config, *, decode_images=True, solver_backend=None):
                     "additional single-camera and option restrictions in that "
                     "command before image decoding. Calibration quality and "
                     "observability are not evaluated.")
+        elif task["job"] == CAMERA_BASELINK_JOB:
+            report["note"] = (
+                "Structure, fixed camera parameters, image decoding, filename "
+                "platform positions, and XY excitation were checked. Target "
+                "detection, PnP, and base_link rotation solving were not run.")
         else:
             report["note"] = "Structure and timing checks only; calibration quality and observability are not evaluated."
     except (ValueError, RuntimeError, OSError, KeyError) as error:

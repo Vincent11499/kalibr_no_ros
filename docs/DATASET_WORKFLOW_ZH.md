@@ -2,7 +2,9 @@
 
 产线机器目录优先使用
 [`kalibr-cedarobot machine --config user.yaml`](MACHINE_CALIBRATION_WORKFLOW_ZH.md)。该入口
-根据直接子目录名称区分 `stereo_*`、`stereo_imu_*` 和 `stereo_test_*`，但数据流的
+根据直接子目录名称区分 `stereo_*`、`stereo_imu_*`、`stereo_base_link_*`
+（也接受 `stereo_baselink_*`），以及独立单目模组的 `usb_*`、`usb_baselink_*`，
+忽略独立测试集，但数据流的
 真实映射仍以每个目录内的 `dataset.yaml` 为准。本文件其余部分说明底层数据与输出契约。
 
 ## 1. 目录相机如何选择
@@ -104,7 +106,13 @@ Kalibr 的目录读取、`validate` 和标定前输入校验只读取公共 `dat
 |---|---|
 | `stereo_YYMMDD_hhmm` | 双目相机标定候选 |
 | `stereo_imu_YYMMDD_hhmm` | 双目＋IMU 标定候选 |
+| `stereo_base_link_YYMMDD_hhmm` / `stereo_baselink_YYMMDD_hhmm` | 可选 Camera–BaseLink；需在 `user.yaml` 明确配置位置比例与每目平移 |
+| `usb_YYMMDD_HHMM` | 独立单目模组内参候选，仅局部 `cam0`，无 IMU |
+| `usb_baselink_YYMMDD_HHMM` | 单目 BaseLink；需 `mono_camera_baselink` 配置，仅引用本模组单目结果 |
 | `stereo_test_YYMMDD_hhmm` | 独立验证数据，不参与自动标定 |
+
+独立单目 `cam0` 与双目左相机 `cam0` 不表示同一传感器；两模组有独立数据、task、结果
+名称和上游路径，不做三目联合标定。它们共用当前机型 profile 的 AprilGrid。
 
 它只扫描 `<设备目录>` 的直接子目录。同一角色只有一个候选时自动选择；多个候选必须由
 开发者在 `user.yaml` 指定，不能按时间戳或 mtime 猜测。只先准备 `stereo_*` 是合法的：
@@ -119,6 +127,9 @@ Kalibr 的目录读取、`validate` 和标定前输入校验只读取公共 `dat
 <设备目录>/
   stereo_YYMMDD_hhmm/             双目输入数据
   stereo_imu_YYMMDD_hhmm/         双目＋IMU 输入数据
+  stereo_base_link_YYMMDD_hhmm/   双目 BaseLink 平移数据
+  usb_YYMMDD_HHMM/               独立单目内参数据
+  usb_baselink_YYMMDD_HHMM/      独立单目 BaseLink 平移数据
   result/
     <任务名称>.yaml               最终标定参数
     <任务名称>.report.html        HTML 报告
@@ -145,6 +156,8 @@ Kalibr 的目录读取、`validate` 和标定前输入校验只读取公共 `dat
 | cam1 单目 | camera_calibration_cam1.yaml |
 | cam0 + cam1 双目 | camera_calibration_cam0_cam1.yaml |
 | cam0 + cam1 + cam2 多目 | camera_calibration_cam0_cam1_cam2.yaml |
+| cam0 到base_link | camera_baselink_calibration_cam0.yaml |
+| cam0 + cam1 到base_link | camera_baselink_calibration_cam0_cam1.yaml |
 | cam0 + cam1 纯视觉 RS | camera_rolling_shutter_calibration_cam0_cam1.yaml |
 | cam0 原生 RS 临时对照 | native_camera_rolling_shutter_calibration_cam0.yaml |
 | 双目 + imu0 | camera_imu_calibration_cam0_cam1_imu0.yaml |
@@ -162,6 +175,8 @@ Kalibr 的目录读取、`validate` 和标定前输入校验只读取公共 `dat
 缺少可用证据时写 null，不写为 0；数量、状态和误差分布保留在可选 metrics.json 中。
 结果不再输出 `transform_convention` 文本；方向仍为点从源相机变换到目标相机：
 相机列表为 `[cam0, cam1]` 时，cam1 条目的 `T_cn_cnm1` 表示 cam0 → cam1；不再输出重复的 from_camera 字段。
+`cameras_baselink` 结果的 `T_base_camera` 表示 camera → base_link，平移单位米；其
+`movement_residual_mm` 是直接差分拟合诊断，不是独立外参精度。
 
 Camera–IMU task 省略 `camera_calibration` 时，先在 `--output-dir` 根目录寻找有效的
 双目/多目相机结果。目录数据集必须匹配 manifest 中的相机 ID；零个或多个匹配均报错，

@@ -39,7 +39,19 @@ flowchart TD
 | 机器级标定 | PC WSL/Linux／测试员 | 自动生成并复用双目结果，数据齐全后继续 Camera–IMU |
 | 评估放行 | 测试员＋复核人 | 数值判定、图像检查、异常处置及签字记录 |
 
-仅需双目标定的工单不执行 IMU 采集和 IMU 联合标定。单目任务见第 8.4 节。
+仅需双目标定的工单不执行 IMU 采集和 IMU 联合标定。左右目分别做单目分析见第 8.4 节。
+若机器还有独立单目模组，另外采集 `usb_YYMMDD_HHMM`，清单只含其局部 `cam0`；
+仍使用相同 AprilGrid，在同一机器根目录运行同一个 `machine` 命令即可标定其 K/D。
+其 BaseLink 数据放入 `usb_baselink_YYMMDD_HHMM`，维护人员
+配置 `mono_camera_baselink`，程序仅复用独立单目结果，不借用双目左相机参数。
+
+工单若另需 Camera–BaseLink：先完成双目 K/D 标定，再保持平台姿态不变、标定板固定在
+环境中，仅平移相机平台并采集至少两个独立方向的运动。按位置命名图像
+`<x>_<y>_<z>.<ext>`，整理为 `stereo_base_link_YYMMDD_hhmm`（或 `stereo_baselink_*`）
+目录数据集，放在同一机器根目录；开发者在 `user.yaml` 增加 `camera_baselink` 的
+位置比例和每目实测平移。仍运行同一 `machine` 命令，无需 IMU 数据；它只估计旋转，
+不估计平移。此处不新增板端采集命令，也不改现有采集硬件配置；详细目录、配置和输出见
+[机器级一键标定](MACHINE_CALIBRATION_WORKFLOW_ZH.md)。
 
 常规产线标定只执行 `kalibr-cedarobot machine --config user.yaml`。本文第 7、8 节保留
 底层 task 与 `kalibr-noros` 命令，供维护人员排障和单阶段复现，不要求操作员逐项配置。
@@ -241,7 +253,9 @@ CALIB_ROOT=/home/gs/kalibr_cedarobo/branch
 
 - 只有 `stereo_*` 时，完成双目后显示 `waiting_for_dataset`，退出成功；不要为了等 IMU
   数据一直保持进程运行。
-- 后续复制 `stereo_imu_*` 后重复同一命令，程序校验并复用双目结果，只执行第二阶段。
+- 后续复制 `stereo_imu_*` 后重复同一命令，程序校验并复用双目结果，继续 Camera–IMU。
+- 独立单目模组使用 `usb_*`，单目 BaseLink 使用 `usb_baselink_*`；仍运行同一命令。
+  单目 BaseLink 只复用独立单目标定结果，缺少双目或 IMU 数据不会阻止它。
 - 同类目录超过一个时不会猜测，联系维护人员在 `user.yaml` 指定目录。
 - 已完成且来源一致时不会重新标定；来源变化时不会覆盖，联系维护人员增加 `revision`。
 - 普通或滚动快门 Camera–IMU 由 `user.yaml` 明确选择，操作员不得根据一次 RMS 切换。

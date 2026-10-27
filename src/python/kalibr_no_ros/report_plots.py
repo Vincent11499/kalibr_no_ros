@@ -47,7 +47,12 @@ def _matrix(value):
 
 
 def camera_frames(cameras):
-    """Return T_first_camera; baseline input is T_current_previous."""
+    """Return transforms in the first-camera frame or the explicit base frame."""
+    if cameras and any("T_base_camera" in camera for camera in cameras):
+        return [
+            (camera["id"], _matrix(camera.get("T_base_camera")))
+            for camera in cameras
+        ]
     result = []
     previous = np.eye(4)
     for index, camera in enumerate(cameras):
@@ -175,7 +180,11 @@ def _rig_plot(cameras):
     if len(origins) > 1:
         axis.plot(*origins.T, color=_MUTED, linestyle="--", linewidth=1.)
     _equal_3d(axis, origins, size * 1.5)
-    caption = "Camera origins and axes expressed in {}. Red = x, green = y, blue = z; lengths in metres.".format(cameras[0]["id"])
+    reference = (
+        "the configured base frame"
+        if any("T_base_camera" in camera for camera in cameras)
+        else cameras[0]["id"])
+    caption = "Camera origins and axes expressed in {}. Red = x, green = y, blue = z; lengths in metres.".format(reference)
     missing = [name for name, transform in frames if transform is None]
     if missing:
         caption += " Missing baseline chain: {}.".format(", ".join(missing))
@@ -370,6 +379,19 @@ def _summary_sections(metrics, assessment, calibration):
         rows.append([name, camera.get("used_frames"), camera.get("selected_frames"), error.get("count"),
                      error.get("rms_px"), error.get("p95"), error.get("max")])
     yield "Calibration overview", ["Camera", "Used frames", "Selected", "Corners", "RMS [px]", "P95 [px]", "Max [px]"], rows
+    if metrics.get("calibration_type") == "cameras_baselink":
+        yield "base_link direct-difference solve", [
+            "Camera", "Pitch [deg]", "Effective pairs", "Movement RMS [mm]",
+            "Platform rank ratio", "Camera rank ratio", "Reflection corrected",
+        ], [[
+            name,
+            camera.get("pitch"),
+            camera.get("effective_pairs"),
+            camera.get("movement_residual_mm"),
+            camera.get("platform_second_first_ratio"),
+            camera.get("camera_second_first_ratio"),
+            camera.get("reflection_corrected"),
+        ] for name, camera in metrics.get("cameras", {}).items()]
     if metrics.get("observability"):
         observability = metrics["observability"]
         yield "Local observability", ["Parameter", "Value"], [
@@ -434,7 +456,9 @@ def _summary_sections(metrics, assessment, calibration):
         for field, source, target in (
                 ("T_cn_cnm1", "previous camera", name),
                 ("T_cam_imu", "IMU", name),
-                ("T_imu_cam", name, "IMU")):
+                ("T_imu_cam", name, "IMU"),
+                ("T_base_camera", name,
+                 (calibration or {}).get("base_frame", "base_link"))):
             transform = _matrix(final.get(field))
             if transform is not None:
                 source = final.get("from_camera", final.get("source_camera", previous_ids.get(name, source))) if field == "T_cn_cnm1" else source
@@ -534,6 +558,11 @@ def render_reports(metrics, assessment, files, *, artifacts=None, calibration=No
     status = assessment.get("status", "unavailable")
     grade = assessment.get("reference_grading", {}).get("status", "unavailable")
     subtitle = "Final used observations; 2D corner RMS in pixels. Missing evidence is unavailable."
+    if metrics.get("calibration_type") == "cameras_baselink":
+        subtitle = (
+            "Fixed-K/D per-frame PnP feeds an equal-weight direct translation-"
+            "difference rotation solve. Movement RMS is a fit diagnostic, not "
+            "independent base_link rotation accuracy.")
     if any(c.get("shutter") for c in metrics.get("cameras", {}).values()):
         subtitle += " Rolling shutter: reprojection uses per-corner times. Optical alignment and rectified images use only K/D/T; the separately labelled RS-compensated pair residual is fit-dependent."
     document = ['<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">',

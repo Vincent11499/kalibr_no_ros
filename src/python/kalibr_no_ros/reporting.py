@@ -568,6 +568,15 @@ def _summary(metrics, assessment):
                       "  corners={}, RMS={} px, mean={} px, P95={} px, max={} px".format(values["count"], _format(values.get("rms_px")), _format(values["mean"]), _format(values["p95"]), _format(values["max"]))])
         lines.append("  intrinsics={} distortion={}".format(camera.get("intrinsics"), camera.get("distortion_coeffs")))
         lines.append("  whitened residual vector RMS={} (dimensionless)".format(_format(camera.get("normalized_reprojection", {}).get("rms"))))
+        if "movement_residual_mm" in camera:
+            lines.append(
+                "  base_link direct difference: pairs={}, movement RMS={} mm, "
+                "platform rank ratio={}, camera rank ratio={}, pitch={} deg".format(
+                    camera.get("effective_pairs"),
+                    _format(camera.get("movement_residual_mm")),
+                    _format(camera.get("platform_second_first_ratio")),
+                    _format(camera.get("camera_second_first_ratio")),
+                    _format(camera.get("pitch"))))
         if "timeshift_cam_imu_s" in camera:
             lines.append("  camera/IMU time shift={} s".format(_format(camera["timeshift_cam_imu_s"])))
     for name, pair in metrics.get("stereo_pairs", {}).items():
