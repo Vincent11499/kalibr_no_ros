@@ -225,7 +225,9 @@ def install():
 
     original_print_details = cr.CameraParameters.printDetails
 
-    def print_details(self, dest=sys.stdout):
+    def print_details(self, dest=None):
+        if dest is None:
+            dest = sys.stdout
         camera_model, intrinsics = self.getIntrinsics()
         if camera_model != CAMERA_MODEL:
             return original_print_details(self, dest)

@@ -605,6 +605,7 @@ before_streams = (sys.stdout, sys.stderr)
 before_fds = [(os.fstat(fd).st_dev, os.fstat(fd).st_ino) for fd in (1, 2)]
 try:
     with _capture_solver_logs(Path(sys.argv[1])):
+        assert (sys.stdout, sys.stderr) == before_streams
         print('python stdout inside')
         print('python stderr inside', file=sys.stderr)
         os.write(1, b'native stdout inside\\n')

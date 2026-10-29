@@ -146,12 +146,15 @@ execution:
 | `cameras[].translation_base_camera_m` | 无，必填 | 3个有限数，m | 作为 ${}^{B}t_C$ 写入最终 `T_base_camera` |
 | `base_link.frame_id` | `base_link` | 安全非空frame ID | 命名最终目标坐标系 |
 | `base_link.position_scale_m` | 无，必填 | 有限正数，m/文件名单位 | 将文件名 `x_y_z` 转为米制平台位置 |
+| `base_link.rotation_left_correction` | 3×3 单位阵 | 3×3 有限 SO(3) 矩阵，无单位 | 写出前以该矩阵左乘求解旋转；不改变配置平移 |
 | `calibration.window_half_size_px` | `2` | 整数且 >=1，px | AprilGrid亚像素窗口半宽 |
 | `calibration.max_displacement_px` | `sqrt(1.5)` | 有限正数，px | 亚像素点允许的最大位移 |
 | `calibration.rank_ratio_min` | `1e-4` | 有限数 `(0,1)` | 平台与相机差分第二／第一奇异值下限 |
 
 公共接口不提供 `alpha`：实现固定为全部无序帧对的等权直接差分 `alpha=0`。文件名、
 公式、输出和示例见[相机到base_link旋转标定](CAMERA_BASELINK_CALIBRATION_ZH.md)。
+机器 workflow 固定为双目 `diag(1,-1,-1)`、USB 单目 `diag(-1,1,-1)`，无需在
+`user.yaml` 重复填写。
 
 ## 2. 公共 task 字段
 

@@ -12,6 +12,38 @@ from .rolling_shutter import CAMERA_IMU_JOBS, CAMERA_CALIBRATION_JOBS
 from .jobs import CAMERA_BASELINK_JOB
 
 
+FLAT_LAYOUT = 'flat'
+CONTAINED_LAYOUT = 'contained'
+MACHINE_LAYOUT = 'machine'
+
+
+def _validate_layout(layout):
+    from .task import TaskError
+    if layout not in {FLAT_LAYOUT, CONTAINED_LAYOUT, MACHINE_LAYOUT}:
+        raise TaskError('delivery layout must be flat, contained, or machine')
+    return layout
+
+
+def _delivery_paths(output, name, layout):
+    layout = _validate_layout(layout)
+    output = Path(output).resolve()
+    side = output / name
+    if layout == CONTAINED_LAYOUT:
+        result_root = report_root = text_root = side
+    elif layout == MACHINE_LAYOUT:
+        result_root = text_root = side
+        report_root = output
+    else:
+        result_root = report_root = text_root = output
+    return {
+        'result': result_root / (name + '.yaml'),
+        'html': report_root / (name + '.report.html'),
+        'pdf': report_root / (name + '.report.pdf'),
+        'text': text_root / (name + '.results.txt'),
+        'sidecar': side,
+    }
+
+
 def _ids(task):
     from .task import load_yaml, resolve_task_path
     if task['job'] in CAMERA_CALIBRATION_JOBS or task['job'] == CAMERA_BASELINK_JOB:
@@ -262,7 +294,7 @@ def _validate_file_records(records, expected, *, published=False):
         raise TaskError(mismatch)
 
 
-def inspect_managed_delivery(output, name):
+def inspect_managed_delivery(output, name, layout=FLAT_LAYOUT):
     """Read-only integrity check for one successfully published delivery.
 
     This does not decide whether the calibration is suitable for a caller.  It
@@ -274,12 +306,7 @@ def inspect_managed_delivery(output, name):
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,159}', name):
         raise TaskError('managed delivery name is not a safe filename')
     output = Path(output).resolve()
-    paths = {
-        'result': output / (name + '.yaml'),
-        'html': output / (name + '.report.html'),
-        'pdf': output / (name + '.report.pdf'),
-        'sidecar': output / name,
-    }
+    paths = _delivery_paths(output, name, layout)
     for role in ('result', 'html', 'pdf'):
         path = paths[role]
         if not path.is_file() or path.is_symlink():
@@ -295,10 +322,12 @@ def inspect_managed_delivery(output, name):
         raise TaskError('completed delivery lacks workflow provenance')
     manifest, records = _read_completed_manifest(manifest_path)
     file_records, directory_records, delivery_records = records
+    main_files = {paths[role] for role in ('result', 'html', 'pdf', 'text')}
     expected_files = {
         path.relative_to(side).as_posix(): path
         for path in descendants
-        if path.is_file() and path not in {inventory, manifest_path}
+        if (path.is_file() and path not in {inventory, manifest_path}
+            and path not in main_files)
     }
     _validate_file_records(file_records, expected_files)
     expected_directories = {
@@ -314,7 +343,7 @@ def inspect_managed_delivery(output, name):
         paths[role].name: paths[role]
         for role in ('result', 'html', 'pdf')
     }
-    optional_text = output / (name + '.results.txt')
+    optional_text = paths['text']
     if optional_text.exists() or optional_text.is_symlink():
         if not optional_text.is_file() or optional_text.is_symlink():
             raise TaskError(
@@ -331,12 +360,32 @@ def inspect_managed_delivery(output, name):
     }
 
 
-def _destinations(stage, output, name, options, failed=False):
-    files = {}
-    main = {'calibration.yaml': name + '.yaml', 'report.html': name + '.report.html',
-            'report.pdf': name + '.report.pdf'}
+def _main_destinations(name, options, layout):
+    if layout == MACHINE_LAYOUT:
+        main = {
+            'calibration.yaml': name + '/' + name + '.yaml',
+            'report.html': name + '.report.html',
+            'report.pdf': name + '.report.pdf',
+        }
+        text_prefix = name + '/'
+    else:
+        prefix = name + '/' if layout == CONTAINED_LAYOUT else ''
+        main = {
+            'calibration.yaml': prefix + name + '.yaml',
+            'report.html': prefix + name + '.report.html',
+            'report.pdf': prefix + name + '.report.pdf',
+        }
+        text_prefix = prefix
     if options.get('export_text'):
-        main['results.txt'] = name + '.results.txt'
+        main['results.txt'] = text_prefix + name + '.results.txt'
+    return main
+
+
+def _destinations(stage, output, name, options, failed=False,
+                  layout=FLAT_LAYOUT):
+    layout = _validate_layout(layout)
+    files = {}
+    main = _main_destinations(name, options, layout)
     for source, dest in main.items():
         if not failed and (stage / source).is_file():
             files[source] = dest
@@ -365,11 +414,34 @@ def _destinations(stage, output, name, options, failed=False):
     return files
 
 
-def _check_owned(output, name, force):
+def _check_owned(output, name, force, layout=FLAT_LAYOUT):
     """Inspect only this delivery; other tasks and arbitrary sibling files are untouched."""
     from .task import TaskError
-    main = [output / (name + suffix) for suffix in ('.yaml', '.report.html', '.report.pdf', '.results.txt')]
+    layout = _validate_layout(layout)
+    output = Path(output).resolve()
     side = output / name
+    layouts = {
+        FLAT_LAYOUT: {output / (name + suffix) for suffix in (
+            '.yaml', '.report.html', '.report.pdf', '.results.txt')},
+        CONTAINED_LAYOUT: {side / (name + suffix) for suffix in (
+            '.yaml', '.report.html', '.report.pdf', '.results.txt')},
+        MACHINE_LAYOUT: {
+            side / (name + '.yaml'),
+            output / (name + '.report.html'),
+            output / (name + '.report.pdf'),
+            side / (name + '.results.txt'),
+        },
+    }
+    expected = layouts[layout]
+    incompatible = set().union(
+        *(paths for candidate, paths in layouts.items() if candidate != layout)
+    ) - expected
+    if any(path.exists() or path.is_symlink() for path in incompatible):
+        raise TaskError(
+            'output for {} uses an incompatible delivery layout; '
+            'choose a new output.name or workflow revision'.format(
+                name))
+    main = [path for path in expected if path.parent == output]
     existing = [p for p in main + [side] if p.exists() or p.is_symlink()]
     if existing and not force:
         raise TaskError('output for {} already exists; choose output.name or use --force'.format(name))
@@ -389,19 +461,30 @@ def _check_owned(output, name, force):
     return existing
 
 
-def published_paths(stage, output, name, options):
+def published_paths(stage, output, name, options, layout=FLAT_LAYOUT):
     """List only artifacts that survived delivery selection and renaming."""
-    return sorted(relative for relative in _destinations(stage, output, name, options).values()
+    return sorted(relative for relative in _destinations(
+        stage, output, name, options, layout=layout).values()
                   if (Path(output) / relative).is_file())
 
 
-def publish(stage, output, name, options, force=False, failed=False):
+def publish(stage, output, name, options, force=False, failed=False,
+            layout=FLAT_LAYOUT):
     """All copies and link rewrites complete before old owned files are replaced."""
     from .task import dump_yaml, load_yaml
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
-    existing = _check_owned(output, name, force)
-    mapping = _destinations(stage, output, name, options, failed)
+    layout = _validate_layout(layout)
+    existing = _check_owned(output, name, force, layout)
+    mapping = _destinations(
+        stage, output, name, options, failed, layout=layout)
+    main_relatives = set()
+    if not failed:
+        main_relatives = {
+            relative for source, relative in _main_destinations(
+                name, options, layout).items()
+            if (stage / source).is_file()
+        }
     with tempfile.TemporaryDirectory(prefix='.delivery-', dir=output) as folder:
         prepared = Path(folder)
         for source, relative in mapping.items():
@@ -410,12 +493,19 @@ def publish(stage, output, name, options, force=False, failed=False):
             if source == 'report.html':
                 text = (stage / source).read_text()
                 for old, new in mapping.items():
-                    text = text.replace('href="' + old + '"', 'href="' + new + '"')
-                    text = text.replace('src="' + old + '"', 'src="' + new + '"')
+                    link = os.path.relpath(
+                        prepared / new, target.parent).replace(os.sep, '/')
+                    text = text.replace('href="' + old + '"', 'href="' + link + '"')
+                    text = text.replace('src="' + old + '"', 'src="' + link + '"')
                 # Report links list only delivered artifacts.
                 import re as regex
+                delivered_links = {
+                    os.path.relpath(prepared / relative, target.parent).replace(
+                        os.sep, '/')
+                    for relative in mapping.values()
+                }
                 text = regex.sub(r'<li><a href="([^"]+)">.*?</a></li>',
-                    lambda m: m.group(0) if m.group(1) in mapping.values() else '', text)
+                    lambda m: m.group(0) if m.group(1) in delivered_links else '', text)
                 target.write_text(text)
             else:
                 shutil.copy2(stage / source, target)
@@ -426,14 +516,19 @@ def publish(stage, output, name, options, force=False, failed=False):
                 value = load_yaml(init)
                 result_path = prepared / mapping.get('calibration.yaml', '__absent__')
                 if value.get('result') and result_path.is_file():
-                    value['result'] = {'path': 'result.yaml' if failed else '../' + name + '.yaml', 'sha256': file_sha256(result_path)}
+                    value['result'] = {
+                        'path': os.path.relpath(
+                            result_path, init.parent).replace(os.sep, '/'),
+                        'sha256': file_sha256(result_path),
+                    }
                     dump_yaml(value, init)
             manifest = side / 'run_manifest.json'
             if manifest.is_file():
                 # Inventory is local to the optional evidence directory.
                 value = json.loads(manifest.read_text())
+                formal_paths = {prepared / relative for relative in main_relatives}
                 value['files'] = [{'path': p.relative_to(side).as_posix(), 'size_bytes': p.stat().st_size, 'sha256': file_sha256(p), 'schema_version': '1.0.0'}
-                                  for p in side.rglob('*') if p.is_file() and p != manifest]
+                                  for p in side.rglob('*') if p.is_file() and p != manifest and p not in formal_paths]
                 value['directories'] = [p.relative_to(side).as_posix() for p in side.rglob('*') if p.is_dir()]
                 value['delivery_files'] = [
                     {
@@ -442,12 +537,12 @@ def publish(stage, output, name, options, force=False, failed=False):
                         'sha256': file_sha256(p),
                         'schema_version': '1.0.0',
                     }
-                    for p in sorted(prepared.iterdir()) if p.is_file()
+                    for p in sorted(prepared / relative for relative in main_relatives)
                 ]
                 manifest.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
             entries = sorted(p.relative_to(side).as_posix() for p in side.rglob('*'))
             (side / '.inventory.json').write_text(json.dumps(entries, indent=2) + '\n')
-        existing = _check_owned(output, name, force)
+        existing = _check_owned(output, name, force, layout)
         for path in existing:
             if path.is_dir():
                 shutil.rmtree(path)
@@ -460,6 +555,9 @@ def publish(stage, output, name, options, force=False, failed=False):
 
 def run_delivery(prefix, config, output_dir, expected_job, force, overrides):
     from .task import TaskError, load_task, resolve_task_path, _run_task_staged
+    run_overrides = dict(overrides)
+    layout = _validate_layout(
+        run_overrides.pop('_delivery_layout', FLAT_LAYOUT))
     task = load_task(config, expected_job)
     output = Path(output_dir).expanduser().resolve()
     dataset = resolve_task_path(task, task['dataset']['path'])
@@ -468,20 +566,20 @@ def run_delivery(prefix, config, output_dir, expected_job, force, overrides):
     discover_camera_result(task, output)
     rs_solver_backend = overrides.get('_rs_solver_backend', 'system')
     name = result_name(task, rs_solver_backend)
-    _check_owned(output, name, force)
-    inputs = [Path(config).resolve(), *([Path(overrides['initialization']).resolve()] if overrides.get('initialization') else [])]
+    _check_owned(output, name, force, layout)
+    inputs = [Path(config).resolve(), *([Path(run_overrides['initialization']).resolve()] if run_overrides.get('initialization') else [])]
     for block in [task.get('target'), task.get('camera_calibration'), task.get('initialization'), *task.get('imus', [])]:
         value = block.get('path') if isinstance(block, dict) else block
         if value:
             source = resolve_task_path(task, value)
             inputs.append(source)
-    replaced = {output / (name + suffix) for suffix in ('.yaml', '.report.html', '.report.pdf', '.results.txt')}
+    delivery_paths = _delivery_paths(output, name, layout)
+    replaced = {delivery_paths[key] for key in ('result', 'html', 'pdf', 'text')}
     for source in inputs:
         if source in replaced or output / name in source.parents:
             raise TaskError('delivery would overwrite its input: {}'.format(source))
     with tempfile.TemporaryDirectory(prefix='kalibr-delivery-') as temporary:
         stage = Path(temporary) / 'run'
-        run_overrides = dict(overrides)
         if run_overrides.get('timing_json'):
             run_overrides['timing_json'] = str(stage / 'timing.json')
         try:
@@ -494,15 +592,17 @@ def run_delivery(prefix, config, output_dir, expected_job, force, overrides):
                 while (output / failed_name).exists() or (output / failed_name).is_symlink():
                     failed_name = name + '_failed_' + uuid4().hex[:12]
                 try:
-                    publish(stage, output, failed_name, task['output'], False, failed=True)
+                    publish(
+                        stage, output, failed_name, task['output'], False,
+                        failed=True, layout=layout)
                 except Exception as diagnostic_error:
                     import sys
                     print('Could not preserve failure diagnostics: {}'.format(diagnostic_error), file=sys.stderr)
             raise
-        published = publish(stage, output, name, task['output'], force)
-        print('[kalibr] result={}'.format(output / (name + '.yaml')))
-        print('[kalibr] report_html={}'.format(
-            output / (name + '.report.html')))
-        print('[kalibr] report_pdf={}'.format(
-            output / (name + '.report.pdf')))
+        published = publish(
+            stage, output, name, task['output'], force, layout=layout)
+        paths = _delivery_paths(output, name, layout)
+        print('[kalibr] result={}'.format(paths['result']))
+        print('[kalibr] report_html={}'.format(paths['html']))
+        print('[kalibr] report_pdf={}'.format(paths['pdf']))
         return published

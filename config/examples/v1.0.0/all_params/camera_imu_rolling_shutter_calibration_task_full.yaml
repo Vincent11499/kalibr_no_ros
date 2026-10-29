@@ -61,8 +61,8 @@ output: # 默认交付按新job及传感器ID命名的结果YAML与HTML/PDF。
   evaluation_pairing_tolerance_s: 0.0002 # 默认0.0002 s；>=0，仅用于输出配对。
   visualizations: # 图片为原图的光学校正，不能标为消除滚动快门后的图像。
     enabled: false # 默认false；按需开启。
-    max_frames_per_camera: 30 # 默认30；可视化上限，不限制统计总体。
-    max_pairs: 30 # 默认30；双目可视化上限。
+    max_frames_per_camera: 20 # 默认20；可视化上限，不限制统计总体。
+    max_pairs: 20 # 默认20；双目可视化上限。
     sampling: uniform # 默认且当前唯一支持uniform；确定性均匀抽样。
     undistortion:
       enabled: true # 默认true；父级enabled=true时生成每目独立普通光学去畸变图，不补偿逐行运动。

@@ -72,8 +72,8 @@ def validate_output_options(options=None):
     result["visualizations"] = {"enabled": visual.get("enabled", False), "sampling": "uniform"}
     if visual.get("sampling", "uniform") != "uniform":
         raise ReportingError("visualizations.sampling must be uniform")
-    for key in ("max_frames_per_camera", "max_pairs"):
-        value = visual.get(key, 30)
+    for key, default in (("max_frames_per_camera", 20), ("max_pairs", 20)):
+        value = visual.get(key, default)
         if type(value) is not int or value < 1:
             raise ReportingError("visualizations.{} must be a positive integer".format(key))
         result["visualizations"][key] = value
@@ -537,7 +537,7 @@ def _camera_metrics(camera):
     for field in (
             "movement_residual_mm", "effective_pairs",
             "platform_second_first_ratio", "camera_second_first_ratio",
-            "reflection_corrected", "pitch"):
+            "reflection_corrected", "pitch", "rotation_left_correction"):
         if field in camera:
             result[field] = camera[field]
     shift = camera.get("timeshift_cam_imu_s", camera.get("timeshift_cam_imu"))

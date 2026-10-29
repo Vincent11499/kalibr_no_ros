@@ -4,7 +4,7 @@
 
 | 文档 | 内容 |
 |---|---|
-| [机器级一键标定](MACHINE_CALIBRATION_WORKFLOW_ZH.md) | 产线主入口、分阶段续跑、数据发现、结果复用与 revision 规则 |
+| [机器级一键标定](MACHINE_CALIBRATION_WORKFLOW_ZH.md) | 产线主入口、标定批次目录、分阶段续跑、数据发现与结果复用规则 |
 | [产线标定 SOP](CALIBRATION_SOP_ZH.md) | 采集、机器入口、结果检查、评估、放行与封存 |
 | [使用指南](USER_GUIDE_ZH.md) | 任务配置、目录数据集、运行与转换 |
 | [输入与输出说明](DATASET_WORKFLOW_ZH.md) | 相机 ID、四份配置依赖、输出各文件含义 |
@@ -30,7 +30,7 @@
 before/after 完成后可用同一工具的 `diagnose-extrinsics` 在三组 after 测试集上固定参数
 验证 K/D、相对旋转与 cam0 坐标系物理基线分量的贡献；该诊断不重新优化标定参数。
 
-产线常规运行使用 `kalibr-cedarobot machine --config user.yaml`，由程序依次完成或复用
+产线常规运行使用 `kalibr-cedarobot machine`（默认读取安装根的 `config/user.yaml`），由程序依次完成或复用
 双目、双目 Camera–IMU、双目 BaseLink，以及独立单目与单目 BaseLink 阶段，见
 [机器级一键标定](MACHINE_CALIBRATION_WORKFLOW_ZH.md)。
 研发维护时再按[工程 README](../README.md)构建 `release`、复制

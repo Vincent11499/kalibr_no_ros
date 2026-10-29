@@ -1,9 +1,9 @@
 # 数据输入、配置依赖与输出说明
 
-产线机器目录优先使用
-[`kalibr-cedarobot machine --config user.yaml`](MACHINE_CALIBRATION_WORKFLOW_ZH.md)。该入口
-根据直接子目录名称区分 `stereo_*`、`stereo_imu_*`、`stereo_base_link_*`
-（也接受 `stereo_baselink_*`），以及独立单目模组的 `usb_*`、`usb_baselink_*`，
+产线机器的单次标定批次目录优先使用
+[`kalibr-cedarobot machine`](MACHINE_CALIBRATION_WORKFLOW_ZH.md)。该入口默认读取安装根的 `config/user.yaml`，
+根据直接子目录名称严格区分 `stereo_*`、`stereo_imu_*`、`stereo_base_link_*`，
+以及独立单目模组的 `usb_*`、`usb_base_link_*`，
 忽略独立测试集，但数据流的
 真实映射仍以每个目录内的 `dataset.yaml` 为准。本文件其余部分说明底层数据与输出契约。
 
@@ -106,9 +106,9 @@ Kalibr 的目录读取、`validate` 和标定前输入校验只读取公共 `dat
 |---|---|
 | `stereo_YYMMDD_hhmm` | 双目相机标定候选 |
 | `stereo_imu_YYMMDD_hhmm` | 双目＋IMU 标定候选 |
-| `stereo_base_link_YYMMDD_hhmm` / `stereo_baselink_YYMMDD_hhmm` | 可选 Camera–BaseLink；需在 `user.yaml` 明确配置位置比例与每目平移 |
+| `stereo_base_link_YYMMDD_HHMM` | 可选 Camera–BaseLink；需在 `user.yaml` 明确配置位置比例与每目平移 |
 | `usb_YYMMDD_HHMM` | 独立单目模组内参候选，仅局部 `cam0`，无 IMU |
-| `usb_baselink_YYMMDD_HHMM` | 单目 BaseLink；需 `mono_camera_baselink` 配置，仅引用本模组单目结果 |
+| `usb_base_link_YYMMDD_HHMM` | 单目 BaseLink；需 `mono_camera_baselink` 配置，仅引用本模组单目结果 |
 | `stereo_test_YYMMDD_hhmm` | 独立验证数据，不参与自动标定 |
 
 独立单目 `cam0` 与双目左相机 `cam0` 不表示同一传感器；两模组有独立数据、task、结果
@@ -121,31 +121,38 @@ Kalibr 的目录读取、`validate` 和标定前输入校验只读取公共 `dat
 多个任务可以使用同一个 `--output-dir`。默认文件名由任务类型与 task 中按顺序排列的
 真实传感器 ID 组成；右目单目标定可以只写 `cameras: [{id: cam1, model: pinhole-equi}]`。
 
-当前按设备目录组织输入与输出，结构如下；具体中间文件可继续细化：
+机器入口按设备目录组织输入；任务目录直接使用数据集名：
 
 ```text
-<设备目录>/
+EVT312-02/
   stereo_YYMMDD_hhmm/             双目输入数据
   stereo_imu_YYMMDD_hhmm/         双目＋IMU 输入数据
-  stereo_base_link_YYMMDD_hhmm/   双目 BaseLink 平移数据
+  stereo_base_link_YYMMDD_HHMM/   双目 BaseLink 平移数据
   usb_YYMMDD_HHMM/               独立单目内参数据
-  usb_baselink_YYMMDD_HHMM/      独立单目 BaseLink 平移数据
+  usb_base_link_YYMMDD_HHMM/      独立单目 BaseLink 平移数据
   result/
-    <任务名称>.yaml               最终标定参数
-    <任务名称>.report.html        HTML 报告
-    <任务名称>.report.pdf         PDF 报告
-    <任务名称>/                  该任务启用保存的中间结果
+    <数据集名>.report.html        HTML 报告
+    <数据集名>.report.pdf         PDF 报告
+    <数据集名>/
+      <数据集名>.yaml             最终标定参数
+      .inventory.json
       observations/
       visualizations/
       metrics.json
       ...
+    .kalibr-cedarobot/            工作流状态、锁和生成 task
+    calib_params/
+      mono_camera/usb_mono_calib.yaml
+      vision/stereo_imu_calib.yaml
 ```
 
 机器入口自动使用 `<设备目录>/result`；直接使用底层 CLI 时才需要显式传入
-`--output-dir <设备目录>/result`。各标定任务使用同一个结果根目录。
-启用的观测、可视化、指标及诊断直接归入任务同名子目录，无需在工程内另存一份
-`result/<设备名>/`。目录建立和文件映射由 `delivery.py` 负责；`config/`、`execution/`
-等额外归档若由外层流程保存，也归入对应任务子目录，不代表 CLI 默认都会生成。
+`--output-dir <设备目录>/result`。machine workflow 把正式 YAML 和启用的观测、
+可视化、指标及诊断归入数据集同名目录，HTML/PDF 报告放在 `result/` 根目录。普通
+`kalibr-noros` CLI 为兼容现有研发脚本，
+仍把正式 YAML/HTML/PDF 平铺在 `--output-dir`，诊断放入同名子目录；两种布局不会混淆。
+目录建立和文件映射由 `delivery.py` 负责；`config/`、`execution/` 等额外归档若由外层
+流程保存，也归入对应任务子目录，不代表 CLI 默认都会生成。
 
 `--output-dir` 当前表示最终结果目录，不会自动附加 `result`；设备根目录包含输入数据，
 应传其下的 `result/`，以满足输入与输出目录的隔离检查。
@@ -163,7 +170,8 @@ Kalibr 的目录读取、`validate` 和标定前输入校验只读取公共 `dat
 | 双目 + imu0 | camera_imu_calibration_cam0_cam1_imu0.yaml |
 | RS 双目 + imu0 | camera_imu_rolling_shutter_calibration_cam0_cam1_imu0.yaml |
 
-默认只交付 `<名称>.yaml`、`<名称>.report.html` 和 `<名称>.report.pdf`。可以用
+普通 CLI 默认只交付 `<名称>.yaml`、`<名称>.report.html` 和 `<名称>.report.pdf`；机器
+入口把 YAML 放在 `<名称>/<名称>.yaml`，同名 HTML/PDF 报告仍放在 `result/` 根目录。可以用
 `output.name` 显式覆盖名称，例如不同模型使用 `stereo_equi`、`stereo_radtan8`；只允许
 字母、数字、下划线和连字符，最多 160 个字符。相同名称拒绝覆盖，只有显式 `--force`
 才替换该任务的文件，其他任务和未登记的用户文件不受影响。
@@ -227,7 +235,16 @@ kalibr-noros evaluate --run output/camera_calibration_cam0_cam1.yaml --output-di
 
 启用 `archive_observations` 后可以重算指标；仅启用 `save_metrics` 时只能重做摘要判定，
 不能改变角点配对或校正参数。两者都未保存时明确提示缺少证据。证据子目录中的
-`.inventory.json` 仅用于检查安全覆盖；不要手工添加文件后强制覆盖整个子目录。
+`.inventory.json` 仅用于检查安全覆盖；机器任务目录中的正式 YAML 也属于清单管理范围。
+不要手工添加文件后强制覆盖整个子目录。
+
+机器入口的 `calib_params` 按已完成模组分别生成 `vision/stereo_imu_calib.yaml` 和
+`mono_camera/usb_mono_calib.yaml`，不生成 `stereo_calib.yaml`。双目标定提供两目 K/D、
+RMS、相邻外参、alignment 和双目校正矩阵，双目 BaseLink 更新
+`camera.cam0.T_base_cam/pitch`，Camera–IMU 更新 bias、`T_imu_cam`、时移及 RS 行延迟。
+独立单目更新 usb 的 K/D、分辨率和 RMS，单目 BaseLink 更新其 `T_base_cam/pitch`。
+尚未完成的下游阶段使用明确的单位阵/零默认值，已完成阶段若证据损坏则拒绝更新。完整字段和单位见
+[机器级一键标定](MACHINE_CALIBRATION_WORKFLOW_ZH.md#51-设备参数文件)。
 
 `evaluate` 不读取一组新的测试图像。要用独立目录测试集固定验证已有双目 K/D/T，使用
 `kalibr-noros verify cameras`；它输出每目 RMS、双目综合 RMS、Alignment RMS、基线、
@@ -237,12 +254,12 @@ kalibr-noros evaluate --run output/camera_calibration_cam0_cam1.yaml --output-di
 
 | 文件 | 含义与使用场景 |
 |---|---|
-| <名称>.yaml | 最终数值参数；双目包含内参、畸变和相机间变换，Camera–IMU 另含互逆的 T_cam_imu/T_imu_cam、时间偏移和 IMU 参数；下游读取此文件 |
+| <名称>.yaml | 最终数值参数；双目包含内参、畸变和相机间变换，Camera–IMU 另含互逆的 T_cam_imu/T_imu_cam、时间偏移和 IMU 参数；机器入口中实际路径为 `<名称>/<名称>.yaml` |
 | <名称>.results.txt | 人可读的标定结果和误差摘要 |
 | <名称>/metrics.json | 可量化的重投影、双目校正、IMU 残差、bias 及可用优化状态；包含总体和逐帧统计 |
 | <名称>/assessment.json | 根据显式规则判定 pass/fail/not_evaluated；参考评级独立保存，不能等同生产验收 |
-| <名称>.report.html | 浏览器查看的汇总、指标及图像链接；移动时保留相邻文件夹 |
-| <名称>.report.pdf | 可分享的 PDF 结果报告 |
+| <名称>.report.html | 浏览器查看的汇总、指标及图像链接；机器入口中位于 `result/` 根目录，链接同名任务目录中的 YAML 和证据 |
+| <名称>.report.pdf | 可分享的 PDF 结果报告；机器入口中位于 `result/` 根目录 |
 | <名称>/validation.json | 本次标定前的输入结构、分辨率和时间覆盖校验；不是标定精度验收 |
 | <名称>/task_resolved.yaml | 本次任务快照，含解析后的路径和执行配置 |
 | <名称>/run_manifest.json | 运行状态、软件版本、输入文档哈希和受管输出清单，用于追溯与安全覆盖 |
@@ -299,7 +316,7 @@ radtan 系列的角点反畸变采用最多 100 次迭代、收敛容差 1e-12�
 时才生效。`crop` 默认 false；这里的裁剪是通过新相机矩阵缩放视场，输出宽高不变，且
 只影响 `camX_dist` 图，不影响 Alignment RMS、双目对齐图或 OpenCV 导出。
 
-默认展示每相机最多 30 帧、最多 30 对，均匀抽样。展示数量不限制标定或指标的计算
+默认展示每相机最多 20 帧、最多 20 对，均匀抽样。展示数量不限制标定或指标的计算
 总体，文件名索引也不是“第 N 张入选图”。Camera–IMU 下图像 RMS 还受连续时间
 位姿拟合约束影响，不必等于第一阶段相机标定的 RMS。
 

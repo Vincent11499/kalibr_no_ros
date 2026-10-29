@@ -23,7 +23,6 @@ _POSITION_STEM = re.compile(
     r"(?P<y>[+-]?(?:\d+(?:\.\d*)?|\.\d+))_"
     r"(?P<z>[+-]?(?:\d+(?:\.\d*)?|\.\d+))")
 
-
 def _all_pair_indices(count):
     return np.triu_indices(count, k=1)
 
@@ -83,6 +82,30 @@ def optical_axis_pitch_deg(rotation):
     """Unsigned camera +Z optical-axis angle above the base horizontal plane."""
     axis = _optical_axis(rotation)
     return math.degrees(math.asin(np.clip(abs(axis[2]), 0.0, 1.0)))
+
+
+def _correct_output_rotation(rotation, correction):
+    """Left-multiply a fixed base-frame correction onto a solved rotation."""
+    if (not isinstance(correction, list) or len(correction) != 3
+            or any(not isinstance(row, list) or len(row) != 3
+                   for row in correction)
+            or any(type(value) not in (int, float)
+                   or not math.isfinite(value)
+                   for row in correction for value in row)):
+        raise CameraBaselinkError(
+            "base_link.rotation_left_correction must be a finite 3x3 matrix")
+    correction = np.asarray(correction, dtype=float)
+    if (not np.allclose(correction.T @ correction, np.eye(3),
+                        atol=1e-6, rtol=0.0)
+            or not math.isclose(float(np.linalg.det(correction)), 1.0,
+                                abs_tol=1e-6)):
+        raise CameraBaselinkError(
+            "base_link.rotation_left_correction must belong to SO(3)")
+    rotation = np.asarray(rotation, dtype=float)
+    if rotation.shape != (3, 3) or not np.all(np.isfinite(rotation)):
+        raise CameraBaselinkError(
+            "solved camera/base_link rotation must be a finite 3x3 matrix")
+    return correction @ rotation
 
 
 def relative_rotation_angles_rad(camera_rotations):
@@ -362,6 +385,12 @@ def _solve(task, resolved_task, target_path):
 
             rotation, diagnostics = solve_direct_rotation(
                 positions, translations, rank_ratio_min=ratio_min)
+            correction = task["base_link"].get(
+                "rotation_left_correction", np.eye(3).tolist())
+            rotation = _correct_output_rotation(rotation, correction)
+            diagnostics["pitch"] = optical_axis_pitch_deg(rotation)
+            diagnostics["rotation_left_correction"] = np.asarray(
+                correction, dtype=float).tolist()
             artifact["relative_rotation_pairs"] = _relative_rotation_pairs(
                 frame_names, rotations)
             translation = np.asarray(
@@ -416,6 +445,8 @@ def _resolved_task(task, dataset_path, overrides):
         value = block.get("path") if isinstance(block, dict) else block
         resolved[key] = {"path": str(resolve_task_path(task, value))}
     resolved["base_link"].setdefault("frame_id", "base_link")
+    resolved["base_link"].setdefault(
+        "rotation_left_correction", np.eye(3).tolist())
     resolved["execution"] = resolve_execution(task.get("execution"), overrides)
     return resolved
 
@@ -483,10 +514,16 @@ def _run_staged(config, stage, task, overrides):
 
 def run_camera_baselink(config, output_dir, force=False, **overrides):
     """Run privately and publish one named camera/base_link delivery."""
-    from .delivery import _check_owned, publish, result_name
+    from .delivery import (
+        FLAT_LAYOUT, _check_owned, _delivery_paths, _validate_layout,
+        publish, result_name,
+    )
     from .task import TaskError, load_task, resolve_task_path
 
     task = load_task(config, expected_job=CAMERA_BASELINK_JOB)
+    run_overrides = dict(overrides)
+    layout = _validate_layout(
+        run_overrides.pop("_delivery_layout", FLAT_LAYOUT))
     output = Path(output_dir).expanduser().resolve()
     dataset = resolve_task_path(task, task["dataset"]["path"])
     if (output in {Path("/").resolve(), Path.home().resolve(), Path.cwd().resolve()}
@@ -495,19 +532,19 @@ def run_camera_baselink(config, output_dir, force=False, **overrides):
         raise TaskError(
             "output directory must be separate from the input dataset and workspace root")
     name = result_name(task)
-    _check_owned(output, name, force)
+    _check_owned(output, name, force, layout)
     inputs = [Path(config).expanduser().resolve()]
     for block in (task["target"], task["camera_calibration"]):
         value = block.get("path") if isinstance(block, dict) else block
         inputs.append(resolve_task_path(task, value))
+    paths = _delivery_paths(output, name, layout)
     for source in inputs:
-        if (source == output / (name + ".yaml")
+        if (source == paths["result"]
                 or output / name in source.parents):
             raise TaskError("delivery would overwrite its input: {}".format(source))
 
     with tempfile.TemporaryDirectory(prefix="kalibr-baselink-delivery-") as folder:
         stage = Path(folder) / "run"
-        run_overrides = dict(overrides)
         if run_overrides.get("timing_json"):
             run_overrides["timing_json"] = str(stage / "timing.json")
         try:
@@ -522,7 +559,7 @@ def run_camera_baselink(config, output_dir, force=False, **overrides):
                 try:
                     publish(
                         stage, output, failed_name, task["output"],
-                        failed=True)
+                        failed=True, layout=layout)
                 except Exception as diagnostic_error:
                     import sys
                     print(
@@ -530,10 +567,11 @@ def run_camera_baselink(config, output_dir, force=False, **overrides):
                             diagnostic_error),
                         file=sys.stderr)
             raise
-        published = publish(stage, output, name, task["output"], force=force)
-        print("[kalibr] result={}".format(output / (name + ".yaml")))
-        print("[kalibr] report_html={}".format(
-            output / (name + ".report.html")))
-        print("[kalibr] report_pdf={}".format(
-            output / (name + ".report.pdf")))
+        published = publish(
+            stage, output, name, task["output"], force=force,
+            layout=layout)
+        paths = _delivery_paths(output, name, layout)
+        print("[kalibr] result={}".format(paths["result"]))
+        print("[kalibr] report_html={}".format(paths["html"]))
+        print("[kalibr] report_pdf={}".format(paths["pdf"]))
         return published

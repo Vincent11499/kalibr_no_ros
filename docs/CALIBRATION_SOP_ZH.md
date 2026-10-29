@@ -41,19 +41,19 @@ flowchart TD
 
 仅需双目标定的工单不执行 IMU 采集和 IMU 联合标定。左右目分别做单目分析见第 8.4 节。
 若机器还有独立单目模组，另外采集 `usb_YYMMDD_HHMM`，清单只含其局部 `cam0`；
-仍使用相同 AprilGrid，在同一机器根目录运行同一个 `machine` 命令即可标定其 K/D。
-其 BaseLink 数据放入 `usb_baselink_YYMMDD_HHMM`，维护人员
+仍使用相同 AprilGrid，在同一标定批次目录运行同一个 `machine` 命令即可标定其 K/D。
+其 BaseLink 数据放入 `usb_base_link_YYMMDD_HHMM`，维护人员
 配置 `mono_camera_baselink`，程序仅复用独立单目结果，不借用双目左相机参数。
 
 工单若另需 Camera–BaseLink：先完成双目 K/D 标定，再保持平台姿态不变、标定板固定在
 环境中，仅平移相机平台并采集至少两个独立方向的运动。按位置命名图像
-`<x>_<y>_<z>.<ext>`，整理为 `stereo_base_link_YYMMDD_hhmm`（或 `stereo_baselink_*`）
-目录数据集，放在同一机器根目录；开发者在 `user.yaml` 增加 `camera_baselink` 的
+`<x>_<y>_<z>.<ext>`，整理为 `stereo_base_link_YYMMDD_HHMM`
+目录数据集，放在同一标定批次目录；开发者在 `user.yaml` 增加 `camera_baselink` 的
 位置比例和每目实测平移。仍运行同一 `machine` 命令，无需 IMU 数据；它只估计旋转，
 不估计平移。此处不新增板端采集命令，也不改现有采集硬件配置；详细目录、配置和输出见
 [机器级一键标定](MACHINE_CALIBRATION_WORKFLOW_ZH.md)。
 
-常规产线标定只执行 `kalibr-cedarobot machine --config user.yaml`。本文第 7、8 节保留
+常规产线标定只执行 `kalibr-cedarobot machine`，默认读取安装根的 `config/user.yaml`。本文第 7、8 节保留
 底层 task 与 `kalibr-noros` 命令，供维护人员排障和单阶段复现，不要求操作员逐项配置。
 
 ## 2. 开工前核对
@@ -254,10 +254,10 @@ CALIB_ROOT=/home/gs/kalibr_cedarobo/branch
 - 只有 `stereo_*` 时，完成双目后显示 `waiting_for_dataset`，退出成功；不要为了等 IMU
   数据一直保持进程运行。
 - 后续复制 `stereo_imu_*` 后重复同一命令，程序校验并复用双目结果，继续 Camera–IMU。
-- 独立单目模组使用 `usb_*`，单目 BaseLink 使用 `usb_baselink_*`；仍运行同一命令。
+- 独立单目模组使用 `usb_*`，单目 BaseLink 使用 `usb_base_link_*`；仍运行同一命令。
   单目 BaseLink 只复用独立单目标定结果，缺少双目或 IMU 数据不会阻止它。
 - 同类目录超过一个时不会猜测，联系维护人员在 `user.yaml` 指定目录。
-- 已完成且来源一致时不会重新标定；来源变化时不会覆盖，联系维护人员增加 `revision`。
+- 已完成且来源一致时不会重新标定；重新采集或来源变化时新建批次目录，并由维护人员修改 `user.yaml.machine_dir`。
 - 普通或滚动快门 Camera–IMU 由 `user.yaml` 明确选择，操作员不得根据一次 RMS 切换。
 
 正式参数和报告位于 `DEVICE_DIR/result/`；私有状态和生成 task 位于
@@ -413,8 +413,8 @@ output:
   evaluation_pairing_tolerance_s: 0.0001
   visualizations:
     enabled: true
-    max_frames_per_camera: 60
-    max_pairs: 60
+    max_frames_per_camera: 20
+    max_pairs: 20
     sampling: uniform
   assessment:
     reference_grading: true
@@ -483,7 +483,7 @@ output:
 输出必须是 `--output-dir "$DEVICE_DIR/result"`，程序不会自动补上 `result`。
 不能把输入会话目录或其父级设备根目录直接当作输出目录。
 
-失败时先记下终端错误；启用本 SOP 的诊断后检查 `result/<任务名称>_failed/` 中实际生成的
+失败时先记下终端错误；启用本 SOP 的诊断后检查 `result/<数据集名>_failed/` 中实际生成的
 日志和运行状态。部分早期失败没有求解日志。保留失败证据，不能只保留“最好的一次”结果。
 
 ### 8.4 可选：左右单目标定
@@ -495,25 +495,25 @@ output:
 ## 9. 在哪里看输出、按什么顺序看
 
 Windows 中打开：`Q:\File\machine_data\kalibr_no_ros\mechine-00\result`。
-机器入口按数据集、模式和 revision 命名，见
+机器入口在本批次 `result/` 中直接按数据集名命名，不追加 revision，见
 [机器级一键标定工作流](MACHINE_CALIBRATION_WORKFLOW_ZH.md#5-输出状态与续跑)。
-直接运行底层 task 时按第 7.5 节命名。每个任务都有同名前缀：
+直接运行底层 task 时按第 7.5 节命名。机器入口各文件位置如下：
 
 | 位置 | 用途 |
 |---|---|
-| `<任务名称>.yaml` | 正式标定参数，给下游软件使用 |
-| `<任务名称>.report.html` | 浏览器查看数值、图形和原图／极线图；分享时保留同名子目录 |
-| `<任务名称>.report.pdf` | 图像内嵌的报告，便于发送与归档 |
-| `<任务名称>/metrics.json` | 总体／逐帧重投影、覆盖、配对、IMU 残差等数值 |
-| `<任务名称>/assessment.json` | 显式规则结果与独立的参考评级 |
-| `<任务名称>/observations/` | 使用了哪些帧、角点、预测、残差和时间；离线重评估证据 |
-| `<任务名称>/visualizations/cam0_det/`、`cam1_det/` | `corners_*.jpg`，检查角点位置；绿色圆为使用点，蓝色线段连接观测与预测 |
-| `<任务名称>/visualizations/cam0_dist/`、`cam1_dist/` | 各目独立去畸变图；是否缩放视场由 task 的 `crop` 控制 |
-| `<任务名称>/visualizations/cam0_cam1/` | 去畸变并极线校正后的左右拼接图；左上角显示该图对 Alignment RMS 和角点数 |
-| `<任务名称>/validation.json` | 标定输入校验；与采集会话的 `meta/validation.json` 不是同一份检查 |
-| `<任务名称>/task_resolved.yaml`、`run_manifest.json` | 本次实际配置、输入来源、软件信息和文件清单 |
-| `<任务名称>/observability.yaml` | 按任务生成的可观性诊断；滚动快门任务执行此分析，普通无初值任务不保证生成 |
-| `<任务名称>/stdout.log`、`stderr.log` | 排障日志；stderr 中有内容不一定代表任务失败，要结合实际异常及运行状态 |
+| `<数据集名>/<数据集名>.yaml` | 正式标定参数，给下游软件使用 |
+| `<数据集名>.report.html` | 浏览器查看数值、图形和原图／极线图；分享时保留同名任务目录 |
+| `<数据集名>.report.pdf` | 图像内嵌的报告，便于发送与归档 |
+| `<数据集名>/metrics.json` | 总体／逐帧重投影、覆盖、配对、IMU 残差等数值 |
+| `<数据集名>/assessment.json` | 显式规则结果与独立的参考评级 |
+| `<数据集名>/observations/` | 使用了哪些帧、角点、预测、残差和时间；离线重评估证据 |
+| `<数据集名>/visualizations/cam0_det/`、`cam1_det/` | `corners_*.jpg`，检查角点位置；绿色圆为使用点，蓝色线段连接观测与预测 |
+| `<数据集名>/visualizations/cam0_dist/`、`cam1_dist/` | 各目独立去畸变图；是否缩放视场由 task 的 `crop` 控制 |
+| `<数据集名>/visualizations/cam0_cam1/` | 去畸变并极线校正后的左右拼接图；左上角显示该图对 Alignment RMS 和角点数 |
+| `<数据集名>/validation.json` | 标定输入校验；与采集会话的 `meta/validation.json` 不是同一份检查 |
+| `<数据集名>/task_resolved.yaml`、`run_manifest.json` | 本次实际配置、输入来源、软件信息和文件清单 |
+| `<数据集名>/observability.yaml` | 按任务生成的可观性诊断；滚动快门任务执行此分析，普通无初值任务不保证生成 |
+| `<数据集名>/stdout.log`、`stderr.log` | 排障日志；stderr 中有内容不一定代表任务失败，要结合实际异常及运行状态 |
 
 子目录由程序管理，不在其中手工塞入签字表或其他文件。人工记录放到设备的独立
 `inspection/<工单号>/` 目录；保留 `.inventory.json` 等受管清单。

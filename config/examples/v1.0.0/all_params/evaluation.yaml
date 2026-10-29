@@ -18,8 +18,8 @@ output: # 只能改变后处理、可视化或判定，不改原运行目录。
   evaluation_pairing_tolerance_s: 0.0002 # 默认0.0002 s；>=0，仅Camera–IMU后处理配对。
   visualizations: # 重绘必须有归档观测及可读取原始图像。
     enabled: false # 默认false；true输出角点/残差及校正图。
-    max_frames_per_camera: 30 # 默认30；每相机均匀采样上限，正整数。
-    max_pairs: 30 # 默认30；双目图对均匀采样上限，正整数。
+    max_frames_per_camera: 20 # 默认20；每相机均匀采样上限，正整数。
+    max_pairs: 20 # 默认20；双目图对均匀采样上限，正整数。
     sampling: uniform # 默认且当前唯一支持uniform；确定性采样，不影响总体指标。
     undistortion:
       enabled: true # 默认true；父级enabled=true时生成每目独立去畸变图。

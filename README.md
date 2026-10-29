@@ -13,8 +13,16 @@ Python 3 开发环境、NumPy、SciPy、PyYAML 和 Matplotlib。依赖脚本在�
 ./tools/bootstrap_deps.sh
 cmake --preset release
 cmake --build --preset release --parallel 4
-cmake --install build/release
+python3 tools/install_runtime.py \
+  --build-dir build/release \
+  --prefix /opt/kalibr_cedarobo_v1.0.0
 ```
+
+上述命令发布可搬移的精简运行包，只含 `bin/`、`lib/`、`libexec/`、`config/`、
+根 `LICENSE` 和随私有运行库携带的 `licenses/`；不发布开发用 `include/`、`share/`。
+更新已有安装时显式增加 `--replace`，发布器会保留 `config/user.yaml` 和
+`config/mechine/` 下与新版不重名的现场新增 YAML。研发需要完整头文件安装时仍可执行
+`cmake --install build/release`，它不是产线交付结构。
 
 安装提供两个入口：产线机器级工作流使用
 `install/release/bin/kalibr-cedarobot`，研发维护与单任务运行使用
@@ -46,23 +54,41 @@ cmake --build --preset project-profile --target check --parallel 4
 
 ## 运行
 
-产线常规操作由开发者提供 `user.yaml`，操作员只运行：
+产线常规操作由开发者把 `user.yaml` 放到安装根的 `config/`，操作员只运行：
 
 ```bash
-kalibr-cedarobot machine --config user.yaml
+kalibr-cedarobot machine
 ```
 
-机器目录只有 `stereo_*` 时先完成双目标定并正常等待；以后加入 `stereo_imu_*` 后重复
+也可用 `--config /path/to/user.yaml` 临时覆盖默认文件。
+
+当前批次目录只有 `stereo_*` 时先完成双目标定并正常等待；以后加入 `stereo_imu_*` 后重复
 同一命令，程序复用双目结果并继续 Camera–IMU。新增可选 Camera–BaseLink 阶段：配置
 `camera_baselink` 并提供 `stereo_base_link_*` 后复用双目 K/D 求旋转，不需要 IMU 数据。
-同一机器的独立单目模组使用 `usb_*` 标定内参，使用 `usb_baselink_*` 和
+同一机器的独立单目模组使用 `usb_*` 标定内参，使用 `usb_base_link_*` 和
 `mono_camera_baselink` 配置复用单目结果求旋转；不会混用双目 `cam0`。两模组共用当前
 AprilGrid，均使用 `pinhole-equi`。
 `user.yaml` 可用 `camera.mode: rolling_shutter` 选择 RS 双目，用
 `camera_imu.recompute_extrinsics: true` 控制 Camera–IMU 联合阶段重新优化相机链外参；
 `target` 只填写安装在 `config/mechine` 下的标定板文件名stem。
-数据发现、重名处理、revision 和输出
+算法开发者也可在 `config/mechine/` 增加初始化或标定板 YAML，并在
+`config/mechine/workflow_v1.0.0/*.task.yaml` 中填写相对路径。路径以 task 所在目录为
+基准，例如根目录文件写成 `../custom_initialization.yaml`，且不能逃出
+`config/mechine/`。
+数据发现、批次目录、重名处理和输出
 位置见[机器级一键标定工作流](docs/MACHINE_CALIBRATION_WORKFLOW_ZH.md)。
+`datasets` 可省略或部分填写：未填写的双目、Camera–IMU、双目 BaseLink、USB 单目和
+USB BaseLink 角色都从 `machine_dir` 自动选择唯一候选；填写的角色才强制使用指定目录。
+只有严格匹配 `*_YYMMDD_HHMM` 约定的直接子目录才是候选，`*_bk`、旧名和其他非规范
+目录静默跳过。重复的规范候选、缺少上游数据或 BaseLink 配置会在任何求解启动前报错。
+精度不足时可删除旧数据集或将它改为非规范名称，再加入唯一的新规范目录；工作流自动
+重跑该任务及其下游依赖，保留旧数据集结果，同名下游结果仅在新求解成功后安全替换。
+`machine_dir` 指向 `<机型>-<编号>/<批次名>`，例如 `EVT312-02/1029`；新一批数据新建
+批次目录并修改该字段，不跨批次复用。机器入口把每个任务的
+正式 YAML 和诊断写入 `result/<数据集名>/`，HTML/PDF 报告平铺在 `result/`；并在
+`result/calib_params/` 按已完成模组分别生成 `vision/stereo_imu_calib.yaml` 和
+`mono_camera/usb_mono_calib.yaml`；不再生成 `stereo_calib.yaml`。
+双目、Camera–IMU 与双目 BaseLink 更新 vision，独立单目及其 BaseLink 更新 usb 文件。
 
 下面的 `kalibr-noros` 是研发维护与单任务接口。
 
@@ -114,6 +140,8 @@ kalibr-noros convert job
 `calibrate cameras-baselink`。它读取已有相机 K/D，以图像文件名中的 `x_y_z` 平台位置
 对全部任意两帧做等权直接差分，仅估计旋转；平移在 task 中明确给出。输入和公式见
 [相机到 base_link 旋转标定](docs/CAMERA_BASELINK_CALIBRATION_ZH.md)。
+机器 workflow 写出时，双目 BaseLink 旋转固定左乘 `Rx(180°)`，USB 单目 BaseLink
+旋转固定左乘 `Ry(180°)`；配置平移保持不变。
 
 需要在新的目录测试集上固定已有双目 K/D/T 计算每目 RMS、双目综合 RMS 和
 Alignment RMS 时，使用 `kalibr-noros verify cameras`。该命令会重新检测测试图像，
@@ -147,6 +175,9 @@ Alignment RMS 时，使用 `kalibr-noros verify cameras`。该命令会重新检
 默认输出按任务与传感器 ID 命名的结果 YAML 及 HTML/PDF 报告，例如
 `camera_calibration_cam0_cam1.yaml`。每目附 RMS，外参附 alignment 误差。
 左右单目、双目和 Camera–IMU 可以共用输出目录；`output.name` 可以自定义名称。
+上述为普通 `kalibr-noros` 的兼容平铺布局；`kalibr-cedarobot machine` 使用
+`result/<数据集名>/<数据集名>.yaml` 保存结果和证据，并把同名 HTML/PDF 报告放在
+`result/` 根目录。
 `save_diagnostics`、`save_metrics`、`export_text` 默认关闭。普通 release 可通过 `output` 配置启用详细观测归档、
 角点图、双目校正图和 OpenCV 导出。阶段 `timing.json` 仅在 profile 构建且显式
 请求时生成。

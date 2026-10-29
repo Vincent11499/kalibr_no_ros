@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
 import csv
 import fcntl
@@ -17,6 +18,7 @@ import json
 import os
 import re
 import tempfile
+from zoneinfo import ZoneInfo
 
 from kalibr_bag_io.directory import DirectoryReader
 
@@ -25,7 +27,13 @@ from .rolling_shutter import (
     JOB as CAMERA_IMU_RS_JOB,
 )
 from .jobs import CAMERA_BASELINK_JOB
+from .delivery import MACHINE_LAYOUT
 from .filesystem import file_sha256
+from .machine_calib_params import (
+    build_calib_params,
+    machine_identity,
+    write_calib_param,
+)
 from .task import (
     TaskError,
     dump_yaml,
@@ -58,33 +66,55 @@ WORKFLOW_KIND = "machine_calibration_workflow"
 STATE_KIND = "machine_calibration_state"
 PROFILE_VERSION = "workflow_v1.0.0"
 CONTROL_DIRECTORY = ".kalibr-cedarobot"
-BASE_REVISION = "__base__"
 
 _DATASET_PATTERNS = {
     "stereo": re.compile(r"^stereo_\d{6}_\d{4}$"),
     "stereo_imu": re.compile(r"^stereo_imu_\d{6}_\d{4}$"),
-    "stereo_baselink": re.compile(r"^stereo_base_?link_\d{6}_\d{4}$"),
+    "stereo_baselink": re.compile(r"^stereo_base_link_\d{6}_\d{4}$"),
     "mono": re.compile(r"^usb_\d{6}_\d{4}$"),
-    "mono_baselink": re.compile(r"^usb_baselink_\d{6}_\d{4}$"),
+    "mono_baselink": re.compile(r"^usb_base_link_\d{6}_\d{4}$"),
+}
+_STAGE_ROLES = {
+    "camera": "stereo",
+    "camera_imu": "stereo_imu",
+    "camera_baselink": "stereo_baselink",
+    "mono_camera": "mono",
+    "mono_camera_baselink": "mono_baselink",
+}
+_RECALIBRATION_STAGES = {
+    "stereo": ("camera", "camera_imu", "camera_baselink"),
+    "stereo_imu": ("camera_imu",),
+    "stereo_baselink": ("camera_baselink",),
+    "mono": ("mono_camera", "mono_camera_baselink"),
+    "mono_baselink": ("mono_camera_baselink",),
 }
 _TEMPLATES = {
     "camera": "stereo_camera_calibration_task.yaml",
     "camera_rolling_shutter": (
-        "stereo_camera_rolling_shutter_calibration_task.yaml"
+        "stereo_camera_rs_calibration_task.yaml"
     ),
     "camera_baselink": "stereo_camera_baselink_calibration_task.yaml",
     "mono_camera": "mono_camera_calibration_task.yaml",
     "mono_camera_baselink": "mono_camera_baselink_calibration_task.yaml",
-    "camera_imu_standard": "camera_imu_calibration_task.yaml",
+    "camera_imu_standard": "stereo_imu_calibration_task.yaml",
     "camera_imu_rolling_shutter": (
-        "camera_imu_rolling_shutter_calibration_task.yaml"
+        "stereo_imu_rs_calibration_task.yaml"
     ),
 }
-_REVISION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")
+_BATCH_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _TARGET_STEM_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _DEFAULT_BASE_LINK = {
     "frame_id": "base_link",
     "position_scale_m": 0.01,
+}
+_RETIRED_CALIB_PARAMS = {
+    "stereo": Path("stereo_camera") / "stereo_calib.yaml",
+}
+_RENAMED_CALIB_PARAMS = {
+    "vision": (
+        Path("vision") / "vision_calib.yaml",
+        Path("vision") / "stereo_imu_calib.yaml",
+    ),
 }
 
 
@@ -145,7 +175,7 @@ def load_workflow_config(path):
     allowed = {
         "schema_version", "kind", "machine_dir", "datasets",
         "target", "camera", "camera_imu", "camera_baselink",
-        "mono_camera_baselink", "revision",
+        "mono_camera_baselink",
     }
     unknown = sorted(set(value) - allowed)
     if unknown:
@@ -165,9 +195,18 @@ def load_workflow_config(path):
     machine = Path(configured_machine).expanduser()
     if not machine.is_absolute():
         machine = config_path.parent / machine
+    if machine.is_symlink():
+        raise TaskError("machine batch directory must not be a symlink: {}".format(
+            machine))
     machine = machine.resolve()
     if not machine.is_dir():
         raise TaskError("machine_dir is not a directory: {}".format(machine))
+    if not _BATCH_NAME_PATTERN.fullmatch(machine.name):
+        raise TaskError(
+            "machine_dir batch name must match "
+            "[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+    machine_root = machine.parent
+    identity = machine_identity(machine_root)
 
     datasets = value.get("datasets", {})
     if not isinstance(datasets, dict):
@@ -256,13 +295,6 @@ def load_workflow_config(path):
         baselink["base_link"].setdefault("frame_id", "base_link")
         baselinks[key] = baselink
 
-    revision = value.get("revision")
-    if revision is not None and (
-            not isinstance(revision, str)
-            or not _REVISION_PATTERN.fullmatch(revision)):
-        raise TaskError(
-            "revision must match [A-Za-z0-9][A-Za-z0-9_-]{0,31}")
-
     canonical = {
         "schema_version": SCHEMA_VERSION,
         "kind": WORKFLOW_KIND,
@@ -275,12 +307,14 @@ def load_workflow_config(path):
             "recompute_extrinsics": recompute_extrinsics,
         },
     }
-    if revision is not None:
-        canonical["revision"] = revision
     canonical.update(baselinks)
     return {
         "config_path": config_path,
         "machine_dir": machine,
+        "machine_root": machine_root,
+        "batch_name": machine.name,
+        "machine_version": identity["machine_version"],
+        "machine_num": identity["machine_num"],
         "datasets": selected,
         "target": target,
         "camera": {"mode": camera_mode},
@@ -293,7 +327,6 @@ def load_workflow_config(path):
         "camera_imu_recompute_extrinsics": recompute_extrinsics,
         "camera_baselink": baselinks.get("camera_baselink"),
         "mono_camera_baselink": baselinks.get("mono_camera_baselink"),
-        "revision": revision,
         "config_sha256": _json_sha256(canonical),
     }
 
@@ -336,6 +369,29 @@ def discover_dataset(machine_dir, role, selected=None):
                 role, role, ", ".join(item.name for item in candidates)))
     _validate_dataset_role(candidates[0], role)
     return candidates[0]
+
+
+def _preflight_datasets(datasets, config):
+    issues = []
+    for child, parent in (
+            ("stereo_imu", "stereo"),
+            ("stereo_baselink", "stereo"),
+            ("mono_baselink", "mono")):
+        if datasets.get(child) is not None and datasets.get(parent) is None:
+            issues.append(
+                "{} dataset {} requires a {} dataset".format(
+                    child, datasets[child]["name"], parent))
+    for role, field in (
+            ("stereo_baselink", "camera_baselink"),
+            ("mono_baselink", "mono_camera_baselink")):
+        if datasets.get(role) is not None and config.get(field) is None:
+            issues.append(
+                "{} dataset {} requires {} configuration".format(
+                    role, datasets[role]["name"], field))
+    if issues:
+        raise TaskError(
+            "machine workflow dataset preflight failed:\n- "
+            + "\n- ".join(issues))
 
 
 def _safe_child(root, relative, label, *, directory=False):
@@ -442,14 +498,19 @@ def dataset_fingerprint(dataset, role):
 
 
 def _profile_directory(prefix):
-    path = (Path(prefix).resolve() / "share" / "kalibr-noros" / "config"
-            / "mechine" / PROFILE_VERSION)
+    machine_config = Path(prefix).resolve() / "config" / "mechine"
+    path = machine_config / PROFILE_VERSION
+    if machine_config.is_symlink() or path.is_symlink():
+        raise TaskError(
+            "installed machine configuration must not use symlinks: {}"
+            .format(machine_config))
     if not path.is_dir():
         raise TaskError("installed machine workflow profile is missing: {}".format(path))
     missing = [name for name in _TEMPLATES.values()
                if not (path / name).is_file()]
-    for name in ("aprilgrid.yaml", "imu.yaml",
-                 "initialization_pinhole_equi.yaml"):
+    for name in ("实验室_aprilgrid_8x10.yaml", "imu_noise.yaml",
+                 "mechine_base_param.yaml", "initialization_stereo_camera.yaml",
+                 "initialization_mono_camera.yaml"):
         if not (path / name).is_file():
             missing.append(name)
     if missing:
@@ -460,11 +521,9 @@ def _profile_directory(prefix):
 
 def _target_file(prefix, profile, target_stem):
     if target_stem is None:
-        path = Path(profile) / "aprilgrid.yaml"
-    else:
-        root = (Path(prefix).resolve() / "share" / "kalibr-noros"
-                / "config" / "mechine")
-        path = root / (target_stem + ".yaml")
+        return None
+    root = Path(prefix).resolve() / "config" / "mechine"
+    path = root / (target_stem + ".yaml")
     if path.is_symlink() or not path.is_file():
         raise TaskError(
             "installed machine calibration target is missing or not a regular file: {}"
@@ -475,16 +534,104 @@ def _target_file(prefix, profile, target_stem):
     return path.resolve()
 
 
-def _profile_provenance(profile, target):
+def _profile_relative_path(profile, path):
+    return Path(os.path.relpath(path, profile)).as_posix()
+
+
+def _profile_reference(profile, relative, label):
+    """Resolve a task-relative YAML path inside config/mechine."""
+    if not isinstance(relative, str) or not relative.strip():
+        raise TaskError("{} must be a non-empty relative path".format(label))
+    value = Path(relative)
+    if value.is_absolute():
+        raise TaskError("{} must be relative to its task template".format(label))
+    profile = Path(profile).resolve()
+    config_root = profile.parent
+    lexical = profile
+    for part in value.parts:
+        if part in {"", "."}:
+            continue
+        lexical = lexical.parent if part == ".." else lexical / part
+        try:
+            lexical.relative_to(config_root)
+        except ValueError as error:
+            raise TaskError(
+                "{} must stay inside {}".format(label, config_root)) from error
+        if lexical.is_symlink():
+            raise TaskError(
+                "machine configuration path must not contain a symlink: {}"
+                .format(lexical))
+    resolved = lexical.resolve()
+    try:
+        relative_to_root = resolved.relative_to(config_root)
+    except ValueError as error:
+        raise TaskError(
+            "{} must stay inside {}".format(label, config_root)) from error
+    current = config_root
+    for part in relative_to_root.parts:
+        current = current / part
+        if current.is_symlink():
+            raise TaskError(
+                "machine configuration path must not contain a symlink: {}"
+                .format(current))
+    if not resolved.is_file():
+        raise TaskError("{} is not a file: {}".format(label, resolved))
+    return resolved
+
+
+def _profile_dependencies(profile, target, config):
+    dependencies = {}
+
+    def add(path, stages):
+        name = _profile_relative_path(profile, path)
+        dependencies.setdefault(name, set()).update(stages)
+
+    active_templates = (
+        (_TEMPLATES[
+            "camera" if config["camera_mode"] == "standard"
+            else "camera_rolling_shutter"],
+         _RECALIBRATION_STAGES["stereo"]),
+        (_TEMPLATES["camera_imu_" + config["camera_imu_mode"]],
+         _RECALIBRATION_STAGES["stereo_imu"]),
+        (_TEMPLATES["camera_baselink"],
+         _RECALIBRATION_STAGES["stereo_baselink"]),
+        (_TEMPLATES["mono_camera"],
+         _RECALIBRATION_STAGES["mono"]),
+        (_TEMPLATES["mono_camera_baselink"],
+         _RECALIBRATION_STAGES["mono_baselink"]),
+    )
+    for template_name, stages in active_templates:
+        template_path = profile / template_name
+        add(template_path, stages)
+        task = load_yaml(template_path)
+        references = []
+        if target is None:
+            references.append(("target.path", task.get("target")))
+        references.append(("initialization.path", task.get("initialization")))
+        references.extend(
+            ("imus[{}].path".format(index), imu)
+            for index, imu in enumerate(task.get("imus", [])))
+        for label, block in references:
+            if isinstance(block, dict) and block.get("path"):
+                add(_profile_reference(
+                    profile, block["path"], label), stages)
+    return {name: [stage for stage in _STAGE_ROLES if stage in stages]
+            for name, stages in sorted(dependencies.items())}
+
+
+def _profile_provenance(profile, target, config):
     files = {}
-    for path in sorted(profile.glob("*.yaml")):
+    config_root = profile.parent
+    for path in sorted(config_root.rglob("*.yaml")):
         if path.is_symlink() or not path.is_file():
             raise TaskError("profile YAML must be a regular file: {}".format(path))
-        files[path.name] = _sha256(path)
+        files[_profile_relative_path(profile, path)] = _sha256(path)
     return {
         "version": PROFILE_VERSION,
         "files": files,
-        "target": {"name": target.name, "sha256": _sha256(target)},
+        "dependencies": _profile_dependencies(profile, target, config),
+        "target": ({"name": target.name, "sha256": _sha256(target)}
+                   if target is not None else None),
     }
 
 
@@ -493,6 +640,7 @@ def _software_provenance():
     for path in sorted({Path(__file__).resolve(),
                         Path(__file__).with_name("task.py").resolve(),
                         Path(__file__).with_name("camera_baselink.py").resolve(),
+                        Path(__file__).with_name("machine_calib_params.py").resolve(),
                         Path(__file__).with_name("delivery.py").resolve()}):
         implementation.update(path.name.encode("utf-8"))
         implementation.update(_sha256(path).encode("ascii"))
@@ -513,12 +661,12 @@ def _absolute_profile_paths(task, profile):
     for key in ("target", "initialization"):
         block = task.get(key)
         if isinstance(block, dict) and block.get("path"):
-            block["path"] = str(_safe_child(
+            block["path"] = str(_profile_reference(
                 profile, block["path"], "{}.path".format(key)))
     for index, imu in enumerate(task.get("imus", [])):
         if not isinstance(imu, dict) or not imu.get("path"):
             raise TaskError("template imus[{}].path is required".format(index))
-        imu["path"] = str(_safe_child(
+        imu["path"] = str(_profile_reference(
             profile, imu["path"], "imus[{}].path".format(index)))
 
 
@@ -582,6 +730,10 @@ def build_task(profile_dir, stage, dataset, output_name,
     if output.get("save_diagnostics") is not True:
         raise TaskError(
             "machine workflow templates must enable output.save_diagnostics")
+    if stage in {"camera", "camera_imu"} and output.get(
+            "save_metrics") is not True:
+        raise TaskError(
+            "machine workflow camera templates must enable output.save_metrics")
     if stage in {"camera_imu", "camera_baselink", "mono_camera_baselink"}:
         if camera_result is None:
             raise TaskError("camera_result is required for the {} stage".format(stage))
@@ -591,13 +743,22 @@ def build_task(profile_dir, stage, dataset, output_name,
         if camera_baselink is None:
             raise TaskError("camera_baselink configuration is required")
         task.update(deepcopy(camera_baselink))
+        task["base_link"]["rotation_left_correction"] = (
+            [[1.0, 0.0, 0.0],
+             [0.0, -1.0, 0.0],
+             [0.0, 0.0, -1.0]]
+            if stage == "camera_baselink" else
+            [[-1.0, 0.0, 0.0],
+             [0.0, 1.0, 0.0],
+             [0.0, 0.0, -1.0]])
     _absolute_profile_paths(task, profile)
-    selected_target = Path(target_path or profile / "aprilgrid.yaml").resolve()
-    if selected_target.is_symlink() or not selected_target.is_file():
-        raise TaskError(
-            "machine calibration target must be a regular file: {}".format(
-                selected_target))
-    task["target"] = {"path": str(selected_target)}
+    if target_path is not None:
+        selected_target = Path(target_path).resolve()
+        if selected_target.is_symlink() or not selected_target.is_file():
+            raise TaskError(
+                "machine calibration target must be a regular file: {}".format(
+                    selected_target))
+        task["target"] = {"path": str(selected_target)}
     if stage == "camera_imu":
         task.setdefault("calibration", {})[
             "recompute_camera_chain_extrinsics"] = recompute_extrinsics
@@ -630,23 +791,65 @@ def _resolved_task(task_path, expected_job):
 
 
 def _expected_result_paths(output, name):
+    task_output = output / name
     return {
-        "result": output / (name + ".yaml"),
+        "result": task_output / (name + ".yaml"),
         "html": output / (name + ".report.html"),
         "pdf": output / (name + ".report.pdf"),
-        "sidecar": output / name,
+        "sidecar": task_output,
     }
 
 
 def _delivery_exists(output, name):
     paths = _expected_result_paths(output, name)
-    return any(path.exists() or path.is_symlink() for path in paths.values())
+    legacy = [
+        output / (name + suffix)
+        for suffix in (".yaml", ".report.html", ".report.pdf", ".results.txt")
+    ]
+    return any(path.exists() or path.is_symlink()
+               for path in [*paths.values(), *legacy])
+
+
+def _delivery_summary(inspected):
+    sidecar = inspected["sidecar"]
+    return {
+        "result": str(inspected["result"].resolve()),
+        "files": {
+            key: _sha256(inspected[key]) for key in ("result", "html", "pdf")
+        },
+        "run_manifest_sha256": _sha256(inspected["manifest_path"]),
+        "task_resolved_sha256": _sha256(inspected["task_resolved"]),
+        "sidecar_sha256": _tree_sha256(sidecar),
+    }
+
+
+def _managed_delivery_summary(output, name):
+    from .delivery import inspect_managed_delivery
+    inspected = inspect_managed_delivery(output, name, layout=MACHINE_LAYOUT)
+    return _delivery_summary(inspected)
+
+
+def _delivery_name(output, delivery):
+    result = Path(delivery.get("result", ""))
+    name = result.parent.name
+    expected = _expected_result_paths(output, name)["result"]
+    if not name or result.resolve() != expected.resolve():
+        raise TaskError("workflow checkpoint has an invalid delivery path")
+    return name
+
+
+def _verify_previous_delivery(output, delivery):
+    name = _delivery_name(output, delivery)
+    if _managed_delivery_summary(output, name) != delivery:
+        raise TaskError(
+            "managed output changed outside the workflow: {}".format(name))
+    return name
 
 
 def _validate_delivery(output, name, expected_job, dataset_record,
                        task_path, camera_dependency=None):
     from .delivery import inspect_managed_delivery
-    inspected = inspect_managed_delivery(output, name)
+    inspected = inspect_managed_delivery(output, name, layout=MACHINE_LAYOUT)
     paths = {key: inspected[key] for key in ("result", "html", "pdf", "sidecar")}
     sidecar = paths["sidecar"]
 
@@ -698,17 +901,36 @@ def _validate_delivery(output, name, expected_job, dataset_record,
         raise TaskError("delivery dataset provenance does not match")
     if manifest.get("task_sha256") != _sha256(task_resolved_path):
         raise TaskError("delivery resolved task hash does not match its manifest")
-    if load_yaml(task_resolved_path) != _resolved_task(task_path, expected_job):
+    resolved_task = _resolved_task(task_path, expected_job)
+    if load_yaml(task_resolved_path) != resolved_task:
         raise TaskError("delivery resolved task does not match the generated task")
+
+    input_documents = manifest.get("input_documents")
+    if (not isinstance(input_documents, list)
+            or any(not isinstance(entry, dict)
+                   for entry in input_documents)):
+        raise TaskError("delivery has invalid input document provenance")
+    semantic_inputs = [
+        (role, resolved_task.get(role))
+        for role in ("target", "initialization")
+    ]
+    semantic_inputs.extend(
+        ("imu{}".format(index), block)
+        for index, block in enumerate(resolved_task.get("imus", [])))
+    for role, block in semantic_inputs:
+        if not isinstance(block, dict) or not block.get("path"):
+            continue
+        source = Path(block["path"]).resolve()
+        matches = [entry for entry in input_documents
+                   if entry.get("role") == role]
+        if (len(matches) != 1
+                or Path(str(matches[0].get("path", ""))).resolve() != source
+                or matches[0].get("document") != load_yaml(source)):
+            raise TaskError(
+                "delivery {} input document does not match".format(role))
 
     if camera_dependency is not None:
         expected_path = str(Path(camera_dependency["path"]).resolve())
-        input_documents = manifest.get("input_documents")
-        if (not isinstance(input_documents, list)
-                or any(not isinstance(entry, dict)
-                       for entry in input_documents)):
-            raise TaskError(
-                "delivery has invalid camera input document provenance")
         matches = [entry for entry in input_documents
                    if entry.get("role") == "camera_calibration"]
         if (len(matches) != 1
@@ -716,15 +938,7 @@ def _validate_delivery(output, name, expected_job, dataset_record,
                 or matches[0].get("sha256") != camera_dependency["sha256"]):
             raise TaskError("delivery references a different camera result")
 
-    return {
-        "result": str(paths["result"].resolve()),
-        "files": {
-            key: _sha256(paths[key]) for key in ("result", "html", "pdf")
-        },
-        "run_manifest_sha256": _sha256(manifest_path),
-        "task_resolved_sha256": _sha256(task_resolved_path),
-        "sidecar_sha256": _tree_sha256(sidecar),
-    }
+    return _delivery_summary(inspected)
 
 
 def _load_state(path, machine):
@@ -733,7 +947,9 @@ def _load_state(path, machine):
             "schema_version": SCHEMA_VERSION,
             "kind": STATE_KIND,
             "machine_dir": str(machine),
-            "runs": {},
+            "binding": None,
+            "stages": {},
+            "calib_params": {},
         }
     if path.is_symlink() or not path.is_file():
         raise TaskError("workflow state must be a regular file: {}".format(path))
@@ -744,27 +960,51 @@ def _load_state(path, machine):
     if (not isinstance(state, dict)
             or state.get("schema_version") != SCHEMA_VERSION
             or state.get("kind") != STATE_KIND
-            or state.get("machine_dir") != str(machine)
-            or not isinstance(state.get("runs"), dict)):
+            or state.get("machine_dir") != str(machine)):
         raise TaskError("workflow state has an incompatible schema or machine")
-    for revision, run in state["runs"].items():
-        if (revision != BASE_REVISION
-                and (not isinstance(revision, str)
-                     or not _REVISION_PATTERN.fullmatch(revision))):
-            raise TaskError("workflow state contains an invalid revision")
-        if (not isinstance(run, dict)
-                or run.get("binding") is not None
-                and not isinstance(run.get("binding"), dict)
-                or not isinstance(run.get("stages", {}), dict)
-                or any(not isinstance(stage, dict)
-                       for stage in run.get("stages", {}).values())):
-            raise TaskError("workflow state contains an invalid run record")
-        binding = run.get("binding")
-        if (isinstance(binding, dict)
-                and (not isinstance(binding.get("datasets", {}), dict)
-                     or not isinstance(binding.get("profile", {}), dict)
-                     or not isinstance(binding.get("software", {}), dict))):
-            raise TaskError("workflow state contains an invalid binding record")
+    if "runs" in state or "active_revision" in state:
+        raise TaskError(
+            "workflow state uses the retired revision layout; create a new "
+            "batch directory and update machine_dir in user.yaml")
+    binding = state.get("binding")
+    stages = state.get("stages", {})
+    calib_params = state.get("calib_params", {})
+    pending = state.get("pending_recalibration")
+    pending_valid = (
+        pending is None
+        or isinstance(pending, dict)
+        and isinstance(pending.get("target_binding"), dict)
+        and isinstance(pending.get("changed_roles"), list)
+        and all(isinstance(value, str)
+                for value in pending["changed_roles"])
+        and set(pending["changed_roles"]) <= set(_DATASET_PATTERNS)
+        and isinstance(pending.get("changed_profile_inputs", []), list)
+        and all(isinstance(value, str)
+                for value in pending.get("changed_profile_inputs", []))
+        and isinstance(pending.get("affected_stages"), list)
+        and all(isinstance(value, str)
+                for value in pending["affected_stages"])
+        and set(pending["affected_stages"]) <= set(_STAGE_ROLES)
+        and isinstance(pending.get("previous_deliveries", {}), dict)
+        and set(pending.get("previous_deliveries", {})) <= set(_STAGE_ROLES)
+        and all(isinstance(value, dict) for value in
+                pending.get("previous_deliveries", {}).values())
+    )
+    if (binding is not None and not isinstance(binding, dict)
+            or isinstance(binding, dict)
+            and (not isinstance(binding.get("datasets", {}), dict)
+                 or not isinstance(binding.get("profile", {}), dict)
+                 or not isinstance(binding.get("software", {}), dict))
+            or not isinstance(stages, dict)
+            or any(not isinstance(stage, dict) for stage in stages.values())
+            or not isinstance(calib_params, dict)
+            or any(not isinstance(value, dict)
+                   for value in calib_params.values())
+            or not pending_valid):
+        raise TaskError("workflow state contains invalid records")
+    state.setdefault("binding", None)
+    state.setdefault("stages", {})
+    state.setdefault("calib_params", {})
     return state
 
 
@@ -812,32 +1052,8 @@ def _ensure_managed_directory(path, root):
     return path
 
 
-def _output_name(dataset_name, stage, mode, revision, *,
-                 camera_mode="standard", camera_ids=None):
-    if stage == "camera":
-        name = dataset_name + (
-            "_rs_pinhole_equi" if camera_mode == "rolling_shutter"
-            else "_pinhole_equi")
-    elif stage == "mono_camera":
-        name = dataset_name + "_pinhole_equi"
-    elif stage in {"camera_baselink", "mono_camera_baselink"}:
-        suffix = "_".join(camera_ids or [])
-        name = dataset_name + "_camera_baselink"
-        if suffix:
-            name += "_" + suffix
-        name += "_pinhole_equi"
-    elif mode == "rolling_shutter":
-        name = dataset_name + "_camera_imu_rs_pinhole_equi"
-    else:
-        name = dataset_name + "_camera_imu_pinhole_equi"
-    if revision is not None:
-        name += "_rev_" + revision
-    return name
-
-
 def _binding(config, profile, software, datasets):
     return {
-        "revision": config["revision"],
         "camera_mode": config["camera_mode"],
         "camera_imu_mode": config["camera_imu_mode"],
         "camera_imu_recompute_extrinsics": config[
@@ -850,37 +1066,170 @@ def _binding(config, profile, software, datasets):
     }
 
 
+def _profile_recalibration(existing, current, binding):
+    if (not isinstance(existing, dict) or not isinstance(current, dict)
+            or existing.get("version") != current.get("version")):
+        raise TaskError(
+            "workflow profile version changed; create a new batch directory "
+            "and update machine_dir in user.yaml")
+    old_files = existing.get("files")
+    new_files = current.get("files")
+    if not isinstance(old_files, dict) or not isinstance(new_files, dict):
+        raise TaskError("workflow state contains invalid profile provenance")
+    changed = {
+        name for name in set(old_files) | set(new_files)
+        if old_files.get(name) != new_files.get(name)
+    }
+    affected = set()
+    old_dependencies = existing.get("dependencies", {})
+    new_dependencies = current.get("dependencies", {})
+    if (not isinstance(old_dependencies, dict)
+            or not isinstance(new_dependencies, dict)):
+        old_dependencies = {}
+        new_dependencies = {}
+    camera_template = _TEMPLATES[
+        "camera" if binding["camera_mode"] == "standard"
+        else "camera_rolling_shutter"]
+    imu_template = _TEMPLATES[
+        "camera_imu_" + binding["camera_imu_mode"]]
+    stage_files = {
+        camera_template: _RECALIBRATION_STAGES["stereo"],
+        "initialization_stereo_camera.yaml": _RECALIBRATION_STAGES["stereo"],
+        "initialization_mono_camera.yaml": _RECALIBRATION_STAGES["mono"],
+        imu_template: _RECALIBRATION_STAGES["stereo_imu"],
+        "imu_noise.yaml": _RECALIBRATION_STAGES["stereo_imu"],
+        _TEMPLATES["camera_baselink"]: _RECALIBRATION_STAGES[
+            "stereo_baselink"],
+        _TEMPLATES["mono_camera"]: _RECALIBRATION_STAGES["mono"],
+        _TEMPLATES["mono_camera_baselink"]: _RECALIBRATION_STAGES[
+            "mono_baselink"],
+    }
+    for name in changed:
+        affected.update(stage_files.get(name, ()))
+        affected.update(old_dependencies.get(name, ()))
+        affected.update(new_dependencies.get(name, ()))
+    if existing.get("target") != current.get("target"):
+        changed.add("@target")
+        affected.update(_STAGE_ROLES)
+    return changed, [stage for stage in _STAGE_ROLES if stage in affected]
+
+
 def _merge_binding(existing, current):
     if existing is None:
-        return current
+        return current, set(), set(), []
     for key in (
-            "revision", "camera_mode", "camera_imu_mode",
-            "camera_imu_recompute_extrinsics", "profile", "software"):
+            "camera_mode", "camera_imu_mode",
+            "camera_imu_recompute_extrinsics", "software"):
         if existing.get(key) != current.get(key):
             raise TaskError(
-                "workflow provenance changed; set a new revision in user.yaml")
+                "workflow provenance changed; create a new batch directory "
+                "and update machine_dir in user.yaml")
     merged = deepcopy(existing)
+    changed_profile, profile_stages = _profile_recalibration(
+        existing.get("profile"), current.get("profile"), current)
+    merged["profile"] = deepcopy(current["profile"])
     for key in ("camera_baselink", "mono_camera_baselink"):
         old_baselink = existing.get(key)
         new_baselink = current.get(key)
         if old_baselink is not None and old_baselink != new_baselink:
             raise TaskError(
-                "{} configuration changed; set a new revision in user.yaml".format(key))
+                "{} configuration changed; create a new batch directory "
+                "and update machine_dir in user.yaml".format(key))
         merged[key] = new_baselink
     old_datasets = existing.get("datasets", {})
     new_datasets = current.get("datasets", {})
     if not isinstance(old_datasets, dict) or not isinstance(new_datasets, dict):
         raise TaskError("workflow state contains invalid dataset provenance")
+    changed = set()
     for role in _DATASET_PATTERNS:
         old = old_datasets.get(role)
         new = new_datasets.get(role)
+        if (old is not None and not isinstance(old, dict)
+                or new is not None and not isinstance(new, dict)):
+            raise TaskError("workflow state contains invalid dataset provenance")
         if old is None:
             merged.setdefault("datasets", {})[role] = new
-        elif new is None or old != new:
+        elif new is None:
             raise TaskError(
-                "{} dataset provenance changed or disappeared; set a new revision in user.yaml".format(
-                    role))
-    return merged
+                "{} dataset disappeared; add one strictly named replacement "
+                "dataset and rerun".format(role))
+        elif old != new:
+            if (old.get("name") == new.get("name")
+                    or old.get("path") == new.get("path")):
+                raise TaskError(
+                    "{} dataset changed in place; restore it or use a new "
+                    "YYMMDD_HHMM directory name".format(role))
+            merged.setdefault("datasets", {})[role] = new
+            changed.add(role)
+    return merged, changed, changed_profile, profile_stages
+
+
+def _affected_stages(changed_roles):
+    affected = set()
+    for role in changed_roles:
+        affected.update(_RECALIBRATION_STAGES[role])
+    return [stage for stage in _STAGE_ROLES if stage in affected]
+
+
+def _start_recalibration(state, target_binding, changed_roles, datasets,
+                         output, profile_stages=(), changed_profile_inputs=()):
+    affected_set = set(_affected_stages(changed_roles)) | set(profile_stages)
+    affected = [stage for stage in _STAGE_ROLES if stage in affected_set]
+    previous = {}
+    for stage in affected:
+        target = datasets.get(_STAGE_ROLES[stage])
+        stored = state.get("stages", {}).get(stage)
+        if (target is None or not isinstance(stored, dict)
+                or stored.get("status") != "completed"):
+            continue
+        delivery = stored.get("delivery")
+        if not isinstance(delivery, dict):
+            raise TaskError(
+                "completed {} stage lacks its delivery checkpoint".format(
+                    stage))
+        if _delivery_name(output, delivery) == target["name"]:
+            _verify_previous_delivery(output, delivery)
+            previous[stage] = deepcopy(delivery)
+    return {
+        "target_binding": deepcopy(target_binding),
+        "changed_roles": sorted(changed_roles),
+        "changed_profile_inputs": sorted(changed_profile_inputs),
+        "affected_stages": affected,
+        "previous_deliveries": previous,
+    }
+
+
+def _preflight_profile_recalibration(profile, target, config, datasets,
+                                     output, affected):
+    parents = {
+        "camera_imu": "camera",
+        "camera_baselink": "camera",
+        "mono_camera_baselink": "mono_camera",
+    }
+    for stage in affected:
+        record = datasets.get(_STAGE_ROLES[stage])
+        if record is None:
+            continue
+        parent = parents.get(stage)
+        camera_result = None
+        if parent is not None:
+            parent_record = datasets.get(_STAGE_ROLES[parent])
+            if parent_record is None:
+                continue
+            parent_name = parent_record["name"]
+            camera_result = output / parent_name / (parent_name + ".yaml")
+        build_task(
+            profile, stage, record["path"], record["name"],
+            camera_result=camera_result,
+            mode=config["camera_imu_mode"],
+            camera_baselink=(
+                config.get(stage)
+                if stage in {"camera_baselink", "mono_camera_baselink"}
+                else None),
+            camera_mode=config["camera_mode"],
+            recompute_extrinsics=config[
+                "camera_imu_recompute_extrinsics"],
+            target_path=target)
 
 
 def _stage_summary(status, result=None, action=None, message=None):
@@ -901,7 +1250,8 @@ def _completed_stage(output, name, expected_job, dataset_record, task_path,
         if (stored.get("status") != "completed"
                 or stored.get("delivery") != delivery):
             raise TaskError(
-                "completed output provenance changed; set a new revision in user.yaml")
+                "completed output provenance changed; create a new batch "
+                "directory and update machine_dir in user.yaml")
     return delivery
 
 
@@ -912,58 +1262,96 @@ def _verify_stage_inputs_unchanged(dataset_record, camera_dependency=None):
     if current_dataset != dataset_record:
         raise TaskError(
             "dataset changed during calibration; keep capture files immutable "
-            "and use a new revision")
+            "and use a new batch directory")
     if camera_dependency is not None:
         current_camera_hash = _sha256(camera_dependency["path"])
         if current_camera_hash != camera_dependency["sha256"]:
             raise TaskError(
                 "camera calibration changed during downstream calibration; "
-                "use a new revision")
+                "use a new batch directory")
 
 
 def _run_stage(*, prefix, runner, output, tasks, state_path, state,
-               run_state, stage_name, task, output_name, expected_job,
-               dataset_record, camera_dependency=None):
+               stage_name, task, output_name, expected_job,
+               dataset_record, camera_dependency=None, recalibrate=False,
+               previous_delivery=None, force_recalibrate=False):
     _ensure_managed_directory(tasks, state_path.parent)
-    task_path = tasks / (output_name + ".task.yaml")
+    final_task_path = tasks / (output_name + ".task.yaml")
+    task_path = (
+        tasks / (output_name + ".pending.task.yaml")
+        if previous_delivery is not None else final_task_path)
+    if task_path.is_symlink() or final_task_path.is_symlink():
+        raise TaskError("workflow task file must not be a symlink")
     dump_yaml(task, task_path)
-    stored = run_state.setdefault("stages", {}).get(stage_name)
-    if stored is not None and stored.get("status") == "completed":
-        delivery = _completed_stage(
-            output, output_name, expected_job, dataset_record, task_path,
-            stored=stored, camera_dependency=camera_dependency)
-        return delivery, "reused"
-    if _delivery_exists(output, output_name):
-        if stored is None or stored.get("status") not in {"running", "failed"}:
-            raise TaskError(
-                "existing output has no matching workflow checkpoint; set a new revision in user.yaml")
+    stored = state.setdefault("stages", {}).get(stage_name)
+
+    existing = _delivery_exists(output, output_name)
+    if existing:
         try:
             delivery = _completed_stage(
                 output, output_name, expected_job, dataset_record, task_path,
                 camera_dependency=camera_dependency)
         except (TaskError, OSError, ValueError) as error:
-            raise TaskError(
-                "existing output cannot be safely reused; set a new revision in user.yaml: {}".format(
-                    error)) from error
-        run_state["stages"][stage_name] = {
-            "status": "completed", "delivery": delivery}
-        _atomic_json(state_path, state)
-        return delivery, "reused"
+            if previous_delivery is None:
+                raise TaskError(
+                    "existing output cannot be safely reused: {}".format(
+                        error)) from error
+            _verify_previous_delivery(output, previous_delivery)
+        else:
+            if recalibrate:
+                checkpoint_matches = (
+                    isinstance(stored, dict)
+                    and (stored.get("status") in {"running", "failed"}
+                         and stored.get("output_name") == output_name
+                         or stored.get("status") == "completed"
+                         and stored.get("delivery") == delivery)
+                )
+            else:
+                checkpoint_matches = (
+                    isinstance(stored, dict)
+                    and stored.get("status") in {
+                        "completed", "running", "failed"})
+            if not checkpoint_matches:
+                raise TaskError(
+                    "existing output has no matching workflow checkpoint; "
+                    "use a new batch directory")
+            if (not recalibrate and stored.get("status") == "completed"
+                    and stored.get("delivery") != delivery):
+                raise TaskError(
+                    "completed output provenance changed; create a new batch "
+                    "directory and update machine_dir in user.yaml")
+            if not force_recalibrate:
+                if task_path != final_task_path:
+                    os.replace(task_path, final_task_path)
+                state["stages"][stage_name] = {
+                    "status": "completed", "delivery": delivery}
+                _atomic_json(state_path, state)
+                return delivery, "reused"
+    elif previous_delivery is not None:
+        raise TaskError(
+            "managed output disappeared before recalibration: {}".format(
+                output_name))
+    elif (not recalibrate and isinstance(stored, dict)
+          and stored.get("status") == "completed"):
+        raise TaskError(
+            "completed output is missing; create a new batch directory")
 
-    run_state["stages"][stage_name] = {
-        "status": "running", "task": str(task_path),
+    state["stages"][stage_name] = {
+        "status": "running", "task": str(task_path.resolve()),
         "output_name": output_name,
     }
     _atomic_json(state_path, state)
     try:
-        runner(prefix, task_path, output, expected_job, force=False)
+        runner(
+            prefix, task_path, output, expected_job,
+            force=previous_delivery is not None)
         _verify_stage_inputs_unchanged(
             dataset_record, camera_dependency=camera_dependency)
         delivery = _completed_stage(
             output, output_name, expected_job, dataset_record, task_path,
             camera_dependency=camera_dependency)
     except Exception as error:
-        run_state["stages"][stage_name] = {
+        state["stages"][stage_name] = {
             "status": "failed",
             "task": str(task_path),
             "output_name": output_name,
@@ -971,7 +1359,9 @@ def _run_stage(*, prefix, runner, output, tasks, state_path, state,
         }
         _atomic_json(state_path, state)
         raise
-    run_state["stages"][stage_name] = {
+    if task_path != final_task_path:
+        os.replace(task_path, final_task_path)
+    state["stages"][stage_name] = {
         "status": "completed", "delivery": delivery}
     _atomic_json(state_path, state)
     return delivery, "executed"
@@ -980,9 +1370,156 @@ def _run_stage(*, prefix, runner, output, tasks, state_path, state,
 def _run_task(prefix, config, output, expected_job, force=False):
     if expected_job == CAMERA_BASELINK_JOB:
         from .camera_baselink import run_camera_baselink
-        return run_camera_baselink(config, output, force=force)
+        return run_camera_baselink(
+            config, output, force=force, _delivery_layout=MACHINE_LAYOUT)
     from .task import run_task
-    return run_task(prefix, config, output, expected_job, force=force)
+    return run_task(
+        prefix, config, output, expected_job, force=force,
+        _delivery_layout=MACHINE_LAYOUT)
+
+
+def _verify_calib_param_record(record, target):
+    if (not isinstance(record, dict)
+            or str(target.resolve()) != record.get("path")
+            or not isinstance(record.get("sha256"), str)):
+        raise TaskError(
+            "calib_params output has no matching workflow checkpoint: {}"
+            .format(target))
+    if target.is_symlink() or not target.is_file():
+        raise TaskError("managed calib_params output is missing: {}".format(target))
+    if _sha256(target) != record["sha256"]:
+        raise TaskError(
+            "managed calib_params output changed outside the workflow: {}"
+            .format(target))
+
+
+def _retire_legacy_calib_params(root, active, state, state_path):
+    """Remove only obsolete aggregate files still owned by workflow state."""
+    if root.is_symlink():
+        raise TaskError("calib_params output must not be a symlink: {}".format(root))
+    if root.exists() and not root.is_dir():
+        raise TaskError("calib_params output must be a directory: {}".format(root))
+    retired = []
+    empty_parents = []
+    for name, relative in _RETIRED_CALIB_PARAMS.items():
+        target = root / relative
+        parent = target.parent
+        stored = active.get(name)
+        if parent.is_symlink():
+            raise TaskError(
+                "obsolete calib_params directory must not be a symlink: {}"
+                .format(parent))
+        if parent.exists() and not parent.is_dir():
+            raise TaskError(
+                "obsolete calib_params parent must be a directory: {}"
+                .format(parent))
+        entries = list(parent.iterdir()) if parent.is_dir() else []
+        if stored is None:
+            if entries:
+                raise TaskError(
+                    "obsolete unmanaged calib_params output exists: {}"
+                    .format(parent))
+            if parent.is_dir():
+                empty_parents.append(parent)
+            continue
+
+        _verify_calib_param_record(stored, target)
+        if entries != [target]:
+            raise TaskError(
+                "obsolete calib_params directory contains unmanaged files: {}"
+                .format(parent))
+        retired.append((name, target, parent))
+
+    for parent in empty_parents:
+        parent.rmdir()
+    for name, target, parent in retired:
+        target.unlink()
+        parent.rmdir()
+        active.pop(name)
+    if retired:
+        _atomic_json(state_path, state)
+
+
+def _migrate_renamed_calib_params(root, active, state, state_path):
+    """Atomically rename aggregate files still owned by workflow state."""
+    changed = False
+    for name, (old_relative, new_relative) in _RENAMED_CALIB_PARAMS.items():
+        old = root / old_relative
+        new = root / new_relative
+        stored = active.get(name)
+        old_path = str(old.resolve())
+        if stored is None or stored.get("path") != old_path:
+            if old.exists() or old.is_symlink():
+                raise TaskError(
+                    "obsolete unmanaged calib_params output exists: {}"
+                    .format(old))
+            continue
+        if new.exists() or new.is_symlink():
+            raise TaskError(
+                "renamed calib_params target already exists: {}".format(new))
+        _verify_calib_param_record(stored, old)
+        os.replace(old, new)
+        descriptor = os.open(str(new.parent), os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        updated = deepcopy(stored)
+        updated["path"] = str(new.resolve())
+        active[name] = updated
+        changed = True
+    if changed:
+        _atomic_json(state_path, state)
+
+
+def _update_calib_params(*, machine, output, profile, deliveries,
+                         camera_mode, camera_imu_mode, state, state_path):
+    generated_at = datetime.now(ZoneInfo("Asia/Shanghai")).strftime(
+        "%Y-%m-%d-%H:%M:%S")
+    artifacts = build_calib_params(
+        machine, profile, deliveries, generated_at,
+        camera_mode=camera_mode, camera_imu_mode=camera_imu_mode)
+    active = state.setdefault("calib_params", {})
+    summary = {}
+    root = output / "calib_params"
+    _migrate_renamed_calib_params(root, active, state, state_path)
+    _retire_legacy_calib_params(root, active, state, state_path)
+    for name, artifact in artifacts.items():
+        target = root / artifact["relative_path"]
+        stored = active.get(name)
+        if stored is not None:
+            _verify_calib_param_record(stored, target)
+        elif target.exists() or target.is_symlink():
+            raise TaskError(
+                "unmanaged calib_params output already exists: {}".format(target))
+
+        if (stored is not None
+                and stored.get("source_signature")
+                == artifact["source_signature"]):
+            record = deepcopy(stored)
+            action = "reused"
+        else:
+            written = write_calib_param(output, artifact)
+            record = {
+                "status": "completed",
+                "path": written["path"],
+                "sha256": written["sha256"],
+                "time": artifact["document"]["time"],
+                "source_signature": artifact["source_signature"],
+                "defaulted_fields": artifact["defaulted_fields"],
+                "profile": artifact["profile"],
+                "sources": artifact["sources"],
+            }
+            active[name] = record
+            action = "updated" if stored is not None else "created"
+            _atomic_json(state_path, state)
+        summary[name] = {
+            "status": "completed",
+            "action": action,
+            "result": record["path"],
+            "defaulted_fields": record["defaulted_fields"],
+        }
+    return summary
 
 
 def run_machine_workflow(prefix, config_path, runner=None):
@@ -1000,7 +1537,7 @@ def run_machine_workflow(prefix, config_path, runner=None):
     control = output / CONTROL_DIRECTORY
     profile_dir = _profile_directory(prefix)
     target_path = _target_file(prefix, profile_dir, config["target"])
-    profile = _profile_provenance(profile_dir, target_path)
+    profile = _profile_provenance(profile_dir, target_path, config)
     software = _software_provenance()
 
     with _machine_lock(control):
@@ -1011,30 +1548,55 @@ def run_machine_workflow(prefix, config_path, runner=None):
             dataset_path = discover_dataset(machine, role, config["datasets"].get(role))
             datasets[role] = (dataset_fingerprint(dataset_path, role)
                               if dataset_path is not None else None)
+        _preflight_datasets(datasets, config)
 
-        run_key = config["revision"] or BASE_REVISION
-        run_state = state["runs"].setdefault(run_key, {
-            "user_config_sha256": config["config_sha256"],
-            "binding": None,
-            "stages": {},
-        })
         current_binding = _binding(
             config, profile, software, datasets)
-        run_state["binding"] = _merge_binding(
-            run_state.get("binding"), current_binding)
-        run_state["user_config_sha256"] = config["config_sha256"]
-        state["active_revision"] = run_key
+        pending = state.get("pending_recalibration")
+        if pending is not None:
+            if current_binding != pending["target_binding"]:
+                raise TaskError(
+                    "recalibration inputs changed while a replacement is "
+                    "pending; restore the selected replacement datasets and "
+                    "rerun")
+            target_binding = pending["target_binding"]
+        else:
+            (target_binding, changed_roles, changed_profile_inputs,
+             profile_stages) = _merge_binding(
+                state.get("binding"), current_binding)
+            if profile_stages:
+                _preflight_profile_recalibration(
+                    profile_dir, target_path, config, datasets, output,
+                    profile_stages)
+            if changed_roles or profile_stages:
+                pending = _start_recalibration(
+                    state, target_binding, changed_roles, datasets, output,
+                    profile_stages=profile_stages,
+                    changed_profile_inputs=changed_profile_inputs)
+                state["pending_recalibration"] = pending
+            else:
+                state["binding"] = target_binding
+        recalibration_stages = set(
+            pending["affected_stages"] if pending is not None else ())
+        previous_deliveries = (
+            pending.get("previous_deliveries", {})
+            if pending is not None else {})
+        state["user_config_sha256"] = config["config_sha256"]
         _atomic_json(state_path, state)
 
         summary = {
             "schema_version": SCHEMA_VERSION,
             "kind": "machine_calibration_workflow_summary",
             "machine_dir": str(machine),
+            "machine_root": str(config["machine_root"]),
+            "batch_name": config["batch_name"],
+            "machine_version": config["machine_version"],
+            "machine_num": config["machine_num"],
             "output_dir": str(output),
-            "revision": config["revision"],
         }
-        tasks = control / "tasks" / run_key
+        tasks = control / "tasks"
         deliveries = {}
+        stage_actions = {}
         camera_job = (
             "camera_calibration"
             if config["camera_mode"] == "standard" else CAMERA_RS_JOB)
@@ -1071,19 +1633,14 @@ def run_machine_workflow(prefix, config_path, runner=None):
                     "completed result; add its dataset and rerun"
                     .format(record["name"], parent))
             if status is not None:
-                run_state["stages"][stage] = {"status": status}
+                state["stages"][stage] = {"status": status}
                 summary[stage] = _stage_summary(status, message=message)
                 continue
             camera_dependency = ({
                 "path": camera_delivery["result"],
                 "sha256": camera_delivery["files"]["result"],
             } if camera_delivery is not None else None)
-            camera_ids = ([camera["id"] for camera in baselink_config["cameras"]]
-                          if baselink_config is not None else None)
-            name = _output_name(
-                record["name"], stage, config["camera_imu_mode"],
-                config["revision"], camera_mode=config["camera_mode"],
-                camera_ids=camera_ids)
+            name = record["name"]
             task = build_task(
                 profile_dir, stage, record["path"], name,
                 camera_result=camera_delivery["result"] if camera_delivery is not None else None,
@@ -1095,11 +1652,34 @@ def run_machine_workflow(prefix, config_path, runner=None):
                 target_path=target_path)
             delivery, action = _run_stage(
                 prefix=prefix, runner=runner, output=output, tasks=tasks,
-                state_path=state_path, state=state, run_state=run_state,
+                state_path=state_path, state=state,
                 stage_name=stage, task=task, output_name=name,
                 expected_job=expected_job, dataset_record=record,
-                camera_dependency=camera_dependency)
+                camera_dependency=camera_dependency,
+                recalibrate=stage in recalibration_stages,
+                previous_delivery=previous_deliveries.get(stage),
+                force_recalibrate=(
+                    stage in recalibration_stages
+                    and parent is not None
+                    and stage_actions.get(parent) == "executed"))
             deliveries[stage] = delivery
+            stage_actions[stage] = action
             summary[stage] = _stage_summary("completed", delivery["result"], action)
+        try:
+            summary["calib_params"] = _update_calib_params(
+                machine=config["machine_root"], output=output,
+                profile=profile_dir, deliveries=deliveries, state=state,
+                camera_mode=config["camera_mode"],
+                camera_imu_mode=config["camera_imu_mode"],
+                state_path=state_path)
+            state.pop("calib_params_failure", None)
+        except Exception as error:
+            state["calib_params_failure"] = {
+                "type": type(error).__name__, "message": str(error)}
+            _atomic_json(state_path, state)
+            raise
+        if pending is not None:
+            state["binding"] = deepcopy(pending["target_binding"])
+            state.pop("pending_recalibration", None)
         _atomic_json(state_path, state)
         return summary

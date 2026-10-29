@@ -10,21 +10,22 @@
 
 ## 0. 产线入口与底层入口的边界
 
-产线机器目录使用一条可续跑命令：
+产线单次标定批次目录使用一条可续跑命令：
 
 ```bash
-kalibr-cedarobot machine --config user.yaml
+kalibr-cedarobot machine
 ```
 
-`user.yaml` 由开发者提供。工作流会发现唯一的 `stereo_*` 与 `stereo_imu_*`、生成 task、
+`user.yaml` 由开发者提供并默认放在安装根的 `config/user.yaml`。工作流会发现唯一的 `stereo_*` 与 `stereo_imu_*`、生成 task、
 先完成或复用双目结果，再运行用户明确选择的普通或 RS Camera–IMU。当动态数据以后才
 采集时，重复同一命令即可继续。配置 `camera_baselink` 并提供
-`stereo_base_link_YYMMDD_hhmm`（也接受 `stereo_baselink_YYMMDD_hhmm`）后，另外复用双目
+`stereo_base_link_YYMMDD_HHMM` 后，另外复用双目
 K/D 运行 BaseLink 旋转标定；不需要 IMU 数据，平移由配置明确指定。
-输出固定在机器目录的 `result/`。
+输出固定在本批次目录的 `result/`；重新采集时新建批次目录并修改
+`user.yaml.machine_dir`，不同批次不自动复用。
 
 同一机器另一个独立单目模组使用 `usb_YYMMDD_HHMM` 标定 K/D，再用
-`usb_baselink_YYMMDD_HHMM` 和 `mono_camera_baselink` 配置
+`usb_base_link_YYMMDD_HHMM` 和 `mono_camera_baselink` 配置
 标定其 BaseLink 旋转。单目与双目都使用当前 profile 的 AprilGrid、`pinhole-equi`；
 单目清单只含局部 `cam0`，后续只复用本模组结果，不与双目合成三目任务。
 

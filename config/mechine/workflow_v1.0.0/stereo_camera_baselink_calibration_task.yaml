@@ -5,7 +5,7 @@ dataset:
   type: directory
   path: __DATASET_PATH__
 target:
-  path: aprilgrid.yaml
+  path: 测试场_aprilgrid_8x8.yaml
 camera_calibration:
   path: __CAMERA_CALIBRATION_PATH__
 base_link:
@@ -29,8 +29,8 @@ output:
   visualizations:
     enabled: true
     sampling: uniform
-    max_frames_per_camera: 30
-    max_pairs: 30
+    max_frames_per_camera: 20
+    max_pairs: 20
     undistortion:
       enabled: true
       crop: false

@@ -53,17 +53,23 @@ baseline。`freeze_intrinsics: true` 仍只适用于至少双目且每目提供�
 | `initialization_stereo.yaml` | 双目初值，默认不启用 |
 | `initialization_imu.yaml` | Camera–IMU 初值，默认不启用 |
 | `evaluation.yaml` | 从已归档观测重新生成指标、判定和图像 |
-| `machine_calibration_workflow.yaml` | 机器级入口的最小 `user.yaml`；复制后填写机器目录和 Camera–IMU 模式 |
-| `all_params/machine_calibration_workflow_full.yaml` | 机器级完整注释示例；双目模组与独立单目模组分别标定、分别复用结果求 BaseLink，位置单位和实测平移独立配置 |
+| `machine_calibration_workflow.yaml` | 机器级入口的最小 `user.yaml`；复制后填写形如 `EVT312-02/1029` 的单次标定批次目录和 Camera–IMU 模式 |
+| `all_params/machine_calibration_workflow_full.yaml` | 机器级完整注释示例；双目模组与独立单目模组分别标定、分别复用结果求 BaseLink，并按数据集名生成任务目录、根目录报告及 vision、usb 两份设备参数 |
 | `rolling_shutter_diagnosis.yaml` | 输入普通任务，自动判断数据是否支持逐行时间模型 |
 
 `all_params/` 中的 `aprilgrid.yaml`、`imu.yaml`、`evaluation.yaml` 保留参数解释与规则示例。
+机器 workflow 的 `datasets` 可完全省略或部分填写；未填写角色从 `machine_dir` 自动选择
+唯一的严格命名候选，显式填写仅用于强制选择。非规范名称（包括追加 `_bk` 的旧数据）
+静默跳过；删除或改名旧数据后加入唯一的新规范目录会自动重跑相关任务并保留旧数据集
+结果。严格目录名和同名下游的安全替换规则见机器工作流文档。
 相机与 Camera–IMU 的 job 分开，不把完整相机标定嵌入 Camera–IMU 任务。
 
 `camera_baselink_calibration` 只接受目录数据，读取已有 `camera_calibration.path` 的
 固定 K/D。图像文件名必须为 `x_y_z.<扩展名>`；`base_link.position_scale_m` 明确文件名
 单位到米的比例。双目模板选择 cam0/cam1，单目模板只选择 cam0。两个模板里的
 `translation_base_camera_m: [0.0, 0.0, 0.0]` 是必须替换的可移植占位值。
+双目模板在输出旋转前左乘绕 X 轴 180° 的矩阵，USB 单目模板左乘绕 Y 轴 180° 的矩阵；
+完整模板的 `rotation_left_correction` 以 3×3 矩阵填写，默认单位阵并要求属于 SO(3)。
 
 `camera_rolling_shutter_calibration_task.yaml` 当前写成双目；做单目时同时删除第二个
 `cameras` 项和对应的 `rolling_shutter.cam1`，做三目及以上时按相同 ID 规则成对增加。
@@ -114,8 +120,8 @@ IMU 任务要求相机结果的模型、尺寸、
 应使用新的输出目录保留已有运行记录。
 
 最简版关闭观测归档和图像可视化，仍生成结果、指标和判定文件。完整版打开最终
-观测与选择历史归档，每相机最多可视化 30 帧、双目最多 30 对，不复制原图。
-指标始终使用全部最终有效观测，30 只是图像展示上限。
+观测与选择历史归档，每相机最多可视化 20 帧、双目最多 20 对，不复制原图。
+指标始终使用全部最终有效观测，20 只是每相机图像展示上限。
 
 ## 初始化与离线评价
 

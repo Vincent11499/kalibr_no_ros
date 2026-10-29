@@ -92,6 +92,8 @@ Camera–IMU 读取纯视觉 RS 结果时只复用 K/D/T；普通 job 的残差�
 
 `camera_baselink_calibration` 读取已有相机结果的固定 K/D，按目录图片文件名中的平台
 位置对全部无序帧对执行 `alpha=0` 等权直接差分，只求 `T_base_camera` 的旋转；平移由 task 提供。
+可选 `base_link.rotation_left_correction` 是 3×3 有限 SO(3) 矩阵，在写出前左乘
+求解旋转，默认单位阵，不改变配置平移。
 该任务的独立契约见[相机到base_link旋转标定](CAMERA_BASELINK_CALIBRATION_ZH.md)。
 
 可重复示例明确 `shuffle: false`、检测 4 进程、优化 4 线程、每 worker 两个在途任务、
@@ -157,8 +159,8 @@ rad/s，accel bias 单位为 m/s²。`axes.x/y/z` 给出采样值的均值、标
 | export_text | false，布尔 | 额外交付具名 results.txt |
 | evaluation_pairing_tolerance_s | 0.0002 s，有限且 >=0 | 仅 Camera–IMU 最终观测后处理最近一对一配对，稳定来源索引打破平局 |
 | visualizations.enabled | false，布尔 | 生成角点、残差与校正图 |
-| visualizations.max_frames_per_camera | 30，正整数 | 每相机展示上限，不裁剪指标总体 |
-| visualizations.max_pairs | 30，正整数 | 双目展示上限，不裁剪指标总体 |
+| visualizations.max_frames_per_camera | 20，正整数 | 每相机展示上限，不裁剪指标总体 |
+| visualizations.max_pairs | 20，正整数 | 双目展示上限，不裁剪指标总体 |
 | visualizations.sampling | uniform | 确定性均匀抽样 |
 | visualizations.undistortion.enabled | true，布尔 | 父级开启时生成每目独立去畸变图；不影响角点图、标定和指标 |
 | visualizations.undistortion.crop | false，布尔 | false 保留最大视场且允许黑边；true 缩放裁去无效边；输出像素尺寸不变 |

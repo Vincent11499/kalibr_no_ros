@@ -1,20 +1,20 @@
 schema_version: "1.0.0"
 kind: machine_calibration_workflow
-machine_dir: /path/to/machine-directory # 必填；相对路径以本 YAML 所在目录为基准。
+machine_dir: /path/to/EVT312-02/1029 # 必填；单次标定批次目录；父目录必须为<机型>-<编号>，批次名为安全文件名；相对路径以本YAML所在目录为基准。
 target: aprilgrid_1 # 可选；安全文件名stem；从安装的config/mechine/aprilgrid_1.yaml读取，省略使用内部profile标定板。
-datasets: # 可省略；每类唯一候选自动选择，多候选必须指定直接子目录名。
+datasets: # 可省略或部分填写；填写的角色强制使用指定目录，其余角色仍自动选择唯一候选。
   stereo: stereo_261021_1500
   stereo_imu: stereo_imu_261021_1600
-  stereo_baselink: stereo_base_link_261021_1630 # 也接受 stereo_baselink_YYMMDD_hhmm。
+  stereo_baselink: stereo_base_link_261021_1630 # 只接受严格的 stereo_base_link_YYMMDD_HHMM。
   mono: usb_261021_1510 # 独立单目模组；清单只能包含局部 cam0，无 IMU。
-  mono_baselink: usb_baselink_261021_1640 # 目录固定 usb_baselink_YYMMDD_HHMM；只引用上面单目结果。
+  mono_baselink: usb_base_link_261021_1640 # 目录固定 usb_base_link_YYMMDD_HHMM；只引用上面单目结果。
 camera:
   mode: standard # 默认standard；standard|rolling_shutter；控制双目相机阶段，不影响独立单目阶段。
 camera_imu:
   mode: standard # 必填；standard|rolling_shutter；无自动切换或隐式默认。
   recompute_extrinsics: false # 默认false；true让Camera–IMU联合阶段重新优化相机链相邻外参。
 camera_baselink: # 可选；省略且没有对应数据时禁用，有数据但无此配置则阻塞并提示。
-  base_link: # 可省略；省略时使用内部frame_id=base_link、position_scale_m=0.01。
+  base_link: # 可省略；省略时使用内部frame_id=base_link、position_scale_m=0.01；输出旋转固定左乘Rx(180°)。
     frame_id: base_link # 默认base_link；安全非空坐标系ID，标记结果参考系。
     position_scale_m: 0.01 # 默认0.01 m/文件名单位；需要其他单位时显式覆盖。
   cameras: # 必填；可为[cam0]或[cam0,cam1]；复用本工单双目标定K/D，不配置model。
@@ -23,10 +23,9 @@ camera_baselink: # 可选；省略且没有对应数据时禁用，有数据但�
     - id: cam1
       translation_base_camera_m: [0.0, 0.0, 0.0] # 必填；同上；不从双目 baseline 推算，也不默认零。
 mono_camera_baselink: # 可选；独立单目 BaseLink；省略且无对应数据时禁用；不会继承双目 BaseLink 配置。
-  base_link: # 可省略；省略时同样默认frame_id=base_link、position_scale_m=0.01。
+  base_link: # 可省略；省略时同样默认frame_id=base_link、position_scale_m=0.01；输出旋转固定左乘Ry(180°)。
     frame_id: base_link # 默认 base_link；范围与双目相同；同一机体坐标系时保持同名。
     position_scale_m: 0.01 # 默认0.01；有限正数；显式值独立于双目设置。
   cameras: # 必填；只能是 [cam0]，这里的 cam0 属于独立单目模组，不是双目左相机。
     - id: cam0
       translation_base_camera_m: [0.0, 0.0, 0.0] # 必填；三个有限米值；零为占位，换成本模组实测值；平移不求解。
-revision: v2 # 可选；[A-Za-z0-9][A-Za-z0-9_-]{0,31}；改变已有数据/软件/模板/任一模组 BaseLink 配置后使用新值，保留历史结果。

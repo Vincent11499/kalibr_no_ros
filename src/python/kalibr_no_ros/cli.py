@@ -94,9 +94,9 @@ def build_parser():
         "--visualizations", action="store_true",
         help="save detected corners, undistorted images, and rectified stereo pairs")
     verify_cameras.add_argument(
-        "--max-frames-per-camera", type=_positive_integer, default=30)
+        "--max-frames-per-camera", type=_positive_integer, default=20)
     verify_cameras.add_argument(
-        "--max-pairs", type=_positive_integer, default=30)
+        "--max-pairs", type=_positive_integer, default=20)
     verify_cameras.add_argument(
         "--undistortion-crop", action="store_true",
         help="crop invalid borders in per-camera undistorted images")

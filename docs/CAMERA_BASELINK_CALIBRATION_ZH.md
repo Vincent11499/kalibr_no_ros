@@ -4,10 +4,10 @@
 相机到 `base_link` 的旋转。该任务不重新标定相机 K/D，也不能从这组运动中独立估计
 外参平移；K/D 读取已有相机结果，平移由 task 明确给出。
 
-产线入口也支持双目和独立单目模组的该阶段：`kalibr-cedarobot machine --config user.yaml`。
-数据放在机器根目录的 `stereo_base_link_YYMMDD_hhmm` 或 `stereo_baselink_YYMMDD_hhmm`，
+产线入口也支持双目和独立单目模组的该阶段：`kalibr-cedarobot machine`。
+数据放在机器根目录的 `stereo_base_link_YYMMDD_HHMM`，
 在 `user.yaml` 配置 `camera_baselink`；工作流自动引用本工单双目结果，不依赖 IMU。
-独立单目模组则使用 `usb_YYMMDD_HHMM`、`usb_baselink_YYMMDD_HHMM`
+独立单目模组则使用 `usb_YYMMDD_HHMM`、`usb_base_link_YYMMDD_HHMM`
 和 `mono_camera_baselink` 配置，只引用本工单的单目结果。
 两个模组的 `cam0` 是局部 ID，不能互换；当前机器 profile 的两模组均使用同一份 AprilGrid。
 配置和目录示例见[机器级一键标定](MACHINE_CALIBRATION_WORKFLOW_ZH.md)。
@@ -59,6 +59,11 @@ cameras:
 它表示 ${}^{B}t_C$，即最终 `T_base_camera` 的平移列，单位米。示例模板中的零只是
 可移植占位值，运行真实标定前必须换成该机器的实测值。
 
+`base_link.rotation_left_correction` 控制求解后、写出前的固定旋转左乘修正，格式为
+3×3 有限 SO(3) 矩阵，默认单位阵，无单位。普通 CLI 的双目示例填写
+`diag(1,-1,-1)`，USB 单目示例填写 `diag(-1,1,-1)`；机器 workflow 会按模组自动注入
+这两个矩阵。该修正只改变输出旋转，配置的 `translation_base_camera_m` 保持不变。
+
 ## 求解公式
 
 每个成功观测先用固定 K/D 做 AprilGrid PnP，得到标定板在相机系中的平移
@@ -80,6 +85,16 @@ a_{ij}=p_i-p_j,\qquad b_{ij}=t_j-t_i
 权重、角度阈值或其他候选算法。平台差分与 PnP 差分都至少需要二维独立激励；第二／
 第一奇异值比例低于 `calibration.rank_ratio_min` 时拒绝结果，不能用单一直线运动求旋转。
 
+设直接差分解为 $R_{solve}$，最终写出的旋转为：
+
+\[
+R_{out}=R_{fix}R_{solve}
+\]
+
+双目使用 $R_{fix}=\operatorname{diag}(1,-1,-1)$，USB 单目使用
+$R_{fix}=\operatorname{diag}(-1,1,-1)$。`pitch` 按 $R_{out}$ 计算；运动差分残差仍描述
+直接差分求解本身。
+
 双目目录中的 cam0、cam1 使用各自固定 K/D 和各自观测独立求解。当前实现不把双目
 baseline、同步共视或 stereo 残差加入旋转方程。
 
@@ -94,7 +109,7 @@ camera_baselink_calibration_cam0_cam1.yaml
 
 结果 `calibration_type` 为 `cameras_baselink`。每目包含固定 K/D、完整
 `T_base_camera`、`rotation_method`、配置平移来源，以及有效差分对数、激励奇异值和
-`movement_residual_mm`。每目还包含 `pitch`，单位度，定义为相机 `+Z` 光轴经
+`movement_residual_mm` 和 `rotation_left_correction`。每目还包含 `pitch`，单位度，定义为相机 `+Z` 光轴经
 `R_base_camera` 变换后与 `base_link` 水平面的无符号夹角：
 
 ```text

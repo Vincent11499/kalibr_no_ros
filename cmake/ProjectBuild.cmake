@@ -285,7 +285,7 @@ if(KALIBR_USE_PRIVATE_DEPS)
   endforeach()
   if(IS_DIRECTORY "${KALIBR_PRIVATE_SYSROOT}/share/doc")
     install(DIRECTORY "${KALIBR_PRIVATE_SYSROOT}/share/doc/"
-      DESTINATION share/kalibr-noros/licenses
+      DESTINATION licenses
       FILES_MATCHING PATTERN "copyright")
   endif()
   set(_private_system_python
@@ -328,26 +328,17 @@ endfunction()
 prepare_public_cli(kalibr-noros kalibr_no_ros.cli)
 prepare_public_cli(kalibr-cedarobot kalibr_no_ros.machine_cli)
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/config/examples/"
-  DESTINATION share/kalibr-noros/config/examples
+  DESTINATION config/examples
   FILES_MATCHING PATTERN "*.yaml" PATTERN "README_ZH.md")
-set(_machine_workflow_profile_build_dir
-  "${CMAKE_BINARY_DIR}/share/kalibr-noros/config/mechine/workflow_v1.0.0")
-file(REMOVE_RECURSE "${_machine_workflow_profile_build_dir}")
-file(COPY
-  "${CMAKE_CURRENT_SOURCE_DIR}/config/mechine/workflow_v1.0.0/"
-  DESTINATION "${_machine_workflow_profile_build_dir}")
-file(COPY
-  "${CMAKE_CURRENT_SOURCE_DIR}/config/mechine/aprilgrid_1.yaml"
-  DESTINATION "${CMAKE_BINARY_DIR}/share/kalibr-noros/config/mechine")
-install(FILES
-  "${CMAKE_CURRENT_SOURCE_DIR}/config/mechine/aprilgrid_1.yaml"
-  DESTINATION share/kalibr-noros/config/mechine)
+file(REMOVE_RECURSE "${CMAKE_BINARY_DIR}/config/mechine")
+file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/config/mechine/"
+  DESTINATION "${CMAKE_BINARY_DIR}/config/mechine")
 install(DIRECTORY
-  "${CMAKE_CURRENT_SOURCE_DIR}/config/mechine/workflow_v1.0.0/"
-  DESTINATION share/kalibr-noros/config/mechine/workflow_v1.0.0
+  "${CMAKE_CURRENT_SOURCE_DIR}/config/mechine/"
+  DESTINATION config/mechine
   FILES_MATCHING PATTERN "*.yaml" PATTERN "README_ZH.md")
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
-  DESTINATION share/kalibr-noros)
+  DESTINATION .)
 
 if(KALIBR_BUILD_NATIVE)
   # Topological order from the upstream package.xml dependency graph.

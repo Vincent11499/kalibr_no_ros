@@ -5,7 +5,7 @@ job: camera_baselink_calibration # 必填；相机到base_link旋转标定。
 
 dataset: # 当前任务只支持文件名携带平台位置的directory数据集。
   type: directory # 必填且只能为directory；bag没有可移植的文件名位置契约。
-  path: ../data/stereo_base_link_YYMMDD_hhmm # 必填；相对路径以task所在目录为基准。
+  path: ../data/stereo_base_link_YYMMDD_HHMM # 必填；相对路径以task所在目录为基准。
 #   time_range_s: [0.0, 60.0] # 可选；默认使用全部图像，单位s。
 #   frequency_hz: 5.0 # 可选；有限正数Hz，默认不额外降采样。
 
@@ -24,6 +24,10 @@ cameras: # 这里同时选择参与求解的相机，并提供不能由平移实
 base_link:
   frame_id: base_link # 默认base_link；安全的目标坐标系名称。
   position_scale_m: 0.01 # 必填且>0；文件名x/y/z每1单位对应的米数，本例表示cm。
+  rotation_left_correction: # 默认3x3单位阵；有限SO(3)旋转矩阵；在输出前左乘求解旋转，不改变配置平移。
+    - [1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, 1.0]
 
 calibration:
   window_half_size_px: 2 # 默认2 px；AprilGrid亚像素窗口半宽。
@@ -55,8 +59,8 @@ output: # 与其他标定任务共用正式交付和可选诊断开关。
   evaluation_pairing_tolerance_s: 0.0002
   visualizations:
     enabled: false
-    max_frames_per_camera: 30
-    max_pairs: 30
+    max_frames_per_camera: 20
+    max_pairs: 20
     sampling: uniform
     undistortion:
       enabled: true

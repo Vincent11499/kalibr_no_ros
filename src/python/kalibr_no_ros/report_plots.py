@@ -381,11 +381,12 @@ def _summary_sections(metrics, assessment, calibration):
     yield "Calibration overview", ["Camera", "Used frames", "Selected", "Corners", "RMS [px]", "P95 [px]", "Max [px]"], rows
     if metrics.get("calibration_type") == "cameras_baselink":
         yield "base_link direct-difference solve", [
-            "Camera", "Pitch [deg]", "Effective pairs", "Movement RMS [mm]",
+            "Camera", "Pitch [deg]", "Left correction", "Effective pairs", "Movement RMS [mm]",
             "Platform rank ratio", "Camera rank ratio", "Reflection corrected",
         ], [[
             name,
             camera.get("pitch"),
+            camera.get("rotation_left_correction"),
             camera.get("effective_pairs"),
             camera.get("movement_residual_mm"),
             camera.get("platform_second_first_ratio"),

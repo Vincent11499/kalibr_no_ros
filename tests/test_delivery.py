@@ -13,10 +13,13 @@ sys.path.insert(0, str(ROOT / "src/python"))
 
 from kalibr_no_ros.delivery import (
     apply_camera_ids, discover_camera_result, enrich_result,
-    inspect_managed_delivery, publish, result_name,
+    inspect_managed_delivery, MACHINE_LAYOUT, publish, result_name,
 )
 from kalibr_no_ros.evaluation import validate_output_options
-from kalibr_no_ros.task import TaskError, dump_yaml, load_task, run_task
+from kalibr_no_ros.reporting import evaluate_run
+from kalibr_no_ros.task import (
+    TaskError, dump_yaml, load_task, load_yaml, run_task,
+)
 
 
 class DeliveryTest(unittest.TestCase):
@@ -103,6 +106,158 @@ class DeliveryTest(unittest.TestCase):
         html = (self.output / "mono_cam1.report.html").read_text()
         self.assertIn('href="mono_cam1.yaml"', html)
         self.assertNotIn('href="metrics.json"', html)
+
+    def test_contained_delivery_keeps_formal_files_links_and_inventory_together(self):
+        self.populate_stage()
+        dump_yaml({"schema_version": "1.0.0"},
+                  self.stage / "task_resolved.yaml")
+        dump_yaml({"result": {"path": "calibration.yaml"}},
+                  self.stage / "initialization_report.yaml")
+        (self.stage / "run_manifest.json").write_text(json.dumps({
+            "schema_version": "1.0.0",
+            "kind": "calibration_run",
+            "status": "completed",
+        }), encoding="utf-8")
+
+        publish(
+            self.stage, self.output, "stereo",
+            {"save_diagnostics": True, "export_text": True},
+            layout="contained")
+
+        side = self.output / "stereo"
+        formal = {
+            "stereo.yaml", "stereo.report.html", "stereo.report.pdf",
+            "stereo.results.txt",
+        }
+        self.assertTrue(all((side / name).is_file() for name in formal))
+        self.assertFalse((self.output / "stereo.yaml").exists())
+        html = (side / "stereo.report.html").read_text(encoding="utf-8")
+        self.assertIn('href="stereo.yaml"', html)
+        self.assertIn('href="metrics.json"', html)
+        initialization = load_yaml(side / "initialization_report.yaml")
+        self.assertEqual(initialization["result"]["path"], "stereo.yaml")
+
+        inventory = set(json.loads(
+            (side / ".inventory.json").read_text(encoding="utf-8")))
+        self.assertTrue(formal <= inventory)
+        manifest = json.loads(
+            (side / "run_manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            {record["path"] for record in manifest["delivery_files"]},
+            formal)
+        self.assertTrue(formal.isdisjoint(
+            record["path"] for record in manifest["files"]))
+        inspected = inspect_managed_delivery(
+            self.output, "stereo", layout="contained")
+        self.assertEqual(inspected["result"], side / "stereo.yaml")
+
+        (side / "stereo.yaml").write_text("tampered", encoding="utf-8")
+        with self.assertRaisesRegex(TaskError, "published delivery files"):
+            inspect_managed_delivery(
+                self.output, "stereo", layout="contained")
+
+    def test_machine_delivery_keeps_yaml_in_task_and_reports_at_root(self):
+        self.populate_stage()
+        dump_yaml({"schema_version": "1.0.0"},
+                  self.stage / "task_resolved.yaml")
+        dump_yaml({"result": {"path": "calibration.yaml"}},
+                  self.stage / "initialization_report.yaml")
+        (self.stage / "run_manifest.json").write_text(json.dumps({
+            "schema_version": "1.0.0",
+            "kind": "calibration_run",
+            "status": "completed",
+        }), encoding="utf-8")
+
+        publish(
+            self.stage, self.output, "stereo_260916_2136",
+            {"save_diagnostics": True}, layout=MACHINE_LAYOUT)
+
+        name = "stereo_260916_2136"
+        side = self.output / name
+        self.assertTrue((side / (name + ".yaml")).is_file())
+        self.assertTrue((self.output / (name + ".report.html")).is_file())
+        self.assertTrue((self.output / (name + ".report.pdf")).is_file())
+        self.assertFalse((side / (name + ".report.html")).exists())
+        html = (self.output / (name + ".report.html")).read_text(
+            encoding="utf-8")
+        self.assertIn('href="{0}/{0}.yaml"'.format(name), html)
+        self.assertIn('href="{}/metrics.json"'.format(name), html)
+        initialization = load_yaml(side / "initialization_report.yaml")
+        self.assertEqual(initialization["result"]["path"], name + ".yaml")
+        inventory = set(json.loads(
+            (side / ".inventory.json").read_text(encoding="utf-8")))
+        self.assertIn(name + ".yaml", inventory)
+        self.assertNotIn(name + ".report.html", inventory)
+        inspected = inspect_managed_delivery(
+            self.output, name, layout=MACHINE_LAYOUT)
+        self.assertEqual(inspected["result"], side / (name + ".yaml"))
+
+    def test_contained_delivery_rejects_legacy_flat_output(self):
+        self.populate_stage()
+        publish(self.stage, self.output, "stereo", {})
+        with self.assertRaisesRegex(TaskError, "incompatible delivery"):
+            publish(
+                self.stage, self.output, "stereo", {}, force=True,
+                layout="contained")
+
+    def test_contained_force_rejects_unknown_files_and_symlinks(self):
+        self.populate_stage()
+        publish(self.stage, self.output, "stereo", {}, layout="contained")
+        side = self.output / "stereo"
+        unknown = side / "operator-note.txt"
+        unknown.write_text("keep", encoding="utf-8")
+        with self.assertRaisesRegex(TaskError, "unregistered|missing entries"):
+            publish(
+                self.stage, self.output, "stereo", {}, force=True,
+                layout="contained")
+        unknown.unlink()
+        link = side / "external-link"
+        link.symlink_to(self.root / "outside")
+        with self.assertRaisesRegex(TaskError, "unregistered|missing entries"):
+            publish(
+                self.stage, self.output, "stereo", {}, force=True,
+                layout="contained")
+
+    def test_contained_failed_diagnostics_stay_in_failed_task_directory(self):
+        self.populate_stage()
+        publish(
+            self.stage, self.output, "stereo_failed",
+            {"save_diagnostics": True}, failed=True,
+            layout="contained")
+        failed = self.output / "stereo_failed"
+        self.assertTrue((failed / "result.yaml").is_file())
+        self.assertTrue((failed / "validation.json").is_file())
+        inventory = set(json.loads(
+            (failed / ".inventory.json").read_text(encoding="utf-8")))
+        self.assertIn("result.yaml", inventory)
+        self.assertFalse((self.output / "stereo_failed.yaml").exists())
+
+    def test_evaluate_finds_evidence_beside_contained_result(self):
+        self.populate_stage()
+        dump_yaml({"schema_version": "1.0.0"},
+                  self.stage / "task_resolved.yaml")
+        (self.stage / "run_manifest.json").write_text(json.dumps({
+            "schema_version": "1.0.0",
+            "kind": "calibration_run",
+            "status": "completed",
+        }), encoding="utf-8")
+        publish(
+            self.stage, self.output, "stereo",
+            {"save_diagnostics": True, "save_metrics": True},
+            layout="contained")
+        source = self.output / "stereo/stereo.yaml"
+
+        def evaluated(staged_source, target, options, dataset=None):
+            self.assertTrue((staged_source / "metrics.json").is_file())
+            self.populate_stage(target)
+            return {"files": []}
+
+        destination = self.root / "evaluated"
+        with mock.patch(
+                "kalibr_no_ros.reporting._evaluate_staged",
+                side_effect=evaluated):
+            evaluate_run(source, destination, {"export_opencv": False})
+        self.assertTrue((destination / "stereo.yaml").is_file())
 
     def test_independent_deliveries_and_force_preserve_other_tasks_and_user_files(self):
         self.populate_stage()
@@ -264,6 +419,25 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(config.read_bytes(), before)
         self.assertEqual(camera_path.read_bytes(), camera_bytes)
         self.assertTrue((self.output / "camera_imu_calibration_cam1_cam8_imu0.yaml").is_file())
+
+    def test_run_task_private_contained_layout_does_not_reach_solver(self):
+        config, _ = self.task(
+            ids=("cam1",), output={"name": "contained"})
+
+        def staged(prefix, config, stage, job, **kwargs):
+            self.assertNotIn("_delivery_layout", kwargs)
+            self.populate_stage(stage, self.camera_result(("cam1",)))
+
+        with mock.patch(
+                "kalibr_no_ros.task._run_task_staged",
+                side_effect=staged) as solver:
+            run_task(
+                self.root / "unused", config, self.output,
+                "camera_calibration", _delivery_layout="contained")
+        solver.assert_called_once()
+        self.assertTrue(
+            (self.output / "contained/contained.yaml").is_file())
+        self.assertFalse((self.output / "contained.yaml").exists())
 
     def test_force_must_not_overwrite_the_task_configuration(self):
         _, task = self.task(ids=("cam1",), output={"name": "task"})

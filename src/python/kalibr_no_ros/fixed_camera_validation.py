@@ -723,8 +723,8 @@ def verify_fixed_cameras(calibrations, dataset, target, output_dir, *,
                          rectification_fov_scale=1.0,
                          detector_opencv_threads=1,
                          visualizations=False,
-                         max_frames_per_camera=30,
-                         max_pairs=30,
+                         max_frames_per_camera=20,
+                         max_pairs=20,
                          undistortion_crop=False,
                          force=False):
     """Validate one or more saved stereo calibrations on a new dataset."""

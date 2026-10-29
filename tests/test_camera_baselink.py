@@ -12,6 +12,7 @@ import numpy as np
 
 from kalibr_no_ros.camera_baselink import (
     CameraBaselinkError,
+    _correct_output_rotation,
     _relative_rotation_pairs,
     _write_rotation_summary,
     optical_axis_pitch_deg,
@@ -55,6 +56,11 @@ class CameraBaselinkTest(unittest.TestCase):
             "source_frame_count": 0, "selected_frame_count": 0,
             "movement_residual_mm": 0.2, "effective_pairs": 2,
             "pitch": 90.0,
+            "rotation_left_correction": [
+                [1.0, 0.0, 0.0],
+                [0.0, -1.0, 0.0],
+                [0.0, 0.0, -1.0],
+            ],
         }
         artifacts = dict(context.artifacts, state="completed", cameras=[camera])
         result_camera = {key: value for key, value in camera.items()
@@ -70,6 +76,11 @@ class CameraBaselinkTest(unittest.TestCase):
         self.assertEqual(metrics["stereo_pairs"], {})
         self.assertEqual(metrics["cameras"]["cam0"]["movement_residual_mm"], 0.2)
         self.assertEqual(metrics["cameras"]["cam0"]["pitch"], 90.0)
+        self.assertEqual(
+            metrics["cameras"]["cam0"]["rotation_left_correction"],
+            [[1.0, 0.0, 0.0],
+             [0.0, -1.0, 0.0],
+             [0.0, 0.0, -1.0]])
         assessment = {
             "status": "not_evaluated",
             "reference_grading": {"status": "unavailable"},
@@ -84,6 +95,11 @@ class CameraBaselinkTest(unittest.TestCase):
         headers, rows = sections["base_link direct-difference solve"]
         self.assertEqual(headers[1], "Pitch [deg]")
         self.assertEqual(rows[0][1], 90.0)
+        self.assertEqual(rows[0][2], [
+            [1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, -1.0],
+        ])
 
     def test_pitch_is_unsigned_optical_axis_angle_above_horizontal(self):
         self.assertAlmostEqual(optical_axis_pitch_deg(np.eye(3)), 90.0)
@@ -95,6 +111,35 @@ class CameraBaselinkTest(unittest.TestCase):
         self.assertAlmostEqual(optical_axis_pitch_deg(horizontal), 0.0)
         self.assertAlmostEqual(
             optical_axis_pitch_deg(np.diag([1.0, -1.0, -1.0])), 90.0)
+
+    def test_output_rotation_corrections_are_left_multiplied(self):
+        solved = np.asarray([
+            [0.0, -1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ])
+        np.testing.assert_allclose(
+            _correct_output_rotation(solved, [
+                [1.0, 0.0, 0.0],
+                [0.0, -1.0, 0.0],
+                [0.0, 0.0, -1.0],
+            ]),
+            np.diag([1.0, -1.0, -1.0]) @ solved)
+        np.testing.assert_allclose(
+            _correct_output_rotation(solved, [
+                [-1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, -1.0],
+            ]),
+            np.diag([-1.0, 1.0, -1.0]) @ solved)
+        np.testing.assert_allclose(
+            _correct_output_rotation(solved, np.eye(3).tolist()), solved)
+        with self.assertRaisesRegex(CameraBaselinkError, r"SO\(3\)"):
+            _correct_output_rotation(solved, [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, -1.0],
+            ])
 
     def test_rotation_summary_records_all_pnp_pair_rotation_angles(self):
         angle10 = np.deg2rad(10.0)
@@ -252,6 +297,11 @@ class CameraBaselinkTest(unittest.TestCase):
                 "base_link": {
                     "frame_id": "base_link",
                     "position_scale_m": 0.01,
+                    "rotation_left_correction": [
+                        [1.0, 0.0, 0.0],
+                        [0.0, -1.0, 0.0],
+                        [0.0, 0.0, -1.0],
+                    ],
                 },
                 "calibration": {"rank_ratio_min": 1e-4},
             }
@@ -261,6 +311,15 @@ class CameraBaselinkTest(unittest.TestCase):
             report = validate_task(task_path)
             self.assertEqual(report["status"], "passed", report)
             self.assertEqual(report["base_link"]["cameras"][0]["positions"], 3)
+            task["base_link"]["rotation_left_correction"] = [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, -1.0],
+            ]
+            dump_yaml(task, task_path)
+            with self.assertRaisesRegex(
+                    ValueError, "rotation_left_correction"):
+                load_task(task_path)
 
 
 if __name__ == "__main__":

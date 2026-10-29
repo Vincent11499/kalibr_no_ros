@@ -64,7 +64,9 @@ def plotTrajectory(cself, fno=1, clearFigure=True, title=""):
     a3d.auto_scale_xyz([traj_min[0]-size, traj_max[0]+size], [traj_min[1]-size, traj_max[1]+size], [traj_min[2]-size, traj_max[2]+size])
 
 
-def printErrorStatistics(cself, dest=sys.stdout):
+def printErrorStatistics(cself, dest=None):
+    if dest is None:
+        dest = sys.stdout
     # Reprojection errors
     print("Normalized Residuals\n----------------------------", file=dest)
     for cidx, cam in enumerate(cself.CameraChain.camList):
@@ -283,7 +285,9 @@ def saveResultTxt(cself, filename='cam_imu_result.txt'):
     f = open(filename, 'w')
     printResultTxt(cself, stream=f)
 
-def printResultTxt(cself, stream=sys.stdout):
+def printResultTxt(cself, stream=None):
+    if stream is None:
+        stream = sys.stdout
     
     print("Calibration results", file=stream)
     print("===================", file=stream)   

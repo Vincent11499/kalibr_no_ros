@@ -3,7 +3,7 @@ kind: calibration_task
 job: camera_baselink_calibration
 dataset:
   type: directory
-  path: data/usb_baselink_YYMMDD_hhmm
+  path: data/usb_base_link_YYMMDD_HHMM
 target:
   path: aprilgrid.yaml
 camera_calibration:
@@ -14,6 +14,10 @@ cameras:
 base_link:
   frame_id: base_link
   position_scale_m: 0.01
+  rotation_left_correction:
+    - [-1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, -1.0]
 calibration:
   window_half_size_px: 2
   max_displacement_px: 1.224744871391589

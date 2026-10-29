@@ -1,6 +1,6 @@
 schema_version: "1.0.0"
 kind: machine_calibration_workflow
-machine_dir: /path/to/machine-directory
+machine_dir: /path/to/EVT312-02/1029
 camera:
   mode: standard
 camera_imu:

@@ -45,6 +45,13 @@ class TaskCliTest(unittest.TestCase):
         self.assertEqual(arguments.max_frames_per_camera, 12)
         self.assertEqual(arguments.max_pairs, 8)
         self.assertTrue(arguments.undistortion_crop)
+        defaults = build_parser().parse_args([
+            "verify", "cameras", "--calibration", "/data/camera.yaml",
+            "--dataset", "/data/test", "--target", "/data/aprilgrid.yaml",
+            "--output-dir", "/data/verification",
+        ])
+        self.assertEqual(defaults.max_frames_per_camera, 20)
+        self.assertEqual(defaults.max_pairs, 20)
 
     def test_result_yaml_renders_matrix_rows_inline(self):
         document = {

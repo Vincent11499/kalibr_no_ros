@@ -61,8 +61,8 @@ output: # 后处理与证据保存，不反馈修改求解问题或最终观测�
   evaluation_pairing_tolerance_s: 0.0002 # 默认0.0002 s；>=0，仅后处理配对。
   visualizations: # 从最终使用帧按稳定时间顺序均匀抽样。
     enabled: false # 默认false；true生成角点/残差覆盖图及可用双目校正示意。
-    max_frames_per_camera: 30 # 默认30；每相机最大可视化帧数，不影响统计总体。
-    max_pairs: 30 # 默认30；最大双目可视化对数，统计仍用全部最终共同角点。
+    max_frames_per_camera: 20 # 默认20；每相机最大可视化帧数，不影响统计总体。
+    max_pairs: 20 # 默认20；最大双目可视化对数，统计仍用全部最终共同角点。
     sampling: uniform # 默认且当前唯一支持uniform；确定性均匀抽样。
     undistortion:
       enabled: true # 默认true；父级enabled=true时生成每目独立去畸变图，不改变标定或指标。

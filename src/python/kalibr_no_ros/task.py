@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager, redirect_stdout, redirect_stderr
+from contextlib import contextmanager
 from pathlib import Path
 import json
 import copy
@@ -1108,17 +1108,16 @@ def _capture_solver_logs(output, verbose=False):
                 (Path(output) / "stderr.log").open("w", encoding="utf-8", buffering=1) as stderr:
             os.dup2(stdout.fileno(), 1)
             os.dup2(stderr.fileno(), 2)
-            with redirect_stdout(stdout), redirect_stderr(stderr):
-                native_runtime.set_status_output(saved[0], verbose=verbose)
-                try:
-                    yield
-                except BaseException:
-                    traceback.print_exc()
-                    raise
-                finally:
-                    stdout.flush()
-                    stderr.flush()
-                    flush_native(None)
+            native_runtime.set_status_output(saved[0], verbose=verbose)
+            try:
+                yield
+            except BaseException:
+                traceback.print_exc()
+                raise
+            finally:
+                sys.stdout.flush()
+                sys.stderr.flush()
+                flush_native(None)
     finally:
         native_runtime.clear_status_output()
         for descriptor, original in zip((1, 2), saved):

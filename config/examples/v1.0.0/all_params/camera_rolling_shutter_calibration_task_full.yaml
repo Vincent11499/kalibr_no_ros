@@ -74,8 +74,8 @@ output:
   evaluation_pairing_tolerance_s: 0.0002 # 默认0.0002 s；>=0，只用于输出评价配对。
   visualizations:
     enabled: false # 默认false；开启后生成检测/残差及普通光学校正图。
-    max_frames_per_camera: 30 # 默认30；每目展示上限，不改变统计总体。
-    max_pairs: 30 # 默认30；双目展示上限。
+    max_frames_per_camera: 20 # 默认20；每目展示上限，不改变统计总体。
+    max_pairs: 20 # 默认20；双目展示上限。
     sampling: uniform # 默认且当前唯一支持uniform；确定性均匀抽样。
     undistortion:
       enabled: true # 默认true；父级enabled=true时生成每目独立普通光学去畸变图，不补偿逐行运动。

@@ -915,7 +915,9 @@ class IccImu(object):
         def formatIndented(self, indent, np_array):
             return indent + str(np.array_str(np_array)).replace('\n',"\n"+indent)
 
-        def printDetails(self, dest=sys.stdout):
+        def printDetails(self, dest=None):
+            if dest is None:
+                dest = sys.stdout
             print("  Model: {0}".format(self.data["model"]), file=dest)
             kc.ImuParameters.printDetails(self, dest)
             print("  T_ib (imu0 to imu{0})".format(self.imuNr), file=dest)
@@ -1388,7 +1390,9 @@ class IccScaledMisalignedImu(IccImu):
             self.data = imuConfig.data
             self.data["model"] = "scale-misalignment"
 
-        def printDetails(self, dest=sys.stdout):
+        def printDetails(self, dest=None):
+            if dest is None:
+                dest = sys.stdout
             IccImu.ImuParameters.printDetails(self, dest)
             print("  Gyroscope: ", file=dest)
             print("    M:", file=dest)
@@ -1544,7 +1548,9 @@ class IccScaledMisalignedSizeEffectImu(IccScaledMisalignedImu):
             self.data = imuConfig.data
             self.data["model"] = "scale-misalignment-size-effect"
 
-        def printDetails(self, dest=sys.stdout):
+        def printDetails(self, dest=None):
+            if dest is None:
+                dest = sys.stdout
             IccScaledMisalignedImu.ImuParameters.printDetails(self, dest)
             print("    rx_i [m]:", file=dest)
             print(self.formatIndented("      ", \

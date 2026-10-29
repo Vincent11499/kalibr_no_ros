@@ -186,7 +186,9 @@ def validate_options(task):
                 "camera_baselink_calibration requires dataset.type: directory")
         _input_path(task.get("camera_calibration"), "camera_calibration")
         base_link = task.get("base_link")
-        _fields(base_link, {"frame_id", "position_scale_m"}, "base_link")
+        _fields(base_link, {
+            "frame_id", "position_scale_m", "rotation_left_correction",
+        }, "base_link")
         frame_id = base_link.get("frame_id", "base_link")
         if (not isinstance(frame_id, str)
                 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_/-]*", frame_id)):
@@ -194,6 +196,20 @@ def validate_options(task):
         _positive(
             base_link.get("position_scale_m"),
             "base_link.position_scale_m")
+        from .camera_baselink import (
+            CameraBaselinkError, _correct_output_rotation)
+        try:
+            _correct_output_rotation(
+                [[1.0, 0.0, 0.0],
+                 [0.0, 1.0, 0.0],
+                 [0.0, 0.0, 1.0]],
+                base_link.get("rotation_left_correction", [
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                ]))
+        except CameraBaselinkError as error:
+            raise TaskError(str(error)) from error
         if task["output"].get("export_poses"):
             raise TaskError(
                 "camera_baselink_calibration does not support output.export_poses")

@@ -385,6 +385,9 @@ class ReportingTest(unittest.TestCase):
         self.assertFalse(prepare_evaluation_artifacts(artifacts, options)["evaluation_views"])
 
     def test_output_options_reject_typos_and_invalid_ranges(self):
+        defaults = validate_output_options()
+        self.assertEqual(defaults["visualizations"]["max_frames_per_camera"], 20)
+        self.assertEqual(defaults["visualizations"]["max_pairs"], 20)
         invalid = [
             {"unexpected": True}, {"export_opencv": 1}, {"archive_selection_history": True},
             {"evaluation_pairing_tolerance_s": -1}, {"rectification": {"balance": 1.1}},

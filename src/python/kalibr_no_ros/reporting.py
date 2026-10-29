@@ -571,12 +571,14 @@ def _summary(metrics, assessment):
         if "movement_residual_mm" in camera:
             lines.append(
                 "  base_link direct difference: pairs={}, movement RMS={} mm, "
-                "platform rank ratio={}, camera rank ratio={}, pitch={} deg".format(
+                "platform rank ratio={}, camera rank ratio={}, pitch={} deg, "
+                "rotation left correction={}".format(
                     camera.get("effective_pairs"),
                     _format(camera.get("movement_residual_mm")),
                     _format(camera.get("platform_second_first_ratio")),
                     _format(camera.get("camera_second_first_ratio")),
-                    _format(camera.get("pitch"))))
+                    _format(camera.get("pitch")),
+                    _format(camera.get("rotation_left_correction"))))
         if "timeshift_cam_imu_s" in camera:
             lines.append("  camera/IMU time shift={} s".format(_format(camera["timeshift_cam_imu_s"])))
     for name, pair in metrics.get("stereo_pairs", {}).items():
@@ -694,7 +696,10 @@ def evaluate_run(input_dir, output_dir, options=None, dataset=None, force=False)
     require_document_version(load_yaml(source_result), 'calibration', 'calibration_result')
     options = validate_output_options(options)
     source_root = source_result.parent
-    evidence = source_root if source_result.name == 'calibration.yaml' else source_root / source_result.stem
+    contained = ((source_root / '.inventory.json').is_file()
+                 and (source_root / 'run_manifest.json').is_file())
+    evidence = (source_root if source_result.name == 'calibration.yaml' or contained
+                else source_root / source_result.stem)
     output = Path(output_dir).resolve()
     if output == source_root or output in source_root.parents or source_root in output.parents:
         raise ReportingError('evaluation output must be separate from the source run')

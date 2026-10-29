@@ -5,12 +5,12 @@ dataset:
   type: directory
   path: __DATASET_PATH__
 target:
-  path: aprilgrid.yaml
+  path: 测试场_aprilgrid_8x8.yaml
 camera_calibration:
   path: __CAMERA_CALIBRATION_PATH__
 imus:
   - id: imu0
-    path: imu.yaml
+    path: imu_noise.yaml
     model: calibrated
 rolling_shutter:
   cam0:
@@ -23,32 +23,22 @@ rolling_shutter:
     max_abs_line_delay_s: 0.00002
 calibration:
   window_half_size_px: 7
-  max_displacement_px: 1.0
+  max_displacement_px: 2.0
   max_iterations: 30
   time_offset_padding_s: 0.03
   reprojection_sigma_px: 1.0
-  calibrate_time_offset: true
-  synchronize_clocks: false
   recompute_camera_chain_extrinsics: false
 execution:
   detector_processes: 8
-  optimizer_threads: 4
+  optimizer_threads: 8
   detector_inflight_per_worker: 2
   detector_opencv_threads: 1
-  profiling_memory_sample_interval_s: 0.25
 output:
   name: __OUTPUT_NAME__
   save_diagnostics: true
   save_metrics: true
-  archive_observations: true
-  archive_selection_history: true
-  export_opencv: false
-  evaluation_pairing_tolerance_s: 0.0001
   visualizations:
     enabled: true
-    max_frames_per_camera: 60
-    max_pairs: 60
+    max_frames_per_camera: 20
+    max_pairs: 20
     sampling: uniform
-  assessment:
-    reference_grading: true
-    rules: []

@@ -639,7 +639,9 @@ def saveResultTxt(cself, filename="camera_calibration_result.txt"):
     f1=open(filename, 'w')
     printParameters(cself, f1)
 
-def printParameters(cself, dest=sys.stdout):
+def printParameters(cself, dest=None):
+    if dest is None:
+        dest = sys.stdout
 
     print("Calibration results ", file=dest)
     print("====================", file=dest)

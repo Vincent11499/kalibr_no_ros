@@ -150,8 +150,8 @@ def create_manifest(machine_root: Path | str) -> Path:
         "created_at": _utc_now(),
         "kalibr": {
             "binary": "install/release/bin/kalibr-noros",
-            "task_template": "config/mechine/stereo_camera_calibration_task_pinhole_equi.yaml",
-            "target": "config/mechine/aprilgrid.yaml",
+            "task_template": "config/mechine/workflow_v1.0.0/stereo_camera_calibration_task.yaml",
+            "target": "config/mechine/workflow_v1.0.0/测试场_aprilgrid_8x8.yaml",
             "calibration_label": "pinhole_equi",
             "verify_options": copy.deepcopy(VERIFY_OPTIONS),
         },

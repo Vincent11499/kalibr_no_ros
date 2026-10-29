@@ -357,8 +357,8 @@ output:
   archive_observations: true
   visualizations:
     enabled: true
-    max_frames_per_camera: 60
-    max_pairs: 60
+    max_frames_per_camera: 20
+    max_pairs: 20
     sampling: uniform
 ```
 
