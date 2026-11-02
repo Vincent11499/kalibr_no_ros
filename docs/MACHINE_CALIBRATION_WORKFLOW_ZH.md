@@ -197,6 +197,21 @@ camera_imu:
   recompute_extrinsics: false
 ```
 
+不同任务使用不同标定板时，按任务覆盖：
+
+```yaml
+targets:
+  camera: aprilgrid_1
+  camera_imu: aprilgrid_1
+  camera_baselink: aprilgrid_2
+  mono_camera: aprilgrid_1
+  mono_camera_baselink: aprilgrid_2
+```
+
+已用旧全局 `target: aprilgrid_1` 完成 `camera`、`camera_imu` 后，再新增
+`camera_baselink` 时，应把两个已完成任务明确保留为 `aprilgrid_1`，只给新任务配置
+`aprilgrid_2`。程序按每个任务最终生效的标定板比较，因此前两个任务继续复用。
+
 同类数据存在多个候选时，明确指定直接子目录名：
 
 ```yaml
@@ -216,7 +231,7 @@ USB 单目目录统一使用上述 `usb_` / `usb_base_link_` 前缀，`HHMM` 为
 不再识别 `stereo_baselink_*`、`usb_baselink_*`、`mono_*`、`mono_base_link_*` 或
 `mono_baselink_*` 目录名称；这类旧名及形似任务但后缀不合法的目录会被静默跳过。
 这次只改目录约定；`datasets.mono`、`datasets.mono_baselink`、`mono_camera_baselink`
-以及单目阶段名保持不变，标定板仍为两个模组共用的 AprilGrid。
+以及单目阶段名保持不变；各任务默认使用模板中的 AprilGrid，也可由 `targets` 分别覆盖。
 
 字段含义：
 
@@ -225,7 +240,7 @@ USB 单目目录统一使用上述 `usb_` / `usb_base_link_` 前缀，`HHMM` 为
 | `schema_version` | 固定为字符串 `"1.0.0"` |
 | `kind` | 固定为 `machine_calibration_workflow` |
 | `machine_dir` | 本次标定批次目录；相对路径以 `user.yaml` 所在目录为基准；父目录必须严格使用 `<machine_version>-<machine_num>`，批次名匹配安全名称规则；例如 `EVT312-02/1029` 从父目录得到 `EVT312` 和字符串编号 `"02"` |
-| `target` | 可选；只填安全文件名stem，例如 `aprilgrid_1`；从安装的 `config/mechine/aprilgrid_1.yaml` 读取，省略时使用内部profile标定板 |
+| `targets` | 可选映射；键为五个任务名，值为文件名 stem，例如 `aprilgrid_1` 或 `测试场_aprilgrid_8x8`；支持 Unicode 字母/数字、下划线和连字符，不允许空格、点号或路径分隔符；未列出的任务使用自身 task 模板的 `target.path` |
 | `datasets.stereo` | 可选；指定双目数据的直接子目录名 |
 | `datasets.stereo_imu` | 可选；指定双目＋IMU 数据的直接子目录名 |
 | `datasets.stereo_baselink` | 可选；强制指定严格命名的双目 BaseLink 数据直接子目录 |
@@ -234,15 +249,34 @@ USB 单目目录统一使用上述 `usb_` / `usb_base_link_` 前缀，`HHMM` 为
 | `camera.mode` | 可选；`standard` 或 `rolling_shutter`，默认 `standard`；控制双目相机阶段 |
 | `camera_imu.mode` | 必填；`standard` 或 `rolling_shutter`，程序不自动切换 |
 | `camera_imu.recompute_extrinsics` | 可选布尔值，默认 `false`；映射到底层 `recompute_camera_chain_extrinsics` |
-| `camera_baselink` | 可选；省略且无对应数据时为 `disabled`；有数据但缺配置时在求解前报错 |
-| `mono_camera_baselink` | 可选；单目 BaseLink 配置，只能含 `cam0`；有数据但缺配置时在求解前报错 |
+| `camera_baselink` | 可选；省略且无对应数据时为 `disabled`；有数据但缺配置时只阻塞该分支并返回非零状态，其他独立分支继续 |
+| `mono_camera_baselink` | 可选；单目 BaseLink 配置，只能含 `cam0`；有数据但缺配置时只阻塞该分支并返回非零状态，其他独立分支继续 |
 
 任务模板、IMU 参数、初始化、求解线程和输出开关属于已安装的机型 profile，
-不放到操作员接口。target 只暴露已安装标定板文件的安全stem，不接受任意路径。
-省略 target 时，当前发布 profile 使用 8×10 AprilGrid、`tagSize=0.07 m`、
-`tagSpacing=0.3`、`tagStartId=0`；两个模组均为 `pinhole-equi`，共用这份 AprilGrid。
-双目为 `cam0/cam1`（可带 `imu0`），独立单目为局部 `cam0`。换标定板、相机
-模型、IMU 噪声或 RS 行时间边界属于开发者发布新 profile，不应由操作员临时改值。
+不放到操作员接口。`targets` 只暴露已安装标定板文件的安全 stem，不接受任意路径。
+任务未在 `targets` 中覆盖时，当前发布 profile 使用 8×8 AprilGrid，
+`tagSize=0.065 m`、`tagSpacing=0.3`、`tagStartId=80`；两个模组均为
+`pinhole-equi`，默认共用这份 AprilGrid。
+双目为 `cam0/cam1`（可带 `imu0`），独立单目为局部 `cam0`。新增或修改标定板
+参数、相机模型、IMU 噪声或 RS 行时间边界属于开发者发布内容，不应由操作员临时改值；
+操作员只在已安装标定板之间通过 `targets` 选择。
+
+运行时先一次性搜索五类规范数据集目录；找到时显示目录名，未找到时立即以黄色
+`[未发现]` 显示对应命名规则。随后只校验实际找到的数据集。数据集搜索仍显示
+`[1/5]` 至 `[5/5]`，标定任务则按本次实际数据数量编号，例如只有双目和双目 BaseLink
+时显示 `[1/2]`、`[2/2]`。没有数据的阶段不占任务编号，任务之间保留两个空行。
+交互式终端中成功为绿色、失败为红色、等待或复用为黄色；重定向到文件时自动去掉 ANSI 颜色。
+每个完成任务显示最终使用图像数、角点数、RMS，以及任务适用的双目对齐、时间修正、
+行延时或 BaseLink pitch 等摘要。终端不重复打印结果、HTML、PDF 的完整路径；完整原生
+求解输出仍保存在对应任务目录的 `stdout.log`，正式文件位置遵循本文第 5 节目录约定。
+
+新数据集首次校验会重新解析 manifest、CSV 和 IMU，检查传感器组成及全部引用路径，
+但图像只读取文件元数据，不读取像素内容。快照包含相对路径、大小、`mtime_ns`、
+`ctime_ns`、inode 和 device，保存于
+`result/.kalibr-cedarobot/input_hash_cache.json`。后续元数据完全一致时直接复用；发现
+变化时才计算内容 SHA-256，原有旧版内容哈希记录在缓存缺失时也会完整复核以保持兼容。
+缓存损坏会按已有 workflow state 选择元数据重建或内容复核，缓存符号链接直接拒绝。
+求解结束后再次比较快照；运行期间发生变化时计算内容指纹并拒绝发布该次结果。
 
 ### 3.1 启用 Camera–BaseLink
 
@@ -290,7 +324,8 @@ mono_camera_baselink:
 单目 BaseLink 结果写出前固定左乘绕 Y 轴 180° 的旋转矩阵，配置平移不变。
 两个模组若都相对同一机体坐标系，应使用相同 `frame_id`，且平移均在该坐标系内测量。
 `mono_camera_baselink` 只引用本次机器工作流中的单目标定结果，不搜索或回退到双目
-`cam0`。若发现单目 BaseLink 数据却缺少单目数据，工作流在启动任何求解前报错，即使双目结果存在。
+`cam0`。若发现单目 BaseLink 数据却缺少单目数据，该分支显示黄色等待；双目、双目
+Camera–IMU 和双目 BaseLink 等独立分支继续执行，命令不因此返回失败。
 
 ## 4. 普通与滚动快门 Camera–IMU
 
@@ -322,8 +357,8 @@ camera_imu:
 `recompute_extrinsics: true` 仅让联合阶段重新优化相机链相邻外参，仍精确引用本次
 工作流的相机结果，不会重做相机内参初始化。
 
-`stereo_imu_*` 存在但没有 `stereo_*` 时，工作流在启动任何求解前报错。它不会用动态
-Camera–IMU 数据静默替代本流程要求的静态双目内外参阶段。
+`stereo_imu_*` 存在但没有 `stereo_*` 时，Camera–IMU 分支显示黄色等待；不影响可独立
+执行的单目分支。它不会用动态 Camera–IMU 数据静默替代本流程要求的静态双目内外参阶段。
 
 ## 5. 输出、状态与续跑
 
@@ -578,8 +613,8 @@ Camera–IMU 和 BaseLink 结果始终记录并复核实际引用的对应模组
 ## 6. 失败与并发规则
 
 - 同一批次同一时间只允许一个工作流持有锁；第二个进程立即报错，不等待或并行写结果。
-- 发现 Camera–IMU 或 BaseLink 下游数据时，必须同时发现同模组的相机数据；否则预检
-  直接报错，不跨模组回退，也不启动任何求解。
+- 发现 Camera–IMU 或 BaseLink 下游数据但缺少同模组相机数据时，只将该下游标记为
+  `waiting_for_prerequisite_dataset`；不跨模组回退，其他独立分支继续执行。
 - 阶段顺序为双目 → 双目 Camera–IMU → 双目 BaseLink → 单目 → 单目 BaseLink。
   缺少某阶段的数据不会阻止另一模组的可执行阶段，缺少 IMU 数据不阻止两种 BaseLink。
   已开始的求解若抛出异常，本次命令立即停止；修复后重复命令续跑。
@@ -591,8 +626,9 @@ Camera–IMU 和 BaseLink 结果始终记录并复核实际引用的对应模组
   或覆盖无法完整核验的文件。
 - 受管结果目录存在未知文件、损坏清单或符号链接时拒绝覆盖，保留现场供维护人员检查。
 - `waiting_for_dataset` 表示当前已完成可执行阶段，不是错误；终端会打印需要补充的目录角色。
-  非规范目录静默跳过；重复的规范候选、缺少前置数据或缺少 BaseLink 配置在求解前返回
-  非零状态；`failed` 表示已启动的任务运行失败，需要处理后重试。
+  `waiting_for_prerequisite_dataset` 同样不是错误。非规范目录静默跳过；重复的规范候选
+  直接报错，缺少 BaseLink 配置只阻塞对应分支并返回非零状态；`failed` 表示已启动的
+  任务运行失败，需要处理后重试。
 
 ## 7. 开发者 profile 与维护接口
 
@@ -605,7 +641,8 @@ Camera–IMU 和 BaseLink 结果始终记录并复核实际引用的对应模组
 它包含默认 AprilGrid、双目初始化、普通和 RS 双目 task、IMU 参数、设备参数固定模板、
 普通和 RS Camera–IMU task、双目 BaseLink task，以及单目和单目 BaseLink task。单目不
 引用双目初始化文件。
-可选标定板 YAML 位于安装后的 `config/mechine/` 根目录，由 `user.yaml.target` 以stem选择。
+可选标定板 YAML 位于安装后的 `config/mechine/` 根目录，由 `user.yaml.targets.<任务名>`
+以 stem 选择。
 profile 必须可移植，不能写机器名、数据绝对路径或输出绝对路径。机器入口以结构化 YAML
 修改注入 `dataset.path`、`output.name`、精确的 `camera_calibration.path`，以及明确配置的
 `base_link` 和每目平移，不做文本替换。
@@ -623,8 +660,8 @@ config/mechine/
 
 模板中分别填写 `../aprilgrid_large.yaml` 和 `../initialization_wide.yaml`。保留在 profile
 目录内的文件仍直接写文件名，例如 `实验室_aprilgrid_8x10.yaml`。绝对路径、逃出 `config/mechine/` 的 `../..` 和
-符号链接都会在求解前拒绝。`user.yaml.target` 一旦填写，仍作为操作接口显式覆盖各 task
-的 `target.path`。
+符号链接都会在求解前拒绝。`user.yaml.targets` 只覆盖明确列出的任务；未列出的任务
+继续使用各自 task 的 `target.path`。旧的全局 `target` 不再接受，必须迁移为任务级映射。
 
 产线精简包通过下列命令发布：
 

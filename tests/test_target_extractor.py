@@ -303,6 +303,26 @@ class TargetExtractorOverlayTest(unittest.TestCase):
         self.assertEqual(
             [observation.index for observation in observations], [1, 2])
 
+    def test_verbose_managed_status_reports_bounded_detection_progress(self):
+        def status_enabled(detail=False):
+            return bool(detail)
+
+        with mock.patch.object(
+                self.module._native_runtime, "status_enabled",
+                side_effect=status_enabled), \
+             mock.patch.object(
+                 self.module._native_runtime, "status") as status:
+            observations = self.module.extractCornersFromDataset(
+                FakeDataset(20), FakeDetector(), multithreading=False)
+        self.assertEqual(len(observations), 13)
+        progress = [
+            call.args[0] for call in status.call_args_list
+            if "processed" in call.args[0]
+        ]
+        self.assertEqual(len(progress), 9)
+        self.assertIn("2/20 processed (10%)", progress[0])
+        self.assertIn("18/20 processed (90%)", progress[-1])
+
     def test_worker_fast_path_does_not_read_measurement_clocks(self):
         taskq = queue.Queue()
         resultq = queue.Queue()

@@ -18,6 +18,7 @@ import json
 import os
 import re
 import tempfile
+import time
 from zoneinfo import ZoneInfo
 
 from kalibr_bag_io.directory import DirectoryReader
@@ -66,6 +67,8 @@ WORKFLOW_KIND = "machine_calibration_workflow"
 STATE_KIND = "machine_calibration_state"
 PROFILE_VERSION = "workflow_v1.0.0"
 CONTROL_DIRECTORY = ".kalibr-cedarobot"
+INPUT_HASH_CACHE = "input_hash_cache.json"
+INPUT_HASH_CACHE_KIND = "machine_input_hash_cache"
 
 _DATASET_PATTERNS = {
     "stereo": re.compile(r"^stereo_\d{6}_\d{4}$"),
@@ -102,7 +105,7 @@ _TEMPLATES = {
     ),
 }
 _BATCH_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
-_TARGET_STEM_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+_TARGET_STEM_PATTERN = re.compile(r"^[^\W_][\w-]{0,63}$", re.UNICODE)
 _DEFAULT_BASE_LINK = {
     "frame_id": "base_link",
     "position_scale_m": 0.01,
@@ -174,9 +177,12 @@ def load_workflow_config(path):
     value = load_yaml(config_path)
     allowed = {
         "schema_version", "kind", "machine_dir", "datasets",
-        "target", "camera", "camera_imu", "camera_baselink",
+        "targets", "camera", "camera_imu", "camera_baselink",
         "mono_camera_baselink",
     }
+    if "target" in value:
+        raise TaskError(
+            "target is no longer supported; use targets.<stage> instead")
     unknown = sorted(set(value) - allowed)
     if unknown:
         raise TaskError(
@@ -226,12 +232,20 @@ def load_workflow_config(path):
                     role))
         selected[role] = name
 
-    target = value.get("target")
-    if target is not None and (
-            not isinstance(target, str)
-            or not _TARGET_STEM_PATTERN.fullmatch(target)):
-        raise TaskError(
-            "target must be a safe config/mechine YAML filename stem")
+    targets = value.get("targets", {})
+    if not isinstance(targets, dict):
+        raise TaskError("targets must be a mapping")
+    unknown_targets = sorted(set(targets) - set(_STAGE_ROLES))
+    if unknown_targets:
+        raise TaskError("unknown targets fields: {}".format(
+            ", ".join(unknown_targets)))
+    for stage, target in targets.items():
+        if (not isinstance(target, str)
+                or not _TARGET_STEM_PATTERN.fullmatch(target)):
+            raise TaskError(
+                "targets.{} must be a config/mechine YAML filename stem "
+                "using Unicode letters/digits, underscores, or hyphens"
+                .format(stage))
 
     camera = value.get("camera", {})
     if not isinstance(camera, dict):
@@ -300,7 +314,7 @@ def load_workflow_config(path):
         "kind": WORKFLOW_KIND,
         "machine_dir": str(machine),
         "datasets": selected,
-        "target": target,
+        "targets": targets,
         "camera": {"mode": camera_mode},
         "camera_imu": {
             "mode": mode,
@@ -316,7 +330,7 @@ def load_workflow_config(path):
         "machine_version": identity["machine_version"],
         "machine_num": identity["machine_num"],
         "datasets": selected,
-        "target": target,
+        "targets": targets,
         "camera": {"mode": camera_mode},
         "camera_mode": camera_mode,
         "camera_imu": {
@@ -331,8 +345,8 @@ def load_workflow_config(path):
     }
 
 
-def discover_dataset(machine_dir, role, selected=None):
-    """Return the unique direct-child dataset for ``role`` or ``None``."""
+def _discover_dataset_path(machine_dir, role, selected=None, children=None):
+    """Return a named direct child without opening or hashing its contents."""
     if role not in _DATASET_PATTERNS:
         raise TaskError("unsupported machine dataset role: {}".format(role))
     machine = Path(machine_dir).resolve()
@@ -348,12 +362,10 @@ def discover_dataset(machine_dir, role, selected=None):
             raise TaskError("dataset must not be a symlink: {}".format(candidate))
         if not candidate.is_dir():
             raise TaskError("selected dataset does not exist: {}".format(candidate))
-        candidate = candidate.resolve()
-        _validate_dataset_role(candidate, role)
-        return candidate
+        return candidate.resolve()
 
     candidates = []
-    for candidate in machine.iterdir():
+    for candidate in (machine.iterdir() if children is None else children):
         if not pattern.fullmatch(candidate.name):
             continue
         if candidate.is_symlink():
@@ -367,31 +379,15 @@ def discover_dataset(machine_dir, role, selected=None):
         raise TaskError(
             "multiple {} datasets found; set datasets.{} in user.yaml: {}".format(
                 role, role, ", ".join(item.name for item in candidates)))
-    _validate_dataset_role(candidates[0], role)
     return candidates[0]
 
 
-def _preflight_datasets(datasets, config):
-    issues = []
-    for child, parent in (
-            ("stereo_imu", "stereo"),
-            ("stereo_baselink", "stereo"),
-            ("mono_baselink", "mono")):
-        if datasets.get(child) is not None and datasets.get(parent) is None:
-            issues.append(
-                "{} dataset {} requires a {} dataset".format(
-                    child, datasets[child]["name"], parent))
-    for role, field in (
-            ("stereo_baselink", "camera_baselink"),
-            ("mono_baselink", "mono_camera_baselink")):
-        if datasets.get(role) is not None and config.get(field) is None:
-            issues.append(
-                "{} dataset {} requires {} configuration".format(
-                    role, datasets[role]["name"], field))
-    if issues:
-        raise TaskError(
-            "machine workflow dataset preflight failed:\n- "
-            + "\n- ".join(issues))
+def discover_dataset(machine_dir, role, selected=None):
+    """Return the unique validated direct-child dataset or ``None``."""
+    candidate = _discover_dataset_path(machine_dir, role, selected)
+    if candidate is not None:
+        _validate_dataset_role(candidate, role)
+    return candidate
 
 
 def _safe_child(root, relative, label, *, directory=False):
@@ -472,22 +468,256 @@ def _validate_dataset_role(dataset, role):
     return reader
 
 
-def dataset_fingerprint(dataset, role):
-    """Validate sensor composition and hash every solver-referenced input."""
+def _file_metadata(path):
+    stat = Path(path).stat()
+    return {
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "ctime_ns": stat.st_ctime_ns,
+        "inode": stat.st_ino,
+        "device": stat.st_dev,
+    }
+
+
+def _valid_cached_metadata(value):
+    return (isinstance(value, dict)
+            and all(isinstance(value.get(key), int)
+                    and not isinstance(value.get(key), bool) for key in (
+                        "size", "mtime_ns", "ctime_ns", "inode", "device")))
+
+
+def _cached_file_hash(value):
+    if (not _valid_cached_metadata(value)
+            or not isinstance(value.get("sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", value["sha256"]) is None):
+        return None
+    return value["sha256"]
+
+
+def _metadata_fingerprint(dataset, role, dataset_id, snapshots):
+    digest = hashlib.sha256()
+    for relative in sorted(snapshots):
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        metadata = snapshots[relative]
+        for key in ("size", "mtime_ns", "ctime_ns", "inode", "device"):
+            digest.update(str(metadata[key]).encode("ascii"))
+            digest.update(b"\0")
+        digest.update(b"\n")
+    return {
+        "role": role,
+        "path": str(dataset),
+        "name": dataset.name,
+        "dataset_id": dataset_id,
+        "sha256": digest.hexdigest(),
+        "fingerprint_type": "metadata",
+        "file_count": len(snapshots),
+    }
+
+
+def _valid_cached_record(value, dataset, role, dataset_id, file_count):
+    return (isinstance(value, dict)
+            and value.get("role") == role
+            and value.get("path") == str(dataset)
+            and value.get("name") == dataset.name
+            and value.get("dataset_id") == dataset_id
+            and value.get("file_count") == file_count
+            and value.get("fingerprint_type", "content")
+            in {"content", "metadata"}
+            and isinstance(value.get("sha256"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", value["sha256"]) is not None)
+
+
+def _empty_input_hash_cache():
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": INPUT_HASH_CACHE_KIND,
+        "datasets": {},
+    }
+
+
+def _load_input_hash_cache(path):
+    path = Path(path)
+    if path.is_symlink():
+        raise TaskError("input hash cache must not be a symlink: {}".format(path))
+    if not path.exists():
+        return _empty_input_hash_cache()
+    if not path.is_file():
+        raise TaskError("input hash cache must be a regular file: {}".format(path))
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return _empty_input_hash_cache()
+    if (not isinstance(value, dict)
+            or value.get("schema_version") != SCHEMA_VERSION
+            or value.get("kind") != INPUT_HASH_CACHE_KIND
+            or not isinstance(value.get("datasets"), dict)):
+        return _empty_input_hash_cache()
+    return value
+
+
+def _write_input_hash_cache(path, value):
+    path = Path(path)
+    if path.is_symlink():
+        raise TaskError("input hash cache must not be a symlink: {}".format(path))
+    _atomic_json(path, value)
+
+
+def _fingerprint_dataset(
+        dataset, role, cached=None, progress=None, expected_record=None,
+        force_content=False):
+    """Return a fast metadata fingerprint, hashing content only when needed."""
+    started = time.monotonic()
     dataset = Path(dataset).resolve()
     reader = _validate_dataset_role(dataset, role)
     manifest = reader.manifest
-
-    digest = hashlib.sha256()
     files = _dataset_files(dataset, manifest)
+    cached_files = (cached.get("files", {})
+                    if isinstance(cached, dict)
+                    and cached.get("role") == role
+                    and cached.get("dataset_id") == reader.dataset_id
+                    and isinstance(cached.get("files"), dict) else {})
+    snapshots = {}
+    total_bytes = 0
     for path in files:
         relative = path.relative_to(dataset).as_posix()
-        file_digest = _sha256(path)
+        metadata = _file_metadata(path)
+        snapshots[relative] = metadata
+        total_bytes += metadata["size"]
+
+    metadata_matches = (
+        set(cached_files) == set(snapshots)
+        and all(_valid_cached_metadata(cached_files[relative])
+                and all(cached_files[relative][key] == metadata[key]
+                        for key in metadata)
+                for relative, metadata in snapshots.items()))
+    cached_record = cached.get("record") if isinstance(cached, dict) else None
+    if (metadata_matches
+            and _valid_cached_record(
+                cached_record, dataset, role, reader.dataset_id, len(files))):
+        record = dict(cached_record)
+        statistics = {
+            "file_count": len(files),
+            "total_bytes": total_bytes,
+            "reused_files": len(files),
+            "hashed_files": 0,
+            "hashed_bytes": 0,
+            "mode": "cache",
+            "elapsed_s": time.monotonic() - started,
+        }
+        if progress is not None:
+            progress("start", {
+                "dataset": dataset.name, "role": role, **statistics})
+            progress("complete", {
+                "dataset": dataset.name, "role": role, **statistics})
+        return record, cached, statistics
+
+    reusable = {}
+    if metadata_matches:
+        for relative, candidate in cached_files.items():
+            file_hash = _cached_file_hash(candidate)
+            if file_hash is not None:
+                reusable[relative] = file_hash
+    legacy_cache_complete = (
+        metadata_matches and len(reusable) == len(files))
+    if legacy_cache_complete and cached_record is None:
+        force_content = True
+
+    expected_is_content = (
+        isinstance(expected_record, dict)
+        and expected_record.get("fingerprint_type", "content") == "content")
+    needs_content_hash = (
+        force_content or expected_is_content or legacy_cache_complete
+        or bool(cached_files) and not metadata_matches)
+
+    if not needs_content_hash:
+        record = _metadata_fingerprint(
+            dataset, role, reader.dataset_id, snapshots)
+        cache_entry = {
+            "role": role,
+            "dataset_id": reader.dataset_id,
+            "record": record,
+            "files": dict(snapshots),
+        }
+        statistics = {
+            "file_count": len(files),
+            "total_bytes": total_bytes,
+            "reused_files": 0,
+            "hashed_files": 0,
+            "hashed_bytes": 0,
+            "mode": "metadata_snapshot",
+            "elapsed_s": time.monotonic() - started,
+        }
+        if progress is not None:
+            progress("start", {
+                "dataset": dataset.name, "role": role, **statistics})
+            progress("complete", {
+                "dataset": dataset.name, "role": role, **statistics})
+        return record, cache_entry, statistics
+
+    hashed = [path for path in files
+              if path.relative_to(dataset).as_posix() not in reusable]
+    hashed_bytes = sum(
+        snapshots[path.relative_to(dataset).as_posix()]["size"]
+        for path in hashed)
+    if progress is not None:
+        progress("start", {
+            "dataset": dataset.name,
+            "role": role,
+            "file_count": len(files),
+            "total_bytes": total_bytes,
+            "reused_files": len(reusable),
+            "hashed_files": len(hashed),
+            "hashed_bytes": hashed_bytes,
+            "mode": "content_hash",
+        })
+
+    hashes = dict(reusable)
+    processed_bytes = 0
+    last_percent = 0
+    for path in hashed:
+        relative = path.relative_to(dataset).as_posix()
+        before = _file_metadata(path)
+        if before != snapshots[relative]:
+            raise TaskError(
+                "input changed while preparing its hash: {}".format(path))
+        hashes[relative] = _sha256(path)
+        after = _file_metadata(path)
+        if after != before:
+            raise TaskError(
+                "input changed while it was being hashed: {}".format(path))
+        processed_bytes += after["size"]
+        percent = (100 if hashed_bytes == 0 else
+                   min(100, int(processed_bytes * 100 / hashed_bytes)))
+        milestone = min(100, (percent // 10) * 10)
+        if progress is not None and milestone > last_percent:
+            last_percent = milestone
+            progress("progress", {
+                "dataset": dataset.name,
+                "role": role,
+                "percent": milestone,
+                "processed_bytes": processed_bytes,
+                "hashed_bytes": hashed_bytes,
+            })
+
+    for path in files:
+        relative = path.relative_to(dataset).as_posix()
+        if _file_metadata(path) != snapshots[relative]:
+            raise TaskError(
+                "input changed during dataset verification: {}".format(path))
+
+    digest = hashlib.sha256()
+    cache_files = {}
+    for path in files:
+        relative = path.relative_to(dataset).as_posix()
+        file_digest = hashes[relative]
         digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
         digest.update(file_digest.encode("ascii"))
         digest.update(b"\n")
-    return {
+        cache_files[relative] = {
+            **snapshots[relative], "sha256": file_digest}
+    record = {
         "role": role,
         "path": str(dataset),
         "name": dataset.name,
@@ -495,6 +725,33 @@ def dataset_fingerprint(dataset, role):
         "sha256": digest.hexdigest(),
         "file_count": len(files),
     }
+    cache_entry = {
+        "role": role,
+        "dataset_id": reader.dataset_id,
+        "record": record,
+        "files": cache_files,
+    }
+    statistics = {
+        "file_count": len(files),
+        "total_bytes": total_bytes,
+        "reused_files": len(reusable),
+        "hashed_files": len(hashed),
+        "hashed_bytes": hashed_bytes,
+        "mode": "content_hash",
+        "elapsed_s": time.monotonic() - started,
+    }
+    if progress is not None:
+        progress("complete", {
+            "dataset": dataset.name,
+            "role": role,
+            **statistics,
+        })
+    return record, cache_entry, statistics
+
+
+def dataset_fingerprint(dataset, role):
+    """Validate sensor composition and hash every solver-referenced input."""
+    return _fingerprint_dataset(dataset, role, force_content=True)[0]
 
 
 def _profile_directory(prefix):
@@ -579,34 +836,50 @@ def _profile_reference(profile, relative, label):
     return resolved
 
 
-def _profile_dependencies(profile, target, config):
+def _active_template_names(config):
+    return {
+        "camera": _TEMPLATES[
+            "camera" if config["camera_mode"] == "standard"
+            else "camera_rolling_shutter"],
+        "camera_imu": _TEMPLATES[
+            "camera_imu_" + config["camera_imu_mode"]],
+        "camera_baselink": _TEMPLATES["camera_baselink"],
+        "mono_camera": _TEMPLATES["mono_camera"],
+        "mono_camera_baselink": _TEMPLATES["mono_camera_baselink"],
+    }
+
+
+def _effective_target_paths(profile, overrides, config):
+    targets = {}
+    for stage, template_name in _active_template_names(config).items():
+        selected = overrides.get(stage)
+        if selected is not None:
+            targets[stage] = Path(selected).resolve()
+            continue
+        task = load_yaml(profile / template_name)
+        block = task.get("target")
+        if not isinstance(block, dict) or not block.get("path"):
+            raise TaskError(
+                "machine {} template must define target.path".format(stage))
+        targets[stage] = _profile_reference(
+            profile, block["path"], "{}.target.path".format(stage))
+    return targets
+
+
+def _profile_dependencies(profile, targets, config):
     dependencies = {}
 
     def add(path, stages):
         name = _profile_relative_path(profile, path)
         dependencies.setdefault(name, set()).update(stages)
 
-    active_templates = (
-        (_TEMPLATES[
-            "camera" if config["camera_mode"] == "standard"
-            else "camera_rolling_shutter"],
-         _RECALIBRATION_STAGES["stereo"]),
-        (_TEMPLATES["camera_imu_" + config["camera_imu_mode"]],
-         _RECALIBRATION_STAGES["stereo_imu"]),
-        (_TEMPLATES["camera_baselink"],
-         _RECALIBRATION_STAGES["stereo_baselink"]),
-        (_TEMPLATES["mono_camera"],
-         _RECALIBRATION_STAGES["mono"]),
-        (_TEMPLATES["mono_camera_baselink"],
-         _RECALIBRATION_STAGES["mono_baselink"]),
-    )
-    for template_name, stages in active_templates:
+    for stage, template_name in _active_template_names(config).items():
+        stages = _RECALIBRATION_STAGES[_STAGE_ROLES[stage]]
         template_path = profile / template_name
         add(template_path, stages)
         task = load_yaml(template_path)
+        add(targets[stage], stages)
         references = []
-        if target is None:
-            references.append(("target.path", task.get("target")))
         references.append(("initialization.path", task.get("initialization")))
         references.extend(
             ("imus[{}].path".format(index), imu)
@@ -619,7 +892,15 @@ def _profile_dependencies(profile, target, config):
             for name, stages in sorted(dependencies.items())}
 
 
-def _profile_provenance(profile, target, config):
+def _profile_target_record(profile, path):
+    return {
+        "path": _profile_relative_path(profile, path),
+        "sha256": _sha256(path),
+    }
+
+
+def _profile_provenance(profile, target_overrides, config):
+    targets = _effective_target_paths(profile, target_overrides, config)
     files = {}
     config_root = profile.parent
     for path in sorted(config_root.rglob("*.yaml")):
@@ -629,9 +910,12 @@ def _profile_provenance(profile, target, config):
     return {
         "version": PROFILE_VERSION,
         "files": files,
-        "dependencies": _profile_dependencies(profile, target, config),
-        "target": ({"name": target.name, "sha256": _sha256(target)}
-                   if target is not None else None),
+        "dependencies": _profile_dependencies(profile, targets, config),
+        "targets": {
+            stage: _profile_target_record(profile, path)
+            for stage, path in targets.items()
+        },
+        "target_overrides": sorted(target_overrides),
     }
 
 
@@ -1066,6 +1350,24 @@ def _binding(config, profile, software, datasets):
     }
 
 
+def _stored_profile_targets(profile):
+    targets = profile.get("targets")
+    if isinstance(targets, dict):
+        return targets
+    legacy = profile.get("target")
+    if legacy is None:
+        return None
+    if (not isinstance(legacy, dict)
+            or not isinstance(legacy.get("name"), str)
+            or not isinstance(legacy.get("sha256"), str)):
+        raise TaskError("workflow state contains invalid target provenance")
+    record = {
+        "path": "../" + legacy["name"],
+        "sha256": legacy["sha256"],
+    }
+    return {stage: record for stage in _STAGE_ROLES}
+
+
 def _profile_recalibration(existing, current, binding):
     if (not isinstance(existing, dict) or not isinstance(current, dict)
             or existing.get("version") != current.get("version")):
@@ -1108,9 +1410,17 @@ def _profile_recalibration(existing, current, binding):
         affected.update(stage_files.get(name, ()))
         affected.update(old_dependencies.get(name, ()))
         affected.update(new_dependencies.get(name, ()))
-    if existing.get("target") != current.get("target"):
-        changed.add("@target")
-        affected.update(_STAGE_ROLES)
+    old_targets = _stored_profile_targets(existing)
+    new_targets = _stored_profile_targets(current)
+    if new_targets is None:
+        raise TaskError("workflow state contains invalid target provenance")
+    compared_stages = (
+        current.get("target_overrides", ())
+        if old_targets is None else _STAGE_ROLES)
+    for stage in compared_stages:
+        if old_targets is None or old_targets.get(stage) != new_targets.get(stage):
+            changed.add("@target." + stage)
+            affected.update(_RECALIBRATION_STAGES[_STAGE_ROLES[stage]])
     return changed, [stage for stage in _STAGE_ROLES if stage in affected]
 
 
@@ -1199,7 +1509,7 @@ def _start_recalibration(state, target_binding, changed_roles, datasets,
     }
 
 
-def _preflight_profile_recalibration(profile, target, config, datasets,
+def _preflight_profile_recalibration(profile, targets, config, datasets,
                                      output, affected):
     parents = {
         "camera_imu": "camera",
@@ -1229,7 +1539,7 @@ def _preflight_profile_recalibration(profile, target, config, datasets,
             camera_mode=config["camera_mode"],
             recompute_extrinsics=config[
                 "camera_imu_recompute_extrinsics"],
-            target_path=target)
+            target_path=targets.get(stage))
 
 
 def _stage_summary(status, result=None, action=None, message=None):
@@ -1239,6 +1549,11 @@ def _stage_summary(status, result=None, action=None, message=None):
     if message is not None:
         value["message"] = message
     return value
+
+
+def _emit_progress(callback, event, **details):
+    if callback is not None:
+        callback(event, details)
 
 
 def _completed_stage(output, name, expected_job, dataset_record, task_path,
@@ -1255,10 +1570,33 @@ def _completed_stage(output, name, expected_job, dataset_record, task_path,
     return delivery
 
 
-def _verify_stage_inputs_unchanged(dataset_record, camera_dependency=None):
+def _verify_stage_inputs_unchanged(
+        dataset_record, camera_dependency=None, hash_cache_path=None,
+        progress=None, stage=None):
     """Reject a solve if any content-addressed input changed while it ran."""
-    current_dataset = dataset_fingerprint(
-        dataset_record["path"], dataset_record["role"])
+    if hash_cache_path is None:
+        current_dataset = dataset_fingerprint(
+            dataset_record["path"], dataset_record["role"])
+    else:
+        cache = _load_input_hash_cache(hash_cache_path)
+        key = str(Path(dataset_record["path"]).resolve())
+
+        def report(event, details):
+            if event != "complete":
+                _emit_progress(
+                    progress, "dataset_recheck_" + event,
+                    stage=stage, **details)
+
+        current_dataset, entry, statistics = _fingerprint_dataset(
+            dataset_record["path"], dataset_record["role"],
+            cached=cache["datasets"].get(key), progress=report,
+            expected_record=dataset_record)
+        if current_dataset == dataset_record:
+            cache["datasets"][key] = entry
+            _write_input_hash_cache(hash_cache_path, cache)
+            _emit_progress(
+                progress, "dataset_recheck_complete",
+                stage=stage, dataset=dataset_record["name"], **statistics)
     if current_dataset != dataset_record:
         raise TaskError(
             "dataset changed during calibration; keep capture files immutable "
@@ -1274,7 +1612,8 @@ def _verify_stage_inputs_unchanged(dataset_record, camera_dependency=None):
 def _run_stage(*, prefix, runner, output, tasks, state_path, state,
                stage_name, task, output_name, expected_job,
                dataset_record, camera_dependency=None, recalibrate=False,
-               previous_delivery=None, force_recalibrate=False):
+               previous_delivery=None, force_recalibrate=False,
+               hash_cache_path=None, progress=None):
     _ensure_managed_directory(tasks, state_path.parent)
     final_task_path = tasks / (output_name + ".task.yaml")
     task_path = (
@@ -1346,7 +1685,9 @@ def _run_stage(*, prefix, runner, output, tasks, state_path, state,
             prefix, task_path, output, expected_job,
             force=previous_delivery is not None)
         _verify_stage_inputs_unchanged(
-            dataset_record, camera_dependency=camera_dependency)
+            dataset_record, camera_dependency=camera_dependency,
+            hash_cache_path=hash_cache_path, progress=progress,
+            stage=stage_name)
         delivery = _completed_stage(
             output, output_name, expected_job, dataset_record, task_path,
             camera_dependency=camera_dependency)
@@ -1522,7 +1863,7 @@ def _update_calib_params(*, machine, output, profile, deliveries,
     return summary
 
 
-def run_machine_workflow(prefix, config_path, runner=None):
+def run_machine_workflow(prefix, config_path, runner=None, progress=None):
     """Run or resume the staged calibration for one machine directory."""
     if runner is None:
         runner = _run_task
@@ -1536,19 +1877,76 @@ def run_machine_workflow(prefix, config_path, runner=None):
         raise TaskError("machine result path must be a directory: {}".format(output))
     control = output / CONTROL_DIRECTORY
     profile_dir = _profile_directory(prefix)
-    target_path = _target_file(prefix, profile_dir, config["target"])
-    profile = _profile_provenance(profile_dir, target_path, config)
+    target_paths = {
+        stage: _target_file(prefix, profile_dir, stem)
+        for stage, stem in config["targets"].items()
+    }
+    profile = _profile_provenance(profile_dir, target_paths, config)
     software = _software_provenance()
+    workflow_started = time.monotonic()
+    _emit_progress(
+        progress, "workflow_start", batch=config["batch_name"],
+        machine="{}-{}".format(
+            config["machine_version"], config["machine_num"]))
 
     with _machine_lock(control):
         state_path = control / "state.json"
         state = _load_state(state_path, machine)
-        datasets = {}
-        for role in _DATASET_PATTERNS:
-            dataset_path = discover_dataset(machine, role, config["datasets"].get(role))
-            datasets[role] = (dataset_fingerprint(dataset_path, role)
-                              if dataset_path is not None else None)
-        _preflight_datasets(datasets, config)
+        children = tuple(machine.iterdir())
+        dataset_paths = {}
+        for index, role in enumerate(_DATASET_PATTERNS, 1):
+            _emit_progress(
+                progress, "dataset_start", index=index,
+                total=len(_DATASET_PATTERNS), role=role)
+            dataset_path = _discover_dataset_path(
+                machine, role, config["datasets"].get(role), children)
+            dataset_paths[role] = dataset_path
+            _emit_progress(
+                progress, "dataset_complete", index=index,
+                total=len(_DATASET_PATTERNS), role=role,
+                dataset=(dataset_path.name
+                         if dataset_path is not None else None))
+
+        found = [(role, path) for role, path in dataset_paths.items()
+                 if path is not None]
+        _emit_progress(
+            progress, "dataset_validation_begin", total=len(found))
+        cache_path = control / INPUT_HASH_CACHE
+        hash_cache = _load_input_hash_cache(cache_path)
+        stored_binding = state.get("binding")
+        pending = state.get("pending_recalibration")
+        if pending is not None:
+            stored_binding = pending.get("target_binding")
+        expected_datasets = (
+            stored_binding.get("datasets", {})
+            if isinstance(stored_binding, dict)
+            and isinstance(stored_binding.get("datasets", {}), dict)
+            else {})
+        datasets = {role: None for role in _DATASET_PATTERNS}
+        current_cache_keys = set()
+        for validation_index, (role, dataset_path) in enumerate(found, 1):
+            key = str(dataset_path.resolve())
+            current_cache_keys.add(key)
+
+            def report(event, details, *, index=validation_index):
+                _emit_progress(
+                    progress, "dataset_validation_" + event,
+                    index=index, total=len(found), **details)
+
+            record, entry, unused_statistics = _fingerprint_dataset(
+                dataset_path, role,
+                cached=hash_cache["datasets"].get(key), progress=report,
+                expected_record=expected_datasets.get(role))
+            datasets[role] = record
+            hash_cache["datasets"][key] = entry
+            _write_input_hash_cache(cache_path, hash_cache)
+        hash_cache["datasets"] = {
+            key: value for key, value in hash_cache["datasets"].items()
+            if key in current_cache_keys}
+        _write_input_hash_cache(cache_path, hash_cache)
+        _emit_progress(
+            progress, "dataset_validation_end", total=len(found))
+        _emit_progress(progress, "workflow_state_start")
 
         current_binding = _binding(
             config, profile, software, datasets)
@@ -1566,7 +1964,7 @@ def run_machine_workflow(prefix, config_path, runner=None):
                 state.get("binding"), current_binding)
             if profile_stages:
                 _preflight_profile_recalibration(
-                    profile_dir, target_path, config, datasets, output,
+                    profile_dir, target_paths, config, datasets, output,
                     profile_stages)
             if changed_roles or profile_stages:
                 pending = _start_recalibration(
@@ -1604,13 +2002,21 @@ def run_machine_workflow(prefix, config_path, runner=None):
             "camera_imu_calibration"
             if config["camera_imu_mode"] == "standard"
             else CAMERA_IMU_RS_JOB)
-        for stage, role, expected_job, parent in (
+        stage_specs = (
                 ("camera", "stereo", camera_job, None),
                 ("camera_imu", "stereo_imu", imu_job, "camera"),
                 ("camera_baselink", "stereo_baselink", CAMERA_BASELINK_JOB, "camera"),
                 ("mono_camera", "mono", "camera_calibration", None),
-                ("mono_camera_baselink", "mono_baselink", CAMERA_BASELINK_JOB, "mono_camera")):
+                ("mono_camera_baselink", "mono_baselink", CAMERA_BASELINK_JOB, "mono_camera"))
+        counted_stages = [
+            stage for stage, role, unused_job, unused_parent in stage_specs
+            if datasets[role] is not None]
+        stage_indices = {
+            stage: index for index, stage in enumerate(counted_stages, 1)}
+        for stage, role, expected_job, parent in stage_specs:
             record = datasets[role]
+            stage_index = stage_indices.get(stage)
+            stage_total = len(counted_stages)
             camera_delivery = deliveries.get(parent)
             baselink_config = config.get(stage) if expected_job == CAMERA_BASELINK_JOB else None
             status = None
@@ -1627,45 +2033,79 @@ def run_machine_workflow(prefix, config_path, runner=None):
                     "no {} dataset found; add it and rerun the same command"
                     .format(role))
             elif parent is not None and camera_delivery is None:
-                status = "blocked_missing_camera_calibration"
-                message = (
-                    "dataset {} exists, but the prerequisite {} stage has no "
-                    "completed result; add its dataset and rerun"
-                    .format(record["name"], parent))
+                parent_role = _STAGE_ROLES[parent]
+                if datasets[parent_role] is None:
+                    status = "waiting_for_prerequisite_dataset"
+                    message = (
+                        "dataset {} is waiting for prerequisite {} dataset; "
+                        "other independent branches continue"
+                        .format(record["name"], parent_role))
+                else:
+                    status = "blocked_missing_camera_calibration"
+                    message = (
+                        "dataset {} exists, but the prerequisite {} stage has "
+                        "no completed result"
+                        .format(record["name"], parent))
             if status is not None:
                 state["stages"][stage] = {"status": status}
                 summary[stage] = _stage_summary(status, message=message)
+                _emit_progress(
+                    progress, "stage_skip", index=stage_index,
+                    total=stage_total, stage=stage, status=status,
+                    dataset=(record["name"] if record is not None else None),
+                    message=message)
                 continue
             camera_dependency = ({
                 "path": camera_delivery["result"],
                 "sha256": camera_delivery["files"]["result"],
             } if camera_delivery is not None else None)
             name = record["name"]
-            task = build_task(
-                profile_dir, stage, record["path"], name,
-                camera_result=camera_delivery["result"] if camera_delivery is not None else None,
-                mode=config["camera_imu_mode"],
-                camera_baselink=baselink_config,
-                camera_mode=config["camera_mode"],
-                recompute_extrinsics=config[
-                    "camera_imu_recompute_extrinsics"],
-                target_path=target_path)
-            delivery, action = _run_stage(
-                prefix=prefix, runner=runner, output=output, tasks=tasks,
-                state_path=state_path, state=state,
-                stage_name=stage, task=task, output_name=name,
-                expected_job=expected_job, dataset_record=record,
-                camera_dependency=camera_dependency,
-                recalibrate=stage in recalibration_stages,
-                previous_delivery=previous_deliveries.get(stage),
-                force_recalibrate=(
-                    stage in recalibration_stages
-                    and parent is not None
-                    and stage_actions.get(parent) == "executed"))
+            stage_started = time.monotonic()
+            _emit_progress(
+                progress, "stage_start", index=stage_index,
+                total=stage_total, stage=stage, dataset=name,
+                job=expected_job)
+            try:
+                task = build_task(
+                    profile_dir, stage, record["path"], name,
+                    camera_result=(camera_delivery["result"]
+                                   if camera_delivery is not None else None),
+                    mode=config["camera_imu_mode"],
+                    camera_baselink=baselink_config,
+                    camera_mode=config["camera_mode"],
+                    recompute_extrinsics=config[
+                        "camera_imu_recompute_extrinsics"],
+                    target_path=target_paths.get(stage))
+                delivery, action = _run_stage(
+                    prefix=prefix, runner=runner, output=output, tasks=tasks,
+                    state_path=state_path, state=state,
+                    stage_name=stage, task=task, output_name=name,
+                    expected_job=expected_job, dataset_record=record,
+                    camera_dependency=camera_dependency,
+                    recalibrate=stage in recalibration_stages,
+                    previous_delivery=previous_deliveries.get(stage),
+                    force_recalibrate=(
+                        stage in recalibration_stages
+                        and parent is not None
+                        and stage_actions.get(parent) == "executed"),
+                    hash_cache_path=cache_path, progress=progress)
+            except Exception as error:
+                _emit_progress(
+                    progress, "stage_failed", index=stage_index,
+                    total=stage_total, stage=stage, dataset=name,
+                    elapsed_s=time.monotonic() - stage_started,
+                    error=str(error))
+                raise
             deliveries[stage] = delivery
             stage_actions[stage] = action
             summary[stage] = _stage_summary("completed", delivery["result"], action)
+            _emit_progress(
+                progress, "stage_complete", index=stage_index,
+                total=stage_total, stage=stage, dataset=name,
+                action=action, result=delivery["result"],
+                elapsed_s=time.monotonic() - stage_started)
         try:
+            _emit_progress(progress, "calib_params_start")
             summary["calib_params"] = _update_calib_params(
                 machine=config["machine_root"], output=output,
                 profile=profile_dir, deliveries=deliveries, state=state,
@@ -1673,6 +2113,12 @@ def run_machine_workflow(prefix, config_path, runner=None):
                 camera_imu_mode=config["camera_imu_mode"],
                 state_path=state_path)
             state.pop("calib_params_failure", None)
+            _emit_progress(
+                progress, "calib_params_complete",
+                artifacts={
+                    name: artifact.get("action")
+                    for name, artifact in summary["calib_params"].items()
+                })
         except Exception as error:
             state["calib_params_failure"] = {
                 "type": type(error).__name__, "message": str(error)}
@@ -1682,4 +2128,7 @@ def run_machine_workflow(prefix, config_path, runner=None):
             state["binding"] = deepcopy(pending["target_binding"])
             state.pop("pending_recalibration", None)
         _atomic_json(state_path, state)
+        _emit_progress(
+            progress, "workflow_complete",
+            elapsed_s=time.monotonic() - workflow_started)
         return summary

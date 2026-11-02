@@ -2,6 +2,8 @@
 
 import copy
 import json
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 import sys
 import tempfile
@@ -13,7 +15,8 @@ sys.path.insert(0, str(ROOT / "src/python"))
 
 from kalibr_no_ros.delivery import (
     apply_camera_ids, discover_camera_result, enrich_result,
-    inspect_managed_delivery, MACHINE_LAYOUT, publish, result_name,
+    _print_published_paths, inspect_managed_delivery, MACHINE_LAYOUT,
+    publish, result_name,
 )
 from kalibr_no_ros.evaluation import validate_output_options
 from kalibr_no_ros.reporting import evaluate_run
@@ -97,6 +100,21 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(result_name(imu), "camera_imu_calibration_cam1_cam8_imu0")
         imu["output"]["name"] = "custom_run"
         self.assertEqual(result_name(imu), "custom_run")
+
+    def test_machine_delivery_hides_paths_but_flat_cli_keeps_them(self):
+        paths = {
+            "result": self.output / "stereo.yaml",
+            "html": self.output / "stereo.report.html",
+            "pdf": self.output / "stereo.report.pdf",
+        }
+        flat = StringIO()
+        with redirect_stdout(flat):
+            _print_published_paths(paths, "flat")
+        self.assertIn("[kalibr] result=", flat.getvalue())
+        machine = StringIO()
+        with redirect_stdout(machine):
+            _print_published_paths(paths, MACHINE_LAYOUT)
+        self.assertEqual(machine.getvalue(), "")
 
     def test_default_delivery_has_only_named_result_and_two_reports(self):
         self.populate_stage()

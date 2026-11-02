@@ -1610,7 +1610,9 @@ def _run_task_staged(prefix, config, output_dir, expected_job, force=False, _tas
             with run_context(expected_job, capture_history=task["output"]["archive_selection_history"]) as context:
                 with _capture_solver_logs(
                         output, verbose=bool(task["output"].get("verbose"))):
-                    _run_legacy(prefix, command, arguments, temporary)
+                    import kalibr_runtime as native_runtime
+                    with native_runtime.status_stage("native calibration solve"):
+                        _run_legacy(prefix, command, arguments, temporary)
             artifacts = context.artifacts
             if artifacts.get("state") != "completed":
                 raise TaskError("native calibration did not publish a completed result")

@@ -479,6 +479,29 @@ def extractCornersFromDataset(dataset, detector, multithreading=False,
             and _native_runtime.status_enabled()) else None)
     targetObservations = []
     numImages = dataset.numImages()
+    progressState = {"completed": 0, "detected": 0, "next_percent": 10}
+
+    def reportProgress(observation):
+        """Mirror bounded detector progress only for verbose managed runs."""
+        if (_native_runtime is None
+                or not _native_runtime.status_enabled(detail=True)):
+            return
+        progressState["completed"] += 1
+        if observation is not None:
+            progressState["detected"] += 1
+        if not numImages or progressState["completed"] >= numImages:
+            return
+        percent = int(100 * progressState["completed"] / numImages)
+        if percent < progressState["next_percent"]:
+            return
+        _native_runtime.status(
+            "detection {}: {}/{} processed ({}%), {} detected".format(
+                getattr(dataset, "topic", "camera"),
+                progressState["completed"], numImages, percent,
+                progressState["detected"]),
+            detail=True)
+        progressState["next_percent"] = (percent // 10 + 1) * 10
+
     artifact_context = run_artifacts.current_context()
     if artifact_context is not None:
         artifact_context.register_dataset(dataset)
@@ -658,6 +681,7 @@ def extractCornersFromDataset(dataset, detector, multithreading=False,
                 # makes duplicate result detection independent of payload.
                 observationsByIndex[idx] = payload
                 run_artifacts.record_detection(dataset, idx, payload)
+                reportProgress(payload)
                 if memoryTracker is not None:
                     memoryTracker.sample(processes)
 
@@ -758,6 +782,7 @@ def extractCornersFromDataset(dataset, detector, multithreading=False,
                     targetObservations.append(observation)
                 run_artifacts.record_detection(
                     dataset, submitted - 1, observation if success == 1 else None)
+                reportProgress(observation if success == 1 else None)
                 iProgress.sample()
                 if memoryTracker is not None:
                     memoryTracker.sample()

@@ -493,7 +493,8 @@ def _run_staged(config, stage, task, overrides):
         try:
             with _capture_solver_logs(
                     output, verbose=bool(task["output"].get("verbose"))):
-                result, artifacts = _solve(task, resolved, target_path)
+                with native_runtime.status_stage("base_link calibration solve"):
+                    result, artifacts = _solve(task, resolved, target_path)
             native_runtime.finish("ok")
             # Preserve a finite solve if report generation fails afterwards.
             _write_rotation_summary(artifacts, output / "rotation_summary.csv")
@@ -515,8 +516,8 @@ def _run_staged(config, stage, task, overrides):
 def run_camera_baselink(config, output_dir, force=False, **overrides):
     """Run privately and publish one named camera/base_link delivery."""
     from .delivery import (
-        FLAT_LAYOUT, _check_owned, _delivery_paths, _validate_layout,
-        publish, result_name,
+        FLAT_LAYOUT, _check_owned, _delivery_paths, _print_published_paths,
+        _validate_layout, publish, result_name,
     )
     from .task import TaskError, load_task, resolve_task_path
 
@@ -571,7 +572,5 @@ def run_camera_baselink(config, output_dir, force=False, **overrides):
             stage, output, name, task["output"], force=force,
             layout=layout)
         paths = _delivery_paths(output, name, layout)
-        print("[kalibr] result={}".format(paths["result"]))
-        print("[kalibr] report_html={}".format(paths["html"]))
-        print("[kalibr] report_pdf={}".format(paths["pdf"]))
+        _print_published_paths(paths, layout)
         return published

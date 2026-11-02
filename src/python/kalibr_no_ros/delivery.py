@@ -44,6 +44,15 @@ def _delivery_paths(output, name, layout):
     }
 
 
+def _print_published_paths(paths, layout):
+    """Keep legacy flat CLI paths; the machine UI owns its concise summary."""
+    if layout != FLAT_LAYOUT:
+        return
+    print('[kalibr] result={}'.format(paths['result']))
+    print('[kalibr] report_html={}'.format(paths['html']))
+    print('[kalibr] report_pdf={}'.format(paths['pdf']))
+
+
 def _ids(task):
     from .task import load_yaml, resolve_task_path
     if task['job'] in CAMERA_CALIBRATION_JOBS or task['job'] == CAMERA_BASELINK_JOB:
@@ -602,7 +611,5 @@ def run_delivery(prefix, config, output_dir, expected_job, force, overrides):
         published = publish(
             stage, output, name, task['output'], force, layout=layout)
         paths = _delivery_paths(output, name, layout)
-        print('[kalibr] result={}'.format(paths['result']))
-        print('[kalibr] report_html={}'.format(paths['html']))
-        print('[kalibr] report_pdf={}'.format(paths['pdf']))
+        _print_published_paths(paths, layout)
         return published

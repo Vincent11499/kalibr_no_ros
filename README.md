@@ -70,7 +70,9 @@ kalibr-cedarobot machine
 AprilGrid，均使用 `pinhole-equi`。
 `user.yaml` 可用 `camera.mode: rolling_shutter` 选择 RS 双目，用
 `camera_imu.recompute_extrinsics: true` 控制 Camera–IMU 联合阶段重新优化相机链外参；
-`target` 只填写安装在 `config/mechine` 下的标定板文件名stem。
+`targets` 可按 `camera`、`camera_imu`、`camera_baselink`、`mono_camera` 和
+`mono_camera_baselink` 分别选择安装在 `config/mechine` 下的标定板文件名 stem；
+未指定的任务使用自身 task 模板中的 `target.path`。
 算法开发者也可在 `config/mechine/` 增加初始化或标定板 YAML，并在
 `config/mechine/workflow_v1.0.0/*.task.yaml` 中填写相对路径。路径以 task 所在目录为
 基准，例如根目录文件写成 `../custom_initialization.yaml`，且不能逃出
@@ -80,7 +82,11 @@ AprilGrid，均使用 `pinhole-equi`。
 `datasets` 可省略或部分填写：未填写的双目、Camera–IMU、双目 BaseLink、USB 单目和
 USB BaseLink 角色都从 `machine_dir` 自动选择唯一候选；填写的角色才强制使用指定目录。
 只有严格匹配 `*_YYMMDD_HHMM` 约定的直接子目录才是候选，`*_bk`、旧名和其他非规范
-目录静默跳过。重复的规范候选、缺少上游数据或 BaseLink 配置会在任何求解启动前报错。
+目录静默跳过。重复的规范候选会在任何求解启动前报错；缺少上游数据只让对应下游分支
+等待，其他独立分支继续执行；BaseLink 有数据但缺配置时只阻塞该分支并返回非零状态。
+目录搜索先显示五类角色的找到/未找到状态；实际任务进度只计算本次存在的数据集。新数据集
+首次只记录文件元数据，不读取图像内容；快照缓存于
+`result/.kalibr-cedarobot/input_hash_cache.json`，元数据变化时才执行内容哈希。
 精度不足时可删除旧数据集或将它改为非规范名称，再加入唯一的新规范目录；工作流自动
 重跑该任务及其下游依赖，保留旧数据集结果，同名下游结果仅在新求解成功后安全替换。
 `machine_dir` 指向 `<机型>-<编号>/<批次名>`，例如 `EVT312-02/1029`；新一批数据新建

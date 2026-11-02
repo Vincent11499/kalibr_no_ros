@@ -2,7 +2,9 @@
 
 import json
 import ast
+import os
 from copy import deepcopy
+from io import StringIO
 from pathlib import Path
 import shutil
 import tempfile
@@ -113,7 +115,7 @@ class MachineWorkflowTest(unittest.TestCase):
 
     def write_config(self, *, stereo=None, stereo_imu=None,
                      mode="standard", camera_mode=None,
-                     recompute_extrinsics=False, target=None,
+                     recompute_extrinsics=False, targets=None,
                      extra=None):
         document = {
             "schema_version": "1.0.0",
@@ -126,8 +128,8 @@ class MachineWorkflowTest(unittest.TestCase):
         }
         if camera_mode is not None:
             document["camera"] = {"mode": camera_mode}
-        if target is not None:
-            document["target"] = target
+        if targets is not None:
+            document["targets"] = targets
         datasets = {}
         if stereo is not None:
             datasets["stereo"] = stereo
@@ -153,7 +155,7 @@ class MachineWorkflowTest(unittest.TestCase):
             "schema_version": "1.0.0",
             "kind": "machine_calibration_workflow",
             "machine_dir": "EVT312-03/run_01",
-            "target": "aprilgrid_1",
+            "targets": {"camera": "aprilgrid_1"},
             "camera": {"mode": "rolling_shutter"},
             "camera_imu": {"mode": "rolling_shutter"},
             "datasets": {"stereo": "stereo_260916_2136"},
@@ -162,7 +164,7 @@ class MachineWorkflowTest(unittest.TestCase):
         self.assertEqual(Path(loaded["machine_dir"]), relative_machine.resolve())
         self.assertEqual(loaded["camera_imu"]["mode"], "rolling_shutter")
         self.assertEqual(loaded["camera"]["mode"], "rolling_shutter")
-        self.assertEqual(loaded["target"], "aprilgrid_1")
+        self.assertEqual(loaded["targets"], {"camera": "aprilgrid_1"})
         self.assertEqual(Path(loaded["machine_root"]), relative_machine.parent)
         self.assertEqual(loaded["batch_name"], "run_01")
         self.assertEqual(loaded["machine_version"], "EVT312")
@@ -187,6 +189,13 @@ class MachineWorkflowTest(unittest.TestCase):
               "machine_dir": str(self.machine), "target": "../target",
               "camera_imu": {"mode": "standard"}}, "target"),
             ({"schema_version": "1.0.0", "kind": "machine_calibration_workflow",
+              "machine_dir": str(self.machine), "targets": [],
+              "camera_imu": {"mode": "standard"}}, "targets"),
+            ({"schema_version": "1.0.0", "kind": "machine_calibration_workflow",
+              "machine_dir": str(self.machine),
+              "targets": {"unknown": "aprilgrid_1"},
+              "camera_imu": {"mode": "standard"}}, "targets"),
+            ({"schema_version": "1.0.0", "kind": "machine_calibration_workflow",
               "machine_dir": str(self.machine),
               "camera_imu": {"mode": "standard", "recompute_extrinsics": 1}},
              "recompute_extrinsics"),
@@ -204,6 +213,20 @@ class MachineWorkflowTest(unittest.TestCase):
                 with self.assertRaisesRegex((TaskError, ValueError), message):
                     load_workflow_config(invalid)
 
+        for index, target in enumerate((
+                "测试 场", "测试/场", r"测试\场", ".测试场", "_测试场")):
+            with self.subTest(target=target):
+                invalid = self.root / ("invalid_target_{}.yaml".format(index))
+                dump_yaml({
+                    "schema_version": "1.0.0",
+                    "kind": "machine_calibration_workflow",
+                    "machine_dir": str(self.machine),
+                    "targets": {"camera": target},
+                    "camera_imu": {"mode": "standard"},
+                }, invalid)
+                with self.assertRaisesRegex(TaskError, "target"):
+                    load_workflow_config(invalid)
+
         invalid_machine = self.root / "mechine-EVT31202" / "1029"
         invalid_machine.mkdir(parents=True)
         with self.assertRaisesRegex(TaskError, "machine_dir basename"):
@@ -217,6 +240,23 @@ class MachineWorkflowTest(unittest.TestCase):
             load_workflow_config(self.write_config(extra={
                 "machine_dir": str(invalid_batch),
             }))
+
+    def test_unicode_target_stem_is_resolved_from_installed_config(self):
+        target = "测试场_aprilgrid_8x8"
+        installed = self.prefix / "config" / "mechine"
+        shutil.copy2(
+            installed / "workflow_v1.0.0" / (target + ".yaml"),
+            installed / (target + ".yaml"))
+        config = self.write_config(targets={"camera": target})
+        loaded = load_workflow_config(config)
+        self.assertEqual(loaded["targets"], {"camera": target})
+        self.write_dataset("stereo_260916_2136")
+        calls = []
+        run_machine_workflow(
+            self.prefix, config, runner=self._mock_runner(calls))
+        self.assertEqual(
+            Path(calls[0]["task"]["target"]["path"]),
+            (installed / (target + ".yaml")).resolve())
 
     def test_dataset_discovery_is_direct_strict_and_role_aware(self):
         stereo = self.write_dataset("stereo_260916_2136")
@@ -284,7 +324,8 @@ class MachineWorkflowTest(unittest.TestCase):
         self.write_dataset("stereo_260916_2136")
         with self.assertRaisesRegex(TaskError, "target.*missing|missing.*target"):
             run_machine_workflow(
-                self.prefix, self.write_config(target="not_installed"),
+                self.prefix, self.write_config(
+                    targets={"camera": "not_installed"}),
                 runner=self._mock_runner([]))
 
     def test_discovery_validates_sensor_composition_and_rejects_symlink(self):
@@ -326,6 +367,142 @@ class MachineWorkflowTest(unittest.TestCase):
                 self.prefix, self.write_config(),
                 runner=self._mock_runner(calls))
         self.assertEqual(calls, [])
+
+    def test_dataset_metadata_cache_avoids_cold_hash_and_hashes_after_change(self):
+        dataset = self.write_dataset("stereo_260916_2136")
+        images = []
+        for index, camera in enumerate(("cam0", "cam1")):
+            image = dataset / camera / "frame.png"
+            image.write_bytes(("frame-{}".format(index)).encode("ascii"))
+            (dataset / (camera + ".csv")).write_text(
+                "timestamp_ns,filename\n100,frame.png\n", encoding="utf-8")
+            images.append(image)
+
+        hashed = []
+        original_hash = machine_workflow._sha256
+
+        def tracked(path):
+            hashed.append(Path(path))
+            return original_hash(path)
+
+        with mock.patch.object(
+                machine_workflow, "_sha256", side_effect=tracked):
+            first, cache, first_stats = machine_workflow._fingerprint_dataset(
+                dataset, "stereo")
+        self.assertEqual(first["fingerprint_type"], "metadata")
+        self.assertEqual(first_stats["mode"], "metadata_snapshot")
+        self.assertEqual(first_stats["hashed_files"], 0)
+        self.assertEqual(hashed, [])
+
+        hashed.clear()
+        with mock.patch.object(
+                machine_workflow, "_sha256", side_effect=tracked):
+            second, warm_cache, second_stats = (
+                machine_workflow._fingerprint_dataset(
+                    dataset, "stereo", cached=cache))
+        self.assertEqual(second, first)
+        self.assertEqual(second_stats["mode"], "cache")
+        self.assertEqual(second_stats["hashed_files"], 0)
+        self.assertEqual(hashed, [])
+
+        image = images[0]
+        previous = image.stat()
+        image.write_bytes(b"changed")
+        os.utime(image, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+        self.assertNotEqual(
+            machine_workflow._file_metadata(image)["ctime_ns"],
+            cache["files"]["cam0/frame.png"]["ctime_ns"])
+        hashed.clear()
+        with mock.patch.object(
+                machine_workflow, "_sha256", side_effect=tracked):
+            changed, unused_cache, changed_stats = (
+                machine_workflow._fingerprint_dataset(
+                    dataset, "stereo", cached=warm_cache))
+        self.assertNotEqual(changed["sha256"], first["sha256"])
+        self.assertEqual(changed_stats["mode"], "content_hash")
+        self.assertEqual(changed_stats["hashed_files"], first["file_count"])
+        self.assertEqual(len(hashed), first["file_count"])
+        self.assertIn(image, hashed)
+
+    def test_workflow_hash_cache_recovers_from_invalid_json_and_rejects_symlink(self):
+        self.write_dataset("stereo_260916_2136")
+        config = self.write_config()
+        calls = []
+        runner = self._mock_runner(calls)
+        run_machine_workflow(self.prefix, config, runner=runner)
+        cache = (self.machine / "result" / ".kalibr-cedarobot"
+                 / machine_workflow.INPUT_HASH_CACHE)
+        self.assertTrue(cache.is_file())
+
+        cache.write_text("not-json\n", encoding="utf-8")
+        summary = run_machine_workflow(self.prefix, config, runner=runner)
+        self.assertEqual(summary["camera"]["action"], "reused")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            json.loads(cache.read_text(encoding="utf-8"))["kind"],
+            machine_workflow.INPUT_HASH_CACHE_KIND)
+
+        external = self.root / "external-cache.json"
+        external.write_text("{}\n", encoding="utf-8")
+        cache.unlink()
+        cache.symlink_to(external)
+        with self.assertRaisesRegex(TaskError, "hash cache.*symlink"):
+            run_machine_workflow(self.prefix, config, runner=runner)
+        self.assertEqual(len(calls), 1)
+
+    def test_legacy_content_cache_is_migrated_without_reading_images(self):
+        dataset = self.write_dataset("stereo_260916_2136")
+        record, cache, unused = machine_workflow._fingerprint_dataset(
+            dataset, "stereo", force_content=True)
+        cache.pop("record")
+        with mock.patch.object(machine_workflow, "_sha256") as hashed:
+            current, migrated, statistics = (
+                machine_workflow._fingerprint_dataset(
+                    dataset, "stereo", cached=cache,
+                    expected_record=record))
+        self.assertEqual(current, record)
+        self.assertEqual(migrated["record"], record)
+        self.assertEqual(statistics["hashed_files"], 0)
+        hashed.assert_not_called()
+
+    def test_legacy_content_state_without_cache_is_rehashed_for_compatibility(self):
+        dataset = self.write_dataset("stereo_260916_2136")
+        record = machine_workflow.dataset_fingerprint(dataset, "stereo")
+        hashed = []
+        original_hash = machine_workflow._sha256
+
+        def tracked(path):
+            hashed.append(Path(path))
+            return original_hash(path)
+
+        with mock.patch.object(
+                machine_workflow, "_sha256", side_effect=tracked):
+            current, unused_cache, statistics = (
+                machine_workflow._fingerprint_dataset(
+                    dataset, "stereo", expected_record=record))
+        self.assertEqual(current, record)
+        self.assertEqual(statistics["hashed_files"], record["file_count"])
+        self.assertEqual(len(hashed), record["file_count"])
+
+    def test_dataset_change_while_hashing_is_rejected(self):
+        dataset = self.write_dataset("stereo_260916_2136")
+        image = dataset / "cam0" / "frame.png"
+        image.write_bytes(b"before")
+        (dataset / "cam0.csv").write_text(
+            "timestamp_ns,filename\n100,frame.png\n", encoding="utf-8")
+        original_hash = machine_workflow._sha256
+
+        def changing_hash(path):
+            digest = original_hash(path)
+            if Path(path) == image:
+                image.write_bytes(b"during")
+            return digest
+
+        with mock.patch.object(
+                machine_workflow, "_sha256", side_effect=changing_hash):
+            with self.assertRaisesRegex(TaskError, "while it was being hashed"):
+                machine_workflow._fingerprint_dataset(
+                    dataset, "stereo", force_content=True)
 
     def test_build_task_uses_absolute_inputs_and_exact_camera_dependency(self):
         stereo = self.write_dataset("stereo_260916_2136")
@@ -639,14 +816,15 @@ class MachineWorkflowTest(unittest.TestCase):
         self.assertEqual(vision["camera"]["cam0"]["T_imu_cam"][0][0], 1.0)
         self.assertEqual(vision["camera"]["cam0"]["T_base_cam"][0][3], 0.2)
 
-    def test_imu_without_stereo_fails_preflight_before_runner(self):
+    def test_imu_without_stereo_waits_without_blocking_other_branches(self):
         self.write_dataset("stereo_imu_260916_2200", imu=True)
         config = self.write_config()
         calls = []
-        with self.assertRaisesRegex(
-                TaskError, "stereo_imu.*requires a stereo"):
-            run_machine_workflow(
-                self.prefix, config, runner=self._mock_runner(calls))
+        summary = run_machine_workflow(
+            self.prefix, config, runner=self._mock_runner(calls))
+        self.assertEqual(
+            summary["camera_imu"]["status"],
+            "waiting_for_prerequisite_dataset")
         self.assertEqual(calls, [])
 
     def test_baselink_config_uses_the_low_level_validation_contract(self):
@@ -745,7 +923,9 @@ class MachineWorkflowTest(unittest.TestCase):
         }
         config = self.write_config(
             mode="rolling_shutter", camera_mode="rolling_shutter",
-            recompute_extrinsics=True, target="aprilgrid_1",
+            recompute_extrinsics=True,
+            targets={stage: "aprilgrid_1" for stage in (
+                "camera", "camera_imu", "camera_baselink")},
             extra={"camera_baselink": cam0_baselink})
         calls = []
         summary = run_machine_workflow(self.prefix, config, runner=self._mock_runner(calls))
@@ -783,13 +963,15 @@ class MachineWorkflowTest(unittest.TestCase):
         self.assertEqual(run_machine_workflow(self.prefix, config, runner=runner)[
             "camera_baselink"]["status"], "disabled")
         self.write_dataset("stereo_base_link_261021_1630")
-        with self.assertRaisesRegex(
-                TaskError, "stereo_baselink.*camera_baselink"):
-            run_machine_workflow(self.prefix, config, runner=runner)
+        unconfigured = run_machine_workflow(self.prefix, config, runner=runner)
+        self.assertEqual(
+            unconfigured["camera_baselink"]["status"],
+            "blocked_missing_configuration")
         config = self.write_config(extra={"camera_baselink": BASELINK_CONFIG})
-        with self.assertRaisesRegex(
-                TaskError, "stereo_baselink.*requires a stereo"):
-            run_machine_workflow(self.prefix, config, runner=runner)
+        waiting = run_machine_workflow(self.prefix, config, runner=runner)
+        self.assertEqual(
+            waiting["camera_baselink"]["status"],
+            "waiting_for_prerequisite_dataset")
         self.assertEqual(calls, [])
 
     def test_default_runner_dispatches_baselink_without_changing_solver_interface(self):
@@ -1133,23 +1315,55 @@ class MachineWorkflowTest(unittest.TestCase):
         self.write_dataset("stereo_261021_1500")
         self.write_dataset("usb_base_link_261021_1640", cameras=("cam0",))
         calls = []
-        with self.assertRaisesRegex(
-                TaskError, "mono_baselink.*requires a mono"):
-            run_machine_workflow(self.prefix, self.write_config(extra={
+        summary = run_machine_workflow(
+            self.prefix, self.write_config(extra={
                 "mono_camera_baselink": MONO_BASELINK_CONFIG,
             }), runner=self._mock_runner(calls))
-        self.assertEqual(calls, [])
+        self.assertEqual(
+            summary["mono_camera_baselink"]["status"],
+            "waiting_for_prerequisite_dataset")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            [camera["id"] for camera in calls[0]["task"]["cameras"]],
+            ["cam0", "cam1"])
 
     def test_stereo_base_link_never_falls_back_to_mono_camera(self):
         self.write_dataset("usb_261021_1510", cameras=("cam0",))
         self.write_dataset("stereo_base_link_261021_1630")
         calls = []
-        with self.assertRaisesRegex(
-                TaskError, "stereo_baselink.*requires a stereo"):
-            run_machine_workflow(self.prefix, self.write_config(extra={
+        summary = run_machine_workflow(
+            self.prefix, self.write_config(extra={
                 "camera_baselink": BASELINK_CONFIG,
             }), runner=self._mock_runner(calls))
-        self.assertEqual(calls, [])
+        self.assertEqual(
+            summary["camera_baselink"]["status"],
+            "waiting_for_prerequisite_dataset")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            [camera["id"] for camera in calls[0]["task"]["cameras"]],
+            ["cam0"])
+
+    def test_missing_mono_dataset_does_not_block_stereo_branch(self):
+        self.write_dataset("stereo_261021_1500")
+        self.write_dataset("stereo_imu_261021_1510", imu=True)
+        self.write_dataset("stereo_base_link_261021_1520")
+        self.write_dataset("usb_base_link_261021_1530", cameras=("cam0",))
+        calls = []
+        summary = run_machine_workflow(
+            self.prefix,
+            self.write_config(extra={
+                "camera_baselink": BASELINK_CONFIG,
+                "mono_camera_baselink": MONO_BASELINK_CONFIG,
+            }),
+            runner=self._mock_runner(calls))
+        self.assertEqual(
+            [call["job"] for call in calls],
+            ["camera_calibration", "camera_imu_calibration",
+             "camera_baselink_calibration"])
+        self.assertEqual(summary["camera_imu"]["status"], "completed")
+        self.assertEqual(
+            summary["mono_camera_baselink"]["status"],
+            "waiting_for_prerequisite_dataset")
 
     def test_add_mono_after_stereo_and_require_new_batch_for_config_changes(self):
         self.write_dataset("stereo_261021_1500")
@@ -1159,14 +1373,16 @@ class MachineWorkflowTest(unittest.TestCase):
         self.assertEqual(first["mono_camera_baselink"]["status"], "disabled")
         self.write_dataset("usb_261021_1510", cameras=("cam0",))
         self.write_dataset("usb_base_link_261021_1640", cameras=("cam0",))
-        with self.assertRaisesRegex(
-                TaskError, "mono_baselink.*mono_camera_baselink"):
-            run_machine_workflow(self.prefix, self.write_config(), runner=runner)
-        self.assertEqual(len(calls), 1)
+        unconfigured = run_machine_workflow(
+            self.prefix, self.write_config(), runner=runner)
+        self.assertEqual(
+            unconfigured["mono_camera_baselink"]["status"],
+            "blocked_missing_configuration")
+        self.assertEqual(len(calls), 2)
         config = self.write_config(extra={"mono_camera_baselink": MONO_BASELINK_CONFIG})
         completed = run_machine_workflow(self.prefix, config, runner=runner)
         self.assertEqual(completed["camera"]["action"], "reused")
-        self.assertEqual(completed["mono_camera"]["action"], "executed")
+        self.assertEqual(completed["mono_camera"]["action"], "reused")
         self.assertEqual(completed["mono_camera_baselink"]["action"], "executed")
         before = Path(completed["mono_camera_baselink"]["result"]).read_bytes()
         changed = deepcopy(MONO_BASELINK_CONFIG)
@@ -1196,15 +1412,21 @@ class MachineWorkflowTest(unittest.TestCase):
         with mock.patch.object(machine_cli, "run_machine_workflow", return_value=summary):
             self.assertEqual(machine_cli.main(
                 ["machine", "--config", "user.yaml"], prefix=self.prefix), 2)
+        summary["camera_imu"] = {
+            "status": "waiting_for_prerequisite_dataset", "result": None}
+        summary["camera_baselink"] = {"status": "disabled", "result": None}
+        summary["mono_camera_baselink"] = {
+            "status": "waiting_for_prerequisite_dataset", "result": None}
+        with mock.patch.object(
+                machine_cli, "run_machine_workflow", return_value=summary):
+            self.assertEqual(machine_cli.main(
+                ["machine", "--config", "user.yaml"], prefix=self.prefix), 0)
         summary["camera_baselink"] = {"status": "disabled", "result": None}
         summary["mono_camera"] = {"status": "completed", "result": "mono.yaml"}
         summary["mono_camera_baselink"] = {"status": "blocked_missing_configuration", "result": None}
         with mock.patch.object(machine_cli, "run_machine_workflow", return_value=summary):
-            with mock.patch("builtins.print") as printed:
-                self.assertEqual(machine_cli.main(
-                    ["machine", "--config", "user.yaml"], prefix=self.prefix), 2)
-                printed.assert_any_call("mono_camera: completed -> mono.yaml")
-                printed.assert_any_call("mono_camera_baselink: blocked_missing_configuration")
+            self.assertEqual(machine_cli.main(
+                ["machine", "--config", "user.yaml"], prefix=self.prefix), 2)
 
     def test_machine_cli_defaults_to_installed_user_config(self):
         summary = {
@@ -1215,8 +1437,137 @@ class MachineWorkflowTest(unittest.TestCase):
         with mock.patch.object(
                 machine_cli, "run_machine_workflow", return_value=summary) as run:
             self.assertEqual(machine_cli.main(["machine"], prefix=self.prefix), 0)
-        run.assert_called_once_with(
-            self.prefix.resolve(), self.prefix / "config" / "user.yaml")
+        run.assert_called_once()
+        arguments, keywords = run.call_args
+        self.assertEqual(arguments, (
+            self.prefix.resolve(), self.prefix / "config" / "user.yaml"))
+        self.assertIsInstance(keywords["progress"], machine_cli._ConsoleProgress)
+
+    def test_machine_progress_is_bounded_human_readable_and_path_free(self):
+        result_dir = self.root / "result" / "stereo_260916_2136"
+        result_dir.mkdir(parents=True)
+        result = result_dir / "stereo_260916_2136.yaml"
+        dump_yaml({
+            "schema_version": "1.0.0",
+            "kind": "calibration_result",
+            "calibration_type": "cameras",
+            "cameras": [{"id": "cam0", "rms": 0.25}],
+        }, result)
+        (result_dir / "metrics.json").write_text(json.dumps({
+            "cameras": {"cam0": {
+                "input_frames": 100,
+                "detected_frames": 92,
+                "used_frames": 40,
+                "reprojection": {"count": 800, "rms_px": 0.25},
+            }},
+            "stereo_pairs": {},
+            "imus": {},
+            "optimizer": {"iterations": 8, "JFinal": 2.5},
+        }), encoding="utf-8")
+        stream = StringIO()
+        reporter = machine_cli._ConsoleProgress(stream)
+        reporter("stage_start", {
+            "index": 1, "total": 2, "stage": "camera",
+            "dataset": "stereo_260916_2136",
+        })
+        reporter("stage_complete", {
+            "stage": "camera", "action": "executed",
+            "result": str(result), "elapsed_s": 12.5,
+        })
+        text = stream.getvalue()
+        self.assertIn("[1/2] 双目相机标定", text)
+        self.assertIn("[成功]", text)
+        self.assertIn("输入 100 / 检出 92 / 使用 40", text)
+        self.assertIn("角点 800", text)
+        self.assertIn("RMS 0.25 px", text)
+        self.assertIn("迭代 8", text)
+        self.assertNotIn(str(self.root), text)
+        self.assertNotIn("\033[", text)
+
+    def test_machine_progress_colors_only_a_tty(self):
+        class TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+        stream = TtyBuffer()
+        reporter = machine_cli._ConsoleProgress(stream)
+        reporter("workflow_complete", {"elapsed_s": 1.0})
+        reporter("stage_failed", {"elapsed_s": 1.0, "error": "sentinel"})
+        self.assertIn("\033[32m", stream.getvalue())
+        self.assertIn("\033[31m", stream.getvalue())
+
+    def test_machine_progress_reports_metadata_snapshot_without_hashing(self):
+        stream = StringIO()
+        reporter = machine_cli._ConsoleProgress(stream)
+        reporter("dataset_validation_complete", {
+            "mode": "metadata_snapshot", "file_count": 644,
+            "reused_files": 0, "hashed_files": 0, "hashed_bytes": 0,
+            "elapsed_s": 0.5,
+        })
+        text = stream.getvalue()
+        self.assertIn("[快照]", text)
+        self.assertIn("644 个文件元数据", text)
+        self.assertIn("未读取图像内容", text)
+        self.assertNotIn("重新哈希", text)
+
+    def test_machine_progress_reports_missing_dataset_and_task_spacing(self):
+        class TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+        stream = TtyBuffer()
+        reporter = machine_cli._ConsoleProgress(stream)
+        reporter("workflow_start", {"machine": "EVT312-02", "batch": "1029"})
+        reporter("dataset_complete", {
+            "index": 4, "total": 5, "role": "mono", "dataset": None})
+        text = stream.getvalue()
+        self.assertIn("正在搜索数据集目录", text)
+        self.assertIn("USB 单目：\033[33m[未发现]", text)
+        self.assertIn("usb_YYMMDD_HHMM", text)
+
+        spacing = StringIO()
+        reporter = machine_cli._ConsoleProgress(spacing)
+        reporter("stage_start", {
+            "index": 1, "total": 2, "stage": "camera",
+            "dataset": "stereo_260916_2136"})
+        reporter("stage_start", {
+            "index": 2, "total": 2, "stage": "camera_baselink",
+            "dataset": "stereo_base_link_260916_2200"})
+        text = spacing.getvalue()
+        self.assertIn("[1/2] 双目相机标定", text)
+        self.assertIn("[2/2] 双目 Camera–BaseLink 标定", text)
+        self.assertIn(
+            "[进行中] 已开始\n\n\n" + "=" * 72
+            + "\n[2/2] 双目 Camera–BaseLink 标定", text)
+
+    def test_workflow_emits_all_stage_progress_events(self):
+        self.write_dataset("stereo_260916_2136")
+        events = []
+        run_machine_workflow(
+            self.prefix, self.write_config(),
+            runner=self._mock_runner([]),
+            progress=lambda event, details: events.append((event, details)))
+        self.assertEqual(
+            [details["stage"] for event, details in events
+             if event in {"stage_start", "stage_skip"}],
+            list(machine_workflow._STAGE_ROLES))
+        camera_start = next(
+            details for event, details in events
+            if event == "stage_start" and details["stage"] == "camera")
+        self.assertEqual((camera_start["index"], camera_start["total"]),
+                         (1, 1))
+        waiting = [
+            details for event, details in events
+            if event == "stage_skip" and details["dataset"] is None]
+        self.assertTrue(waiting)
+        self.assertTrue(all(details["index"] is None for details in waiting))
+        self.assertEqual(
+            len([event for event, unused in events
+                 if event == "dataset_complete"]), 5)
+        self.assertIn("dataset_validation_start",
+                      [event for event, unused in events])
+        self.assertIn("stage_complete", [event for event, _ in events])
+        self.assertEqual(events[-1][0], "workflow_complete")
 
     def test_failed_stage_is_recorded_and_the_whole_stage_is_retried(self):
         self.write_dataset("stereo_260916_2136")
@@ -1312,6 +1663,33 @@ class MachineWorkflowTest(unittest.TestCase):
             machine_workflow._profile_recalibration(
                 profile, changed_target, binding)[1],
             list(machine_workflow._STAGE_ROLES))
+
+        current = deepcopy(profile)
+        current.pop("target")
+        current["targets"] = {
+            stage: {"path": "../aprilgrid_1.yaml", "sha256": "target"}
+            for stage in machine_workflow._STAGE_ROLES
+        }
+        current["target_overrides"] = list(machine_workflow._STAGE_ROLES)
+        self.assertEqual(
+            machine_workflow._profile_recalibration(
+                profile, current, binding)[1], [])
+        expected_by_stage = {
+            "camera": ["camera", "camera_imu", "camera_baselink"],
+            "camera_imu": ["camera_imu"],
+            "camera_baselink": ["camera_baselink"],
+            "mono_camera": ["mono_camera", "mono_camera_baselink"],
+            "mono_camera_baselink": ["mono_camera_baselink"],
+        }
+        for stage, expected in expected_by_stage.items():
+            changed = deepcopy(current)
+            changed["targets"][stage] = {
+                "path": "../aprilgrid_2.yaml", "sha256": "target-2"}
+            with self.subTest(target_stage=stage):
+                self.assertEqual(
+                    machine_workflow._profile_recalibration(
+                        current, changed, binding)[1],
+                    expected)
 
     def test_installed_camera_template_uses_semantic_change_and_reruns_dependents(self):
         self.write_dataset("stereo_261029_1000")
@@ -1806,7 +2184,7 @@ class MachineWorkflowTest(unittest.TestCase):
 
     def test_selected_target_uses_semantic_change_for_recalibration(self):
         self.write_dataset("stereo_260916_2136")
-        config = self.write_config(target="aprilgrid_1")
+        config = self.write_config(targets={"camera": "aprilgrid_1"})
         calls = []
         runner = self._mock_runner(calls)
         run_machine_workflow(self.prefix, config, runner=runner)
@@ -1827,6 +2205,59 @@ class MachineWorkflowTest(unittest.TestCase):
         self.assertEqual(changed["camera"]["action"], "executed")
         self.assertEqual(len(calls), 2)
         self.assertTrue(calls[-1]["force"])
+
+    def test_new_baselink_target_does_not_rerun_camera_or_imu(self):
+        installed = self.prefix / "config" / "mechine"
+        shutil.copy2(
+            installed / "aprilgrid_1.yaml",
+            installed / "aprilgrid_2.yaml")
+        self.write_dataset("stereo_260916_2136")
+        self.write_dataset("stereo_imu_260916_2200", imu=True)
+        first_targets = {
+            "camera": "aprilgrid_1",
+            "camera_imu": "aprilgrid_1",
+            "camera_baselink": "aprilgrid_1",
+        }
+        calls = []
+        runner = self._mock_runner(calls)
+        first = run_machine_workflow(
+            self.prefix,
+            self.write_config(
+                targets=first_targets,
+                extra={"camera_baselink": BASELINK_CONFIG}),
+            runner=runner)
+        self.assertEqual(first["camera"]["action"], "executed")
+        self.assertEqual(first["camera_imu"]["action"], "executed")
+
+        # Model an existing checkpoint written by the retired global target.
+        state_path = (self.machine / "result" / ".kalibr-cedarobot"
+                      / "state.json")
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        stored_profile = state["binding"]["profile"]
+        legacy = stored_profile["targets"]["camera"]
+        stored_profile["target"] = {
+            "name": Path(legacy["path"]).name,
+            "sha256": legacy["sha256"],
+        }
+        stored_profile.pop("targets")
+        stored_profile.pop("target_overrides")
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        self.write_dataset("stereo_base_link_261021_1741")
+        second_targets = dict(first_targets, camera_baselink="aprilgrid_2")
+        second = run_machine_workflow(
+            self.prefix,
+            self.write_config(
+                targets=second_targets,
+                extra={"camera_baselink": BASELINK_CONFIG}),
+            runner=runner)
+        self.assertEqual(second["camera"]["action"], "reused")
+        self.assertEqual(second["camera_imu"]["action"], "reused")
+        self.assertEqual(second["camera_baselink"]["action"], "executed")
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(
+            Path(calls[-1]["task"]["target"]["path"]).name,
+            "aprilgrid_2.yaml")
 
     def test_missing_state_never_adopts_an_existing_result(self):
         dataset = self.write_dataset("stereo_260916_2136")

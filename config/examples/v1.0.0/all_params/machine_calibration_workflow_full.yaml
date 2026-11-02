@@ -1,7 +1,12 @@
 schema_version: "1.0.0"
 kind: machine_calibration_workflow
 machine_dir: /path/to/EVT312-02/1029 # 必填；单次标定批次目录；父目录必须为<机型>-<编号>，批次名为安全文件名；相对路径以本YAML所在目录为基准。
-target: aprilgrid_1 # 可选；安全文件名stem；从安装的config/mechine/aprilgrid_1.yaml读取，省略使用内部profile标定板。
+targets: # 可选；按任务覆盖标定板；未列出的任务使用对应task模板的target.path。
+  camera: aprilgrid_1 # 安全文件名stem；读取安装的config/mechine/aprilgrid_1.yaml。
+  camera_imu: aprilgrid_1
+  camera_baselink: aprilgrid_2
+  mono_camera: aprilgrid_1
+  mono_camera_baselink: aprilgrid_2
 datasets: # 可省略或部分填写；填写的角色强制使用指定目录，其余角色仍自动选择唯一候选。
   stereo: stereo_261021_1500
   stereo_imu: stereo_imu_261021_1600
