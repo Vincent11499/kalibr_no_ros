@@ -35,6 +35,9 @@ from .machine_calib_params import (
     machine_identity,
     write_calib_param,
 )
+from .machine_param_reuse import (
+    camera_seed, parameter_path, semantic_sha256, validate_reused_stage,
+)
 from .task import (
     TaskError,
     dump_yaml,
@@ -69,6 +72,9 @@ PROFILE_VERSION = "workflow_v1.0.0"
 CONTROL_DIRECTORY = ".kalibr-cedarobot"
 INPUT_HASH_CACHE = "input_hash_cache.json"
 INPUT_HASH_CACHE_KIND = "machine_input_hash_cache"
+# Test-phase policy: accept cross-run provenance changes and recalibrate the
+# affected stages. Production re-enablement criteria are documented in docs.
+_STRICT_PROVENANCE = False
 
 _DATASET_PATTERNS = {
     "stereo": re.compile(r"^stereo_\d{6}_\d{4}$"),
@@ -178,7 +184,7 @@ def load_workflow_config(path):
     allowed = {
         "schema_version", "kind", "machine_dir", "datasets",
         "targets", "camera", "camera_imu", "camera_baselink",
-        "mono_camera_baselink",
+        "mono_camera_baselink", "reuse_calib_params",
     }
     if "target" in value:
         raise TaskError(
@@ -213,6 +219,13 @@ def load_workflow_config(path):
             "[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
     machine_root = machine.parent
     identity = machine_identity(machine_root)
+
+    reuse = value.get("reuse_calib_params", {})
+    if (not isinstance(reuse, dict) or set(reuse) - set(_STAGE_ROLES)
+            or any(type(enabled) is not bool for enabled in reuse.values())):
+        raise TaskError(
+            "reuse_calib_params must map the five task names to booleans")
+    reuse = {stage: reuse.get(stage, False) for stage in _STAGE_ROLES}
 
     datasets = value.get("datasets", {})
     if not isinstance(datasets, dict):
@@ -315,6 +328,7 @@ def load_workflow_config(path):
         "machine_dir": str(machine),
         "datasets": selected,
         "targets": targets,
+        "reuse_calib_params": reuse,
         "camera": {"mode": camera_mode},
         "camera_imu": {
             "mode": mode,
@@ -331,6 +345,7 @@ def load_workflow_config(path):
         "machine_num": identity["machine_num"],
         "datasets": selected,
         "targets": targets,
+        "reuse_calib_params": reuse,
         "camera": {"mode": camera_mode},
         "camera_mode": camera_mode,
         "camera_imu": {
@@ -837,7 +852,7 @@ def _profile_reference(profile, relative, label):
 
 
 def _active_template_names(config):
-    return {
+    templates = {
         "camera": _TEMPLATES[
             "camera" if config["camera_mode"] == "standard"
             else "camera_rolling_shutter"],
@@ -847,6 +862,8 @@ def _active_template_names(config):
         "mono_camera": _TEMPLATES["mono_camera"],
         "mono_camera_baselink": _TEMPLATES["mono_camera_baselink"],
     }
+    return {stage: name for stage, name in templates.items()
+            if not config.get("reuse_calib_params", {}).get(stage, False)}
 
 
 def _effective_target_paths(profile, overrides, config):
@@ -925,6 +942,7 @@ def _software_provenance():
                         Path(__file__).with_name("task.py").resolve(),
                         Path(__file__).with_name("camera_baselink.py").resolve(),
                         Path(__file__).with_name("machine_calib_params.py").resolve(),
+                        Path(__file__).with_name("machine_param_reuse.py").resolve(),
                         Path(__file__).with_name("delivery.py").resolve()}):
         implementation.update(path.name.encode("utf-8"))
         implementation.update(_sha256(path).encode("ascii"))
@@ -1243,9 +1261,17 @@ def _load_state(path, machine):
         raise TaskError("invalid workflow state: {}".format(error)) from error
     if (not isinstance(state, dict)
             or state.get("schema_version") != SCHEMA_VERSION
-            or state.get("kind") != STATE_KIND
-            or state.get("machine_dir") != str(machine)):
+            or state.get("kind") != STATE_KIND):
         raise TaskError("workflow state has an incompatible schema or machine")
+    stored_machine = state.get("machine_dir")
+    same_identity = (
+        isinstance(stored_machine, str)
+        and Path(stored_machine).name == machine.name
+        and Path(stored_machine).parent.name == machine.parent.name)
+    if stored_machine != str(machine):
+        if _STRICT_PROVENANCE or not same_identity:
+            raise TaskError("workflow state has an incompatible schema or machine")
+        state["machine_dir"] = str(machine)
     if "runs" in state or "active_revision" in state:
         raise TaskError(
             "workflow state uses the retired revision layout; create a new "
@@ -1253,6 +1279,7 @@ def _load_state(path, machine):
     binding = state.get("binding")
     stages = state.get("stages", {})
     calib_params = state.get("calib_params", {})
+    parameter_reuse = state.get("parameter_reuse", {})
     pending = state.get("pending_recalibration")
     pending_valid = (
         pending is None
@@ -1284,6 +1311,9 @@ def _load_state(path, machine):
             or not isinstance(calib_params, dict)
             or any(not isinstance(value, dict)
                    for value in calib_params.values())
+            or not isinstance(parameter_reuse, dict)
+            or set(parameter_reuse) - set(_STAGE_ROLES)
+            or any(not isinstance(value, dict) for value in parameter_reuse.values())
             or not pending_valid):
         raise TaskError("workflow state contains invalid records")
     state.setdefault("binding", None)
@@ -1347,6 +1377,8 @@ def _binding(config, profile, software, datasets):
         "profile": profile,
         "software": software,
         "datasets": datasets,
+        "reuse_calib_params": config.get("reuse_calib_params", {}),
+        "parameter_inputs": config.get("parameter_inputs", {}),
     }
 
 
@@ -1371,9 +1403,11 @@ def _stored_profile_targets(profile):
 def _profile_recalibration(existing, current, binding):
     if (not isinstance(existing, dict) or not isinstance(current, dict)
             or existing.get("version") != current.get("version")):
-        raise TaskError(
-            "workflow profile version changed; create a new batch directory "
-            "and update machine_dir in user.yaml")
+        if _STRICT_PROVENANCE:
+            raise TaskError(
+                "workflow profile version changed; create a new batch directory "
+                "and update machine_dir in user.yaml")
+        return {"@profile.version"}, list(_STAGE_ROLES)
     old_files = existing.get("files")
     new_files = current.get("files")
     if not isinstance(old_files, dict) or not isinstance(new_files, dict):
@@ -1406,7 +1440,20 @@ def _profile_recalibration(existing, current, binding):
         _TEMPLATES["mono_camera_baselink"]: _RECALIBRATION_STAGES[
             "mono_baselink"],
     }
+    inactive = set()
+    for stage, names in {
+            "camera": (camera_template, "initialization_stereo_camera.yaml"),
+            "camera_imu": (imu_template, "imu_noise.yaml"),
+            "mono_camera": (_TEMPLATES["mono_camera"], "initialization_mono_camera.yaml"),
+            "camera_baselink": (_TEMPLATES["camera_baselink"],),
+            "mono_camera_baselink": (_TEMPLATES["mono_camera_baselink"],),
+    }.items():
+        if binding.get("reuse_calib_params", {}).get(stage, False):
+            inactive.update(names)
     for name in changed:
+        # Still honor a file explicitly referenced by another active template.
+        if name in inactive and name not in new_dependencies:
+            continue
         affected.update(stage_files.get(name, ()))
         affected.update(old_dependencies.get(name, ()))
         affected.update(new_dependencies.get(name, ()))
@@ -1418,6 +1465,8 @@ def _profile_recalibration(existing, current, binding):
         current.get("target_overrides", ())
         if old_targets is None else _STAGE_ROLES)
     for stage in compared_stages:
+        if binding.get("reuse_calib_params", {}).get(stage, False):
+            continue
         if old_targets is None or old_targets.get(stage) != new_targets.get(stage):
             changed.add("@target." + stage)
             affected.update(_RECALIBRATION_STAGES[_STAGE_ROLES[stage]])
@@ -1427,31 +1476,52 @@ def _profile_recalibration(existing, current, binding):
 def _merge_binding(existing, current):
     if existing is None:
         return current, set(), set(), []
-    for key in (
-            "camera_mode", "camera_imu_mode",
-            "camera_imu_recompute_extrinsics", "software"):
-        if existing.get(key) != current.get(key):
+    merged = deepcopy(existing)
+    changed = set()
+    strict_roles = {
+        "camera_mode": {"stereo"},
+        "camera_imu_mode": {"stereo_imu"},
+        "camera_imu_recompute_extrinsics": {"stereo_imu"},
+        "software": set(_DATASET_PATTERNS),
+    }
+    for key, roles in strict_roles.items():
+        if existing.get(key) == current.get(key):
+            continue
+        if _STRICT_PROVENANCE:
             raise TaskError(
                 "workflow provenance changed; create a new batch directory "
                 "and update machine_dir in user.yaml")
-    merged = deepcopy(existing)
+        merged[key] = deepcopy(current.get(key))
+        changed.update(roles)
     changed_profile, profile_stages = _profile_recalibration(
         existing.get("profile"), current.get("profile"), current)
     merged["profile"] = deepcopy(current["profile"])
-    for key in ("camera_baselink", "mono_camera_baselink"):
+    for key, role in (("camera_baselink", "stereo_baselink"),
+                      ("mono_camera_baselink", "mono_baselink")):
         old_baselink = existing.get(key)
         new_baselink = current.get(key)
         if old_baselink is not None and old_baselink != new_baselink:
-            raise TaskError(
-                "{} configuration changed; create a new batch directory "
-                "and update machine_dir in user.yaml".format(key))
+            if _STRICT_PROVENANCE:
+                raise TaskError(
+                    "{} configuration changed; create a new batch directory "
+                    "and update machine_dir in user.yaml".format(key))
+            changed.add(role)
         merged[key] = new_baselink
     old_datasets = existing.get("datasets", {})
     new_datasets = current.get("datasets", {})
     if not isinstance(old_datasets, dict) or not isinstance(new_datasets, dict):
         raise TaskError("workflow state contains invalid dataset provenance")
-    changed = set()
     for role in _DATASET_PATTERNS:
+        stage = next(stage for stage, value in _STAGE_ROLES.items()
+                     if value == role)
+        reuse = current.get("reuse_calib_params", {}).get(stage, False)
+        old_reuse = existing.get("reuse_calib_params", {}).get(stage, False)
+        if reuse != old_reuse:
+            changed.add(role)
+        if stage in {"camera", "mono_camera"} and (
+                existing.get("parameter_inputs", {}).get(stage)
+                != current.get("parameter_inputs", {}).get(stage)):
+            changed.add(role)
         old = old_datasets.get(role)
         new = new_datasets.get(role)
         if (old is not None and not isinstance(old, dict)
@@ -1459,18 +1529,26 @@ def _merge_binding(existing, current):
             raise TaskError("workflow state contains invalid dataset provenance")
         if old is None:
             merged.setdefault("datasets", {})[role] = new
+        elif new is None and reuse:
+            merged.setdefault("datasets", {})[role] = None
         elif new is None:
-            raise TaskError(
-                "{} dataset disappeared; add one strictly named replacement "
-                "dataset and rerun".format(role))
+            if _STRICT_PROVENANCE:
+                raise TaskError(
+                    "{} dataset disappeared; add one strictly named replacement "
+                    "dataset and rerun".format(role))
+            merged.setdefault("datasets", {})[role] = None
+            changed.add(role)
         elif old != new:
             if (old.get("name") == new.get("name")
                     or old.get("path") == new.get("path")):
-                raise TaskError(
-                    "{} dataset changed in place; restore it or use a new "
-                    "YYMMDD_HHMM directory name".format(role))
+                if _STRICT_PROVENANCE:
+                    raise TaskError(
+                        "{} dataset changed in place; restore it or use a new "
+                        "YYMMDD_HHMM directory name".format(role))
             merged.setdefault("datasets", {})[role] = new
             changed.add(role)
+    merged["reuse_calib_params"] = deepcopy(current.get("reuse_calib_params", {}))
+    merged["parameter_inputs"] = deepcopy(current.get("parameter_inputs", {}))
     return merged, changed, changed_profile, profile_stages
 
 
@@ -1517,6 +1595,8 @@ def _preflight_profile_recalibration(profile, targets, config, datasets,
         "mono_camera_baselink": "mono_camera",
     }
     for stage in affected:
+        if config.get("reuse_calib_params", {}).get(stage, False):
+            continue
         record = datasets.get(_STAGE_ROLES[stage])
         if record is None:
             continue
@@ -1734,6 +1814,92 @@ def _verify_calib_param_record(record, target):
             .format(target))
 
 
+def _parameter_edits(base, published, current):
+    """Apply copied edits without feeding our refined output back as a seed."""
+    if all(isinstance(value, dict) for value in (base, published, current)):
+        return {key: _parameter_edits(base.get(key), published.get(key), value)
+                for key, value in current.items()}
+    return deepcopy(base if current == published else current)
+
+
+def _prepare_parameter_reuse(output, control, state, config):
+    """Accept copied parameter blocks once, not our own subsequent output."""
+    flags = config["reuse_calib_params"]
+    if not any(flags.values()):
+        for record in state.get("parameter_reuse", {}).values():
+            record["active"] = False
+        return {}, {}
+    identity = {key: config[key] for key in ("machine_version", "machine_num")}
+    records = state.setdefault("parameter_reuse", {})
+    if not isinstance(records, dict):
+        raise TaskError("workflow state has invalid parameter reuse records")
+    accepted = {}
+    for key, stage in (("vision", "camera"), ("mono", "mono_camera")):
+        path = parameter_path(output, stage)
+        current = output
+        for part in path.relative_to(output).parts:
+            current = current / part
+            if current.is_symlink():
+                raise TaskError("reused calib_params must not contain symlinks: {}".format(current))
+        if path.exists():
+            if not path.is_file():
+                raise TaskError("calib_params must be a regular file: {}".format(path))
+            accepted[key] = _sha256(path)
+    reused = {}
+    for stage, enabled in flags.items():
+        previous = records.get(stage, {})
+        if not isinstance(previous, dict):
+            raise TaskError("workflow state has invalid parameter reuse record")
+        if not enabled:
+            if previous:
+                previous["active"] = False
+            continue
+        key = "mono" if stage.startswith("mono_") else "vision"
+        path = parameter_path(output, stage)
+        if key not in accepted:
+            raise TaskError("reuse_calib_params.{} requires {}".format(stage, path))
+        digest = accepted[key]
+        published = state.get("calib_params", {}).get(key, {}).get("sha256")
+        if (previous.get("active") is True
+                and digest in {published, previous.get("accepted_sha256")}
+                and isinstance(previous.get("parameters"), dict)):
+            parameters = previous["parameters"]
+        else:
+            parameters = validate_reused_stage(load_yaml(path), stage, identity)
+            if (previous.get("active") is True
+                    and isinstance(previous.get("published_parameters"), dict)):
+                parameters = _parameter_edits(
+                    previous["parameters"], previous["published_parameters"], parameters)
+        record = {
+            "active": True, "path": str(path.resolve()),
+            "sha256": semantic_sha256(parameters),
+            "parameters": parameters,
+            "accepted_sha256": digest,
+        }
+        if "published_parameters" in previous:
+            record["published_parameters"] = previous["published_parameters"]
+        if stage in {"camera", "mono_camera"}:
+            seed = camera_seed(parameters, mono=stage == "mono_camera")
+            geometry = semantic_sha256(seed)
+            directory = _ensure_managed_directory(control / "parameter_inputs", control)
+            seed_path = directory / (stage + "_" + geometry + ".yaml")
+            if seed_path.is_symlink():
+                raise TaskError("reused camera input must not be a symlink")
+            if seed_path.exists():
+                if not seed_path.is_file() or load_yaml(seed_path) != seed:
+                    raise TaskError("reused camera input changed outside the workflow")
+            else:
+                dump_yaml(seed, seed_path)
+            record["seed"] = {
+                "result": str(seed_path.resolve()),
+                "files": {"result": _sha256(seed_path)},
+                "geometry_sha256": geometry,
+            }
+        records[stage] = record
+        reused[stage] = record
+    return reused, accepted
+
+
 def _retire_legacy_calib_params(root, active, state, state_path):
     """Remove only obsolete aggregate files still owned by workflow state."""
     if root.is_symlink():
@@ -1814,12 +1980,14 @@ def _migrate_renamed_calib_params(root, active, state, state_path):
 
 
 def _update_calib_params(*, machine, output, profile, deliveries,
-                         camera_mode, camera_imu_mode, state, state_path):
+                         camera_mode, camera_imu_mode, state, state_path,
+                         reused=None, accepted_hashes=None):
     generated_at = datetime.now(ZoneInfo("Asia/Shanghai")).strftime(
         "%Y-%m-%d-%H:%M:%S")
     artifacts = build_calib_params(
         machine, profile, deliveries, generated_at,
-        camera_mode=camera_mode, camera_imu_mode=camera_imu_mode)
+        camera_mode=camera_mode, camera_imu_mode=camera_imu_mode,
+        reused=reused)
     active = state.setdefault("calib_params", {})
     summary = {}
     root = output / "calib_params"
@@ -1828,7 +1996,12 @@ def _update_calib_params(*, machine, output, profile, deliveries,
     for name, artifact in artifacts.items():
         target = root / artifact["relative_path"]
         stored = active.get(name)
-        if stored is not None:
+        accepted = (accepted_hashes or {}).get(name)
+        if accepted is not None:
+            if (target.is_symlink() or not target.is_file()
+                    or _sha256(target) != accepted):
+                raise TaskError("calib_params changed during workflow: {}".format(target))
+        elif stored is not None:
             _verify_calib_param_record(stored, target)
         elif target.exists() or target.is_symlink():
             raise TaskError(
@@ -1836,11 +2009,19 @@ def _update_calib_params(*, machine, output, profile, deliveries,
 
         if (stored is not None
                 and stored.get("source_signature")
-                == artifact["source_signature"]):
+                == artifact["source_signature"]
+                and (accepted is None or stored.get("sha256") == accepted)):
             record = deepcopy(stored)
             action = "reused"
         else:
-            written = write_calib_param(output, artifact)
+            current = load_yaml(target) if accepted is not None else None
+            if (isinstance(current, dict)
+                    and {key: value for key, value in current.items() if key != "time"}
+                    == {key: value for key, value in artifact["document"].items() if key != "time"}):
+                written = {"path": str(target.resolve()), "sha256": accepted}
+                artifact["document"]["time"] = current["time"]
+            else:
+                written = write_calib_param(output, artifact)
             record = {
                 "status": "completed",
                 "path": written["path"],
@@ -1860,6 +2041,13 @@ def _update_calib_params(*, machine, output, profile, deliveries,
             "result": record["path"],
             "defaulted_fields": record["defaulted_fields"],
         }
+        for stage, reused_record in (reused or {}).items():
+            if parameter_path(output, stage) == target:
+                parameters = validate_reused_stage(
+                    artifact["document"], stage, machine_identity(machine))
+                reused_record["published_parameters"] = parameters
+                state["parameter_reuse"][stage] = reused_record
+        _atomic_json(state_path, state)
     return summary
 
 
@@ -1880,6 +2068,7 @@ def run_machine_workflow(prefix, config_path, runner=None, progress=None):
     target_paths = {
         stage: _target_file(prefix, profile_dir, stem)
         for stage, stem in config["targets"].items()
+        if not config["reuse_calib_params"][stage]
     }
     profile = _profile_provenance(profile_dir, target_paths, config)
     software = _software_provenance()
@@ -1892,25 +2081,36 @@ def run_machine_workflow(prefix, config_path, runner=None, progress=None):
     with _machine_lock(control):
         state_path = control / "state.json"
         state = _load_state(state_path, machine)
+        reused_parameters, accepted_hashes = _prepare_parameter_reuse(
+            output, control, state, config)
+        config["parameter_inputs"] = {
+            stage: (record["seed"]["geometry_sha256"]
+                    if "seed" in record else record["sha256"])
+            for stage, record in reused_parameters.items()}
         children = tuple(machine.iterdir())
         dataset_paths = {}
         for index, role in enumerate(_DATASET_PATTERNS, 1):
             _emit_progress(
                 progress, "dataset_start", index=index,
                 total=len(_DATASET_PATTERNS), role=role)
-            dataset_path = _discover_dataset_path(
-                machine, role, config["datasets"].get(role), children)
+            stage = next(stage for stage, value in _STAGE_ROLES.items()
+                         if value == role)
+            dataset_path = (None if config["reuse_calib_params"][stage]
+                            else _discover_dataset_path(
+                                machine, role, config["datasets"].get(role), children))
             dataset_paths[role] = dataset_path
             _emit_progress(
                 progress, "dataset_complete", index=index,
                 total=len(_DATASET_PATTERNS), role=role,
+                parameters_reused=config["reuse_calib_params"][stage],
                 dataset=(dataset_path.name
                          if dataset_path is not None else None))
 
         found = [(role, path) for role, path in dataset_paths.items()
                  if path is not None]
         _emit_progress(
-            progress, "dataset_validation_begin", total=len(found))
+            progress, "dataset_validation_begin", total=len(found),
+            reused_count=len(reused_parameters))
         cache_path = control / INPUT_HASH_CACHE
         hash_cache = _load_input_hash_cache(cache_path)
         stored_binding = state.get("binding")
@@ -1950,15 +2150,34 @@ def run_machine_workflow(prefix, config_path, runner=None, progress=None):
 
         current_binding = _binding(
             config, profile, software, datasets)
+        stored_software = (
+            state.get("binding", {}).get("software")
+            if isinstance(state.get("binding"), dict) else None)
+        force_provenance_stages = {
+            stage for stage, role in _STAGE_ROLES.items()
+            if (not _STRICT_PROVENANCE
+                and stored_software is not None
+                and stored_software != current_binding["software"]
+                and datasets[role] is not None)
+        }
         pending = state.get("pending_recalibration")
         if pending is not None:
             if current_binding != pending["target_binding"]:
-                raise TaskError(
-                    "recalibration inputs changed while a replacement is "
-                    "pending; restore the selected replacement datasets and "
-                    "rerun")
-            target_binding = pending["target_binding"]
-        else:
+                if _STRICT_PROVENANCE:
+                    raise TaskError(
+                        "recalibration inputs changed while a replacement is "
+                        "pending; restore the selected replacement datasets and "
+                        "rerun")
+                for stage, delivery in pending.get(
+                        "previous_deliveries", {}).items():
+                    _verify_previous_delivery(output, delivery)
+                    state.setdefault("stages", {})[stage] = {
+                        "status": "completed", "delivery": deepcopy(delivery)}
+                state.pop("pending_recalibration", None)
+                pending = None
+            else:
+                target_binding = pending["target_binding"]
+        if pending is None:
             (target_binding, changed_roles, changed_profile_inputs,
              profile_stages) = _merge_binding(
                 state.get("binding"), current_binding)
@@ -2010,13 +2229,27 @@ def run_machine_workflow(prefix, config_path, runner=None, progress=None):
                 ("mono_camera_baselink", "mono_baselink", CAMERA_BASELINK_JOB, "mono_camera"))
         counted_stages = [
             stage for stage, role, unused_job, unused_parent in stage_specs
-            if datasets[role] is not None]
+            if datasets[role] is not None or stage in reused_parameters]
         stage_indices = {
             stage: index for index, stage in enumerate(counted_stages, 1)}
         for stage, role, expected_job, parent in stage_specs:
             record = datasets[role]
             stage_index = stage_indices.get(stage)
             stage_total = len(counted_stages)
+            if stage in reused_parameters:
+                reused = reused_parameters[stage]
+                if "seed" in reused:
+                    deliveries[stage] = reused["seed"]
+                stored = state["stages"].get(stage)
+                if not isinstance(stored, dict) or stored.get("status") != "completed":
+                    state["stages"][stage] = {"status": "reused_parameters"}
+                stage_actions[stage] = "reused_parameters"
+                summary[stage] = _stage_summary(
+                    "reused_parameters", reused["path"], "reused_parameters")
+                _emit_progress(
+                    progress, "stage_parameters_reused", index=stage_index,
+                    total=stage_total, stage=stage)
+                continue
             camera_delivery = deliveries.get(parent)
             baselink_config = config.get(stage) if expected_job == CAMERA_BASELINK_JOB else None
             status = None
@@ -2085,7 +2318,8 @@ def run_machine_workflow(prefix, config_path, runner=None, progress=None):
                     recalibrate=stage in recalibration_stages,
                     previous_delivery=previous_deliveries.get(stage),
                     force_recalibrate=(
-                        stage in recalibration_stages
+                        stage in force_provenance_stages
+                        or stage in recalibration_stages
                         and parent is not None
                         and stage_actions.get(parent) == "executed"),
                     hash_cache_path=cache_path, progress=progress)
@@ -2108,10 +2342,13 @@ def run_machine_workflow(prefix, config_path, runner=None, progress=None):
             _emit_progress(progress, "calib_params_start")
             summary["calib_params"] = _update_calib_params(
                 machine=config["machine_root"], output=output,
-                profile=profile_dir, deliveries=deliveries, state=state,
+                profile=profile_dir,
+                deliveries={stage: delivery for stage, delivery in deliveries.items()
+                            if stage not in reused_parameters}, state=state,
                 camera_mode=config["camera_mode"],
                 camera_imu_mode=config["camera_imu_mode"],
-                state_path=state_path)
+                state_path=state_path, reused=reused_parameters,
+                accepted_hashes=accepted_hashes)
             state.pop("calib_params_failure", None)
             _emit_progress(
                 progress, "calib_params_complete",

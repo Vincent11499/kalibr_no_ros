@@ -327,6 +327,62 @@ mono_camera_baselink:
 `cam0`。若发现单目 BaseLink 数据却缺少单目数据，该分支显示黄色等待；双目、双目
 Camera–IMU 和双目 BaseLink 等独立分支继续执行，命令不因此返回失败。
 
+### 3.2 跨电脑复用已有参数
+
+同一设备部分任务已在另一台电脑完成时，只需将其 `result/calib_params/` 复制到当前
+批次的 `result/`；不需要原始数据集、任务目录、HTML/PDF、metrics 或原电脑的状态文件。
+然后在 `user.yaml` 中逐任务选择：
+
+```yaml
+reuse_calib_params:
+  camera: true
+  camera_imu: false
+  camera_baselink: false
+  mono_camera: true
+  mono_camera_baselink: false
+```
+
+每项默认 `false`，整个映射也可省略。只接受布尔值，不接受字符串或一个全局布尔值。
+`true` 表示显式接纳该任务已有参数，跳过本机该任务的数据集搜索和求解，即使存在
+对应原始数据。`false` 沿用正常数据发现、标定和本机检查点复用规则。
+
+程序只读取当前批次固定位置：
+
+```text
+result/calib_params/vision/stereo_imu_calib.yaml
+result/calib_params/mono_camera/usb_mono_calib.yaml
+```
+
+两个文件可只提供需要的一个。任务与参数的对应关系：
+
+| 开关 | 复用内容 |
+|---|---|
+| `camera` | 双目模型、K/D、分辨率、双目外参、RMS、校正参数及已发布行时间 |
+| `camera_imu` | Camera–IMU最终双目参数、IMU外参、时移、bias及行时间 |
+| `camera_baselink` | 双目cam0的 `T_base_cam/pitch` |
+| `mono_camera` | USB单目模型、K/D、分辨率及RMS |
+| `mono_camera_baselink` | USB的 `T_base_cam/pitch` |
+
+例如只有双目＋IMU数据时，`camera: true` 提供前置相机参数，`camera_imu: false`
+执行本机联合标定；只有USB BaseLink数据时，使用 `mono_camera: true`。前置任务必须
+由本机成功结果或其明确开启的复用参数提供，不隐式跨任务或跨模组取值。
+
+程序校验版本、机器型号和编号、模型维数及变换数值。开启任务所需文件或字段缺失时
+明确报错，不静默重新标定。不同来源双目与Camera–IMU的模型、分辨率、K/D必须相容；
+Camera–IMU最终双目几何参数优先，允许该阶段重新优化相机链；相机 `rms` 和双目
+`alignment` 除外，始终取双目标定任务的 RMS。复用的BaseLink矩阵
+已经是最终输出，不再执行Rx/Ry左乘。复用行时间保留文件中的最终值，不通过当前模板
+反推它的历史来源。
+
+本机成功任务只替换自己负责的参数；已开启复用的其他任务参数保留。未开启复用且
+没有本机成功结果的阶段，仍使用原先约定的默认值。终端明确显示“复用参数”，
+不生成虚假的本轮标定报告，也不凭零bias或单位阵判断原电脑是否真的完成过标定。
+
+内部自动保存接受的参数基线和稳定相机输入，区分人工重新复制的文件与程序自己的
+汇总输出。重复运行不会因写回同一文件而循环重标定；再次复制后只有真正消费的相机
+几何变化才触发本机相关下游更新，注释或无关字段变化不触发求解。源文件在运行中变化
+时拒绝覆盖。复用适用于同一物理设备、安装关系和成像模式未失效的参数。
+
 ## 4. 普通与滚动快门 Camera–IMU
 
 双目相机阶段可由开发者明确选择普通或 RS：
@@ -431,8 +487,10 @@ BaseLink YAML 每目含固定 K/D、修正后的 `T_base_camera`、`rotation_lef
 文件最后一次成功组装的 Asia/Shanghai 时间，格式为 `YYYY-MM-DD-HH:MM:SS`；来源没有
 变化的续跑不重写文件或更新时间。
 
-有 Camera–IMU 结果时，两目 K/D、分辨率、RMS、`T_cn_cnm1`、alignment 和双目校正
-矩阵统一使用 Camera–IMU 的最终相机结果；否则统一使用双目标定结果，避免混用两套几何。
+有 Camera–IMU 结果时，两目 K/D、分辨率、`T_cn_cnm1` 和双目校正矩阵使用
+Camera–IMU 的最终相机结果；否则使用双目标定结果。两目的 `rms` 始终取双目标定结果
+中每目的二维重投影 RMS，`alignment` 始终取双目标定结果中的非视差方向误差 RMS；
+两者都不是 mean/P95，也不使用 Camera–IMU 联合任务的相机残差。
 `cam0_cam1_correct.R1/P1/R2/P2` 使用对应任务 `metrics.json` 记录的 rectification 设置，
 复用与报告/OpenCV 导出相同的 `stereo_geometry()` 计算；`baseline` 为
 `T_cn_cnm1` 平移列的欧氏长度，单位米，`alignment` 为非视差方向误差 RMS，单位 px。
@@ -593,6 +651,11 @@ camera:
 
 ### 5.2 批次内复用
 
+> 当前算法测试阶段暂时关闭严格 provenance 阻断：软件、模式、profile、BaseLink配置或
+> 同名数据变化时自动重算受影响阶段，不要求仅因此新建批次。该行为及仍保留的硬安全
+> 检查见[机器工作流防护暂缓清单](MACHINE_WORKFLOW_PROTECTION_BACKLOG_ZH.md)，不得作为
+> 产线放行规则。
+
 Camera–IMU 和 BaseLink 结果始终记录并复核实际引用的对应模组相机结果，不依赖
 “自动找唯一文件”。同一批次可先完成双目，稍后补充 IMU、BaseLink 或 USB 数据后续跑；
 已经完成且来源一致的阶段不会重复求解。
@@ -673,13 +736,16 @@ python3 tools/install_runtime.py \
 ```
 
 精简包保留 `bin/`、`lib/`、`libexec/`、`config/`、根 `LICENSE` 和 `licenses/`，不含
-`include/`、`share/`。更新已有安装时增加 `--replace`；现场 `config/user.yaml` 以及
-`config/mechine/` 下与新包不重名的新增 YAML 会保留，正式发布包中的同名文件优先。
+`include/`、`share/`。更新已有安装时增加 `--replace`；现场 `config/` 完整保留，包括
+同名任务模板、标定板、`user.yaml`、中文文件名、非 YAML 文件及空目录，不注入新版默认
+配置。新安装才使用构建提供的配置；显式指定 `--user-config` 时只替换
+`config/user.yaml`。配置目录及其内部不允许符号链接，发现后停止发布并保留现有安装。
 
 算法开发者可在已安装软件中临时修改现有 profile YAML。再次运行同一批次时，工作流按
 实际语义变化重跑对应任务及其下游，并在新交付完整成功后覆盖同名旧结果；无效模板在
 启动任何受影响求解前报错。`mechine_base_param.yaml` 变化只重新生成设备参数文件。安装目录的
-临时修改会被后续安装覆盖，正式修改仍应回写源码 profile 并重新发布。
+临时修改在后续覆盖安装中仍会保留；需更新现场配置时，应明确选择需要替换的文件。
+正式修改仍应回写源码 profile，供新安装使用。
 
 研发需要复现单阶段时，使用 `.kalibr-cedarobot/tasks/` 中保存的 task 配合现有接口：
 

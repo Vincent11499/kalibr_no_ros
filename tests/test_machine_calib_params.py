@@ -1,6 +1,8 @@
 """Machine-facing aggregate calibration parameter files."""
 
 import json
+import hashlib
+from copy import deepcopy
 from pathlib import Path
 import tempfile
 import unittest
@@ -151,6 +153,14 @@ class MachineCalibParamsTest(unittest.TestCase):
             imus=[{"id": "imu0", "update_rate": 100.0}],
             metrics=metric_value if metrics else None)
 
+    def reused(self, stage, document):
+        parameters = {key: deepcopy(document[key]) for key in ("camera", "imu")
+                      if key in document}
+        digest = hashlib.sha256(json.dumps(
+            parameters, sort_keys=True).encode("utf-8")).hexdigest()
+        return {"path": str(self.output / "calib_params" / (stage + ".yaml")),
+                "sha256": digest, "parameters": parameters}
+
     def test_machine_identity_is_strict_and_preserves_leading_zero(self):
         self.assertEqual(machine_identity(self.machine), {
             "machine_version": "EVT312", "machine_num": "02"})
@@ -237,10 +247,24 @@ class MachineCalibParamsTest(unittest.TestCase):
         self.assertEqual(artifacts["mono"]["defaulted_fields"], [])
         self.assertIn("mono_camera_baselink", artifacts["mono"]["sources"])
 
-    def test_baselink_updates_vision_and_camera_imu_wins_rs(self):
+    def test_camera_imu_wins_geometry_but_stereo_quality_remains_camera_rms(self):
+        stereo = self.stereo()
+        metrics_path = Path(stereo["result"]).parent / "metrics.json"
+        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        metrics.update({
+            "cameras": {
+                "cam0": {"reprojection": {
+                    "mean": 9.21, "p95": 9.31, "rms_px": 0.21}},
+                "cam1": {"reprojection": {
+                    "mean": 9.22, "p95": 9.32, "rms_px": 0.22}},
+            },
+            "stereo_pairs": {"cam0_cam1": {"alignment": {
+                "mean": 9.41, "p95": 9.51, "rms_px": 0.31}}},
+        })
+        metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
         artifacts = build_calib_params(
             self.machine, PROFILE, {
-                "camera": self.stereo(),
+                "camera": stereo,
                 "camera_baselink": self.baselink(),
                 "camera_imu": self.camera_imu(),
             }, "2026-10-11-20:01:02",
@@ -249,8 +273,8 @@ class MachineCalibParamsTest(unittest.TestCase):
         vision = artifacts["vision"]["document"]
         self.assertEqual(vision["camera"]["cam0"]["T_base_cam"], BASE)
         self.assertEqual(vision["camera"]["cam0"]["pitch"], 8.5)
-        self.assertEqual(vision["camera"]["cam0"]["rms"], 0.5)
-        self.assertEqual(vision["camera"]["cam1"]["rms"], 1.5)
+        self.assertEqual(vision["camera"]["cam0"]["rms"], 0.21)
+        self.assertEqual(vision["camera"]["cam1"]["rms"], 0.22)
         self.assertEqual(vision["imu"]["gyro_bias"], [0.01, 0.02, 0.03])
         self.assertEqual(vision["imu"]["acc_bias"], [0.1, -0.2, 0.3])
         self.assertEqual(vision["camera"]["cam0"]["td_cam_to_imu"], 0.013)
@@ -261,7 +285,7 @@ class MachineCalibParamsTest(unittest.TestCase):
             vision["camera"]["cam0_cam1_correct"]["baseline"],
             (0.35 ** 2 + 0.02 ** 2 + 0.01 ** 2) ** 0.5)
         self.assertEqual(
-            vision["camera"]["cam0_cam1_correct"]["alignment"], 0.41)
+            vision["camera"]["cam0_cam1_correct"]["alignment"], 0.31)
         self.assertEqual(artifacts["vision"]["defaulted_fields"], [])
         self.assertIn("camera_imu_metrics", artifacts["vision"]["sources"])
 
@@ -362,6 +386,127 @@ class MachineCalibParamsTest(unittest.TestCase):
             with self.assertRaisesRegex(TaskError, "read-back"):
                 write_calib_param(self.output, replacement)
         self.assertEqual(Path(written["path"]).read_bytes(), before)
+
+    def test_reused_parameters_need_no_original_results_or_metrics(self):
+        original = build_calib_params(
+            self.machine, PROFILE, {
+                "camera": self.stereo(), "camera_imu": self.camera_imu(),
+                "camera_baselink": self.baselink(),
+                "mono_camera": self.mono(),
+                "mono_camera_baselink": self.baselink("mono_baselink"),
+            }, "2026-10-10-19:58:00", camera_mode="rolling_shutter",
+            camera_imu_mode="rolling_shutter")
+        reused = {
+            stage: self.reused(stage, original[artifact]["document"])
+            for stage, artifact in (
+                ("camera", "vision"), ("camera_imu", "vision"),
+                ("camera_baselink", "vision"), ("mono_camera", "mono"),
+                ("mono_camera_baselink", "mono"))
+        }
+        with mock.patch(
+                "kalibr_no_ros.machine_calib_params._metrics",
+                side_effect=AssertionError("reused sources have no metrics")):
+            restored = build_calib_params(
+                self.machine, PROFILE, {}, "2026-10-10-19:58:00", reused=reused)
+        for name in ("vision", "mono"):
+            self.assertEqual(restored[name]["document"], original[name]["document"])
+            self.assertEqual(restored[name]["defaulted_fields"], [])
+        self.assertNotIn("camera_imu_metrics", restored["vision"]["sources"])
+
+    def test_local_imu_uses_reused_camera_and_preserves_reused_baselink(self):
+        original = build_calib_params(
+            self.machine, PROFILE, {
+                "camera": self.stereo(), "camera_baselink": self.baselink(),
+            }, "2026-10-10-19:58:00", camera_mode="rolling_shutter")
+        document = original["vision"]["document"]
+        reused = {stage: self.reused(stage, document)
+                  for stage in ("camera", "camera_baselink")}
+        updated = build_calib_params(
+            self.machine, PROFILE, {"camera_imu": self.camera_imu()},
+            "2026-10-11-19:58:00", reused=reused,
+            camera_imu_mode="rolling_shutter")["vision"]
+        camera = updated["document"]["camera"]
+        self.assertEqual(camera["cam0"]["T_base_cam"], BASE)
+        self.assertEqual(camera["cam0"]["pitch"], 8.5)
+        self.assertEqual(camera["cam0"]["T_imu_cam"], BASE)
+        self.assertEqual(camera["cam0"]["line_delay_s"], 2.0e-6)
+        self.assertEqual(camera["cam0"]["rms"], 0.21)
+        self.assertEqual(camera["cam1"]["rms"], 0.22)
+        self.assertEqual(camera["cam1"]["T_cn_cnm1"], IMU_STEREO)
+        self.assertEqual(camera["cam0_cam1_correct"]["alignment"], 0.31)
+        self.assertEqual(updated["document"]["imu"]["gyro_bias"], [0.01, 0.02, 0.03])
+        self.assertIn("camera_imu_metrics", updated["sources"])
+        self.assertEqual(updated["defaulted_fields"], [])
+
+    def test_reusing_only_camera_does_not_accept_other_stage_values(self):
+        original = build_calib_params(
+            self.machine, PROFILE, {
+                "camera": self.stereo(), "camera_imu": self.camera_imu(),
+                "camera_baselink": self.baselink(),
+            }, "2026-10-10-19:58:00", camera_imu_mode="rolling_shutter")
+        restored = build_calib_params(
+            self.machine, PROFILE, {}, "2026-10-10-19:58:00", reused={
+                "camera": self.reused("camera", original["vision"]["document"]),
+            })["vision"]
+        document = restored["document"]
+        self.assertEqual(document["camera"]["cam0"]["T_base_cam"], IDENTITY)
+        self.assertEqual(document["camera"]["cam0"]["T_imu_cam"], IDENTITY)
+        self.assertEqual(document["imu"]["gyro_bias"], [0.0, 0.0, 0.0])
+        self.assertIn("camera.cam0.T_imu_cam", restored["defaulted_fields"])
+
+    def test_local_baselink_updates_reused_mono_without_changing_optics(self):
+        original = build_calib_params(
+            self.machine, PROFILE, {"mono_camera": self.mono()},
+            "2026-10-10-19:58:00")["mono"]["document"]
+        result = build_calib_params(
+            self.machine, PROFILE, {
+                "mono_camera_baselink": self.baselink("new_mono_baselink"),
+            }, "2026-10-11-19:58:00", reused={
+                "mono_camera": self.reused("mono_camera", original),
+            })["mono"]
+        self.assertEqual(result["document"]["camera"]["T_base_cam"], BASE)
+        self.assertEqual(result["document"]["camera"]["rms"], 0.41)
+        self.assertEqual(result["document"]["camera"]["intrinsic"],
+                         original["camera"]["intrinsic"])
+        self.assertEqual(result["defaulted_fields"], [])
+
+    def test_reused_geometry_mismatch_is_rejected_before_writing(self):
+        original = build_calib_params(
+            self.machine, PROFILE, {"camera": self.stereo()},
+            "2026-10-10-19:58:00")["vision"]["document"]
+        reused = self.reused("camera", original)
+        reused["parameters"]["camera"]["cam1"]["intrinsic"][0] += 1.0
+        before = deepcopy(reused)
+        with self.assertRaisesRegex(TaskError, "cam1.intrinsic.*geometry"):
+            build_calib_params(
+                self.machine, PROFILE, {"camera_imu": self.camera_imu()},
+                "2026-10-11-19:58:00", reused={"camera": reused})
+        self.assertEqual(reused, before)
+
+    def test_reused_source_signature_is_stable_across_generated_time(self):
+        original = build_calib_params(
+            self.machine, PROFILE, {"camera": self.stereo()},
+            "2026-10-10-19:58:00")["vision"]["document"]
+        reused = {"camera": self.reused("camera", original)}
+        first = build_calib_params(
+            self.machine, PROFILE, {}, "2026-10-10-19:58:00", reused=reused)
+        second = build_calib_params(
+            self.machine, PROFILE, {}, "2026-10-11-19:58:00", reused=reused)
+        self.assertEqual(first["vision"]["source_signature"],
+                         second["vision"]["source_signature"])
+        self.assertEqual(first["vision"]["sources"], second["vision"]["sources"])
+
+    def test_same_stage_cannot_have_local_and_reused_sources(self):
+        local = self.stereo()
+        original = build_calib_params(
+            self.machine, PROFILE, {"camera": local},
+            "2026-10-10-19:58:00")["vision"]["document"]
+        with self.assertRaisesRegex(TaskError, "both local and reused"):
+            build_calib_params(
+                self.machine, PROFILE, {"camera": local},
+                "2026-10-11-19:58:00", reused={
+                    "camera": self.reused("camera", original),
+                })
 
 
 if __name__ == "__main__":

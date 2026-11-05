@@ -1,0 +1,78 @@
+ARG BASE_IMAGE=kalibr-ubuntu-base:22.04-local
+FROM ${BASE_IMAGE}
+
+ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    MPLBACKEND=Agg \
+    PYTHONDONTWRITEBYTECODE=1
+
+RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    set -eu; \
+    echo "deb http://archive.ubuntu.com/ubuntu jammy main" \
+      > /etc/apt/sources.list; \
+    attempt=1; \
+    until apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 update \
+        && apt-cache show ca-certificates >/dev/null 2>&1; do \
+      if [ "$attempt" -ge 8 ]; then \
+        echo "apt main index remains incomplete after $attempt attempts" >&2; \
+        exit 1; \
+      fi; \
+      attempt=$((attempt + 1)); \
+    done; \
+    attempt=1; \
+    until apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 \
+        install -y --no-install-recommends ca-certificates; do \
+      if [ "$attempt" -ge 8 ]; then \
+        echo "ca-certificates installation failed after $attempt attempts" >&2; \
+        exit 1; \
+      fi; \
+      attempt=$((attempt + 1)); \
+    done
+
+RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    set -eu; \
+    printf '%s\n' \
+      "deb $UBUNTU_MIRROR jammy main restricted universe multiverse" \
+      "deb $UBUNTU_MIRROR jammy-updates main restricted universe multiverse" \
+      "deb $UBUNTU_MIRROR jammy-backports main restricted universe multiverse" \
+      "deb http://security.ubuntu.com/ubuntu jammy-security main restricted universe multiverse" \
+      > /etc/apt/sources.list; \
+    attempt=1; \
+    until apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 \
+          -o Acquire::https::Timeout=60 update \
+        && apt-cache show libboost-python1.74.0 libtbb2 python3-opencv \
+            >/dev/null 2>&1; do \
+      if [ "$attempt" -ge 8 ]; then \
+        echo "apt indexes remain incomplete after $attempt attempts" >&2; \
+        exit 1; \
+      fi; \
+      attempt=$((attempt + 1)); \
+    done; \
+    attempt=1; \
+    until apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 \
+      -o Acquire::https::Timeout=60 install -y --no-install-recommends \
+        file \
+        libboost-filesystem1.74.0 \
+        libboost-python1.74.0 \
+        libboost-regex1.74.0 \
+        libboost-serialization1.74.0 \
+        libboost-thread1.74.0 \
+        libtbb2 \
+        python3 \
+        python3-matplotlib \
+        python3-numpy \
+        python3-opencv \
+        python3-scipy \
+        python3-yaml; do \
+      if [ "$attempt" -ge 8 ]; then \
+        echo "runtime dependency installation failed after $attempt attempts" >&2; \
+        exit 1; \
+      fi; \
+      attempt=$((attempt + 1)); \
+    done
+
+WORKDIR /work
+CMD ["/bin/bash"]

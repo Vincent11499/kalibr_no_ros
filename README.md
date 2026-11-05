@@ -20,8 +20,9 @@ python3 tools/install_runtime.py \
 
 上述命令发布可搬移的精简运行包，只含 `bin/`、`lib/`、`libexec/`、`config/`、
 根 `LICENSE` 和随私有运行库携带的 `licenses/`；不发布开发用 `include/`、`share/`。
-更新已有安装时显式增加 `--replace`，发布器会保留 `config/user.yaml` 和
-`config/mechine/` 下与新版不重名的现场新增 YAML。研发需要完整头文件安装时仍可执行
+更新已有安装时显式增加 `--replace`，发布器完整保留现场 `config/`，包括同名任务模板、
+标定板、`user.yaml` 和非 YAML 文件；新安装才使用构建提供的配置。显式传入
+`--user-config` 时仅替换指定的 `config/user.yaml`。研发需要完整头文件安装时仍可执行
 `cmake --install build/release`，它不是产线交付结构。
 
 安装提供两个入口：产线机器级工作流使用
@@ -95,6 +96,10 @@ USB BaseLink 角色都从 `machine_dir` 自动选择唯一候选；填写的角�
 `result/calib_params/` 按已完成模组分别生成 `vision/stereo_imu_calib.yaml` 和
 `mono_camera/usb_mono_calib.yaml`；不再生成 `stereo_calib.yaml`。
 双目、Camera–IMU 与双目 BaseLink 更新 vision，独立单目及其 BaseLink 更新 usb 文件。
+跨电脑续做时，只需复制同一设备的 `result/calib_params/` 到当前批次的 `result/`，
+在 `user.yaml` 的 `reuse_calib_params` 映射中将要沿用的任务设为 `true`。支持上述
+五个任务名，每项省略默认 `false`；`true` 跳过对应数据集搜索和求解，其他任务照常执行，
+并按字段更新汇总文件。配置、示例及适用限制见机器级工作流说明。
 
 下面的 `kalibr-noros` 是研发维护与单任务接口。
 

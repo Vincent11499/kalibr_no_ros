@@ -1,6 +1,12 @@
 schema_version: "1.0.0"
 kind: machine_calibration_workflow
 machine_dir: /path/to/EVT312-02/1029 # 必填；单次标定批次目录；父目录必须为<机型>-<编号>，批次名为安全文件名；相对路径以本YAML所在目录为基准。
+reuse_calib_params: # 可选映射；每项默认false；true从当前result/calib_params复用该任务参数并跳过数据集搜索和求解；无需原始数据或metrics。
+  camera: false # 双目模型/K/D/分辨率、双目外参、校正参数及行时间；true可作为本机Camera–IMU/BaseLink的前置输入。
+  camera_imu: false # Camera–IMU最终参数、时移、bias及行时间；仍需本机双目成功结果或camera: true。
+  camera_baselink: false # 双目cam0的T_base_cam/pitch；不重复执行旋转左乘修正。
+  mono_camera: false # USB单目模型/K/D/分辨率及RMS；true可作为本机USB BaseLink的前置输入。
+  mono_camera_baselink: false # USB单目的T_base_cam/pitch。
 targets: # 可选；按任务覆盖标定板；未列出的任务使用对应task模板的target.path。
   camera: aprilgrid_1 # 安全文件名stem；读取安装的config/mechine/aprilgrid_1.yaml。
   camera_imu: aprilgrid_1

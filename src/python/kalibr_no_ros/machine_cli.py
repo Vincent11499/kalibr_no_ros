@@ -257,7 +257,10 @@ class _ConsoleProgress:
             prefix = "  数据集搜索 [{}/{}] {}：".format(
                 details["index"], details["total"],
                 _ROLE_LABELS.get(details["role"], details["role"]))
-            if details.get("dataset"):
+            if details.get("parameters_reused"):
+                self._write(prefix + self._paint("[复用参数]", "yellow")
+                            + " 已跳过本任务数据集搜索")
+            elif details.get("dataset"):
                 self._write(prefix + self._paint("[找到]", "cyan") + " "
                             + details["dataset"])
             else:
@@ -275,6 +278,10 @@ class _ConsoleProgress:
             if total:
                 self._write()
                 self._write("正在校验 {} 个输入数据集…".format(total))
+            elif details.get("reused_count"):
+                self._write()
+                self._write(self._paint(
+                    "[复用参数] 当前批次无需读取本机求解数据集", "yellow"))
             else:
                 self._write()
                 self._write(self._paint(
@@ -318,6 +325,10 @@ class _ConsoleProgress:
             self._stage_header(details)
             self._write("数据集：{}".format(details["dataset"]))
             self._write(self._paint("[进行中] 已开始", "cyan"))
+        elif event == "stage_parameters_reused":
+            self._stage_header(details)
+            self._write(self._paint(
+                "[复用参数] 已读取 calib_params，跳过本任务求解", "yellow"))
         elif event == "stage_complete":
             action = details.get("action")
             if action == "reused":

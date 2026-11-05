@@ -172,6 +172,66 @@ def _camera_map(source, expected_ids, label):
     return {camera["id"]: camera for camera in cameras}
 
 
+def _reused_source(reused, stage):
+    value = reused.get(stage)
+    if value is None:
+        return None
+    if (not isinstance(value, dict)
+            or not isinstance(value.get("path"), str)
+            or not isinstance(value.get("sha256"), str)
+            or not isinstance(value.get("parameters"), dict)):
+        raise TaskError("{} reused parameter source is invalid".format(stage))
+    return {**value, "path": Path(value["path"]), "stage": stage}
+
+
+def _source_cameras(source, expected_ids, label):
+    if "parameters" in source:
+        camera = source["parameters"].get("camera")
+        if expected_ids == ["cam0"]:
+            cameras = {"cam0": camera}
+        else:
+            cameras = ({camera_id: camera.get(camera_id)
+                        for camera_id in expected_ids}
+                       if isinstance(camera, dict) else {})
+        if any(not isinstance(cameras.get(camera_id), dict)
+               for camera_id in expected_ids):
+            raise TaskError("{} lacks camera parameters".format(label))
+        return deepcopy(cameras)
+    native = _camera_map(source, expected_ids, label)
+    cameras = {}
+    for camera_id, value in native.items():
+        camera = _camera_parameters(value, camera_id)
+        camera["rms"] = _rms(value, camera_id)
+        if camera_id != "cam0":
+            camera["T_cn_cnm1"] = _matrix(
+                value.get("T_cn_cnm1"), camera_id + ".T_cn_cnm1")
+        cameras[camera_id] = camera
+    return cameras
+
+
+def _compatible_camera_geometry(first, second):
+    for camera_id in ("cam0", "cam1"):
+        for field in ("model", "resolution", "intrinsic", "distortion"):
+            left, right = first[camera_id][field], second[camera_id][field]
+            equal = (left == right if field in {"model", "resolution"}
+                     else len(left) == len(right) and all(
+                         math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-12)
+                         for a, b in zip(left, right)))
+            if not equal:
+                raise TaskError(
+                    "Camera-IMU {}.{} does not match the camera geometry"
+                    .format(camera_id, field))
+
+
+def _source_line_delay(source, camera_id, label):
+    if "parameters" in source:
+        return _finite(
+            source["parameters"]["camera"][camera_id].get("line_delay_s"),
+            label + ".line_delay_s")
+    return _required_line_delay(
+        _camera_map(source, ["cam0", "cam1"], label)[camera_id], label)
+
+
 def _public_model(camera, label):
     projection = camera.get("camera_model")
     distortion = camera.get("distortion_model")
@@ -212,6 +272,18 @@ def _rms(camera, label):
     return _finite(camera.get("rms"), label + ".rms", minimum=0.0)
 
 
+def _alignment(source, label):
+    if "parameters" in source:
+        camera = source["parameters"].get("camera")
+        correction = (camera.get("cam0_cam1_correct")
+                      if isinstance(camera, dict) else None)
+        value = correction.get("alignment") if isinstance(correction, dict) else None
+    else:
+        value = _camera_map(source, ["cam0", "cam1"], label)["cam1"].get(
+            "alignment")
+    return _finite(value, label + ".alignment", minimum=0.0)
+
+
 def _baselink_camera(source, camera_id="cam0"):
     if source is None:
         return None
@@ -230,15 +302,6 @@ def _required_line_delay(camera, label):
     if not isinstance(shutter, dict) or "line_delay_s" not in shutter:
         raise TaskError("{} rolling-shutter result lacks line_delay_s".format(label))
     return _finite(shutter["line_delay_s"], label + ".line_delay_s")
-
-
-def _line_delay(camera, fallback, label, *, camera_imu_available,
-                camera_mode, camera_imu_mode):
-    if camera_imu_available and camera_imu_mode == "rolling_shutter":
-        return _required_line_delay(camera, "Camera-IMU " + label)
-    if camera_mode == "rolling_shutter":
-        return _required_line_delay(fallback, "camera " + label)
-    return 0.0
 
 
 def _metrics_path(source):
@@ -311,6 +374,15 @@ def _header(identity, generated_at):
 
 
 def _baselink_values(source):
+    if source is not None and "parameters" in source:
+        cameras = source["parameters"].get("camera", {})
+        camera = (cameras if source["stage"] == "mono_camera_baselink"
+                  else cameras.get("cam0", {}))
+        transform = _matrix(camera.get("T_base_cam"), "camera.T_base_cam")
+        pitch = _finite(camera.get("pitch"), "camera.pitch", minimum=0.0)
+        if pitch > 90.0:
+            raise TaskError("camera.pitch must not exceed 90 degrees")
+        return transform, pitch
     camera = _baselink_camera(source)
     if camera is None:
         return _identity(), 0.0
@@ -343,22 +415,43 @@ def _stereo_correction(cameras, rectification):
 
 def _vision_body(profile, camera_source, camera_imu_source, baselink_source,
                  camera_mode, camera_imu_mode):
-    base_cameras = _camera_map(
+    base_cameras = _source_cameras(
         camera_source, ["cam0", "cam1"], "stereo result")
     selected_source = camera_imu_source or camera_source
     selected_label = ("Camera-IMU" if camera_imu_source is not None
                       else "camera")
-    selected = (_camera_map(camera_imu_source, ["cam0", "cam1"],
-                            "Camera-IMU result")
+    selected = (_source_cameras(camera_imu_source, ["cam0", "cam1"],
+                               "Camera-IMU result")
                 if camera_imu_source is not None else base_cameras)
-    metrics, metric_source = _metrics(selected_source, selected_label)
-    rectification = _rectification(metrics, selected_label)
+    if camera_imu_source is not None and (
+            "parameters" in camera_source or "parameters" in camera_imu_source):
+        _compatible_camera_geometry(base_cameras, selected)
+    metric_source = None
+    metrics = None
+    if "parameters" in selected_source:
+        correction = deepcopy(
+            selected_source["parameters"]["camera"]["cam0_cam1_correct"])
+    else:
+        metrics, metric_source = _metrics(selected_source, selected_label)
+        correction = _stereo_correction(
+            _camera_map(selected_source, ["cam0", "cam1"], selected_label),
+            _rectification(metrics, selected_label))
+    correction["alignment"] = _alignment(camera_source, "stereo result")
     imu = deepcopy(profile["imu"])
     defaulted = []
     if camera_imu_source is None:
         imu["gyro_bias"] = [0.0, 0.0, 0.0]
         imu["acc_bias"] = [0.0, 0.0, 0.0]
         defaulted.extend(["imu.gyro_bias", "imu.acc_bias"])
+    elif "parameters" in camera_imu_source:
+        values = camera_imu_source["parameters"].get("imu", {})
+        rate = _finite(values.get("imu_data_rate"), "imu.imu_data_rate",
+                       minimum=0.0)
+        if not math.isclose(rate, float(imu["imu_data_rate"]), rel_tol=0.0,
+                            abs_tol=1e-9):
+            raise TaskError("Camera-IMU update_rate does not match imu_data_rate")
+        imu["gyro_bias"] = _vector(values.get("gyro_bias"), 3, "imu.gyro_bias")
+        imu["acc_bias"] = _vector(values.get("acc_bias"), 3, "imu.acc_bias")
     else:
         imus = camera_imu_source["document"].get("imus")
         if (not isinstance(imus, list) or len(imus) != 1
@@ -387,6 +480,10 @@ def _vision_body(profile, camera_source, camera_imu_source, baselink_source,
         "acc_scale": imu["acc_scale"],
     }
     imu_values = {}
+    native_imu = (_camera_map(camera_imu_source, ["cam0", "cam1"],
+                              "Camera-IMU result")
+                  if camera_imu_source is not None
+                  and "parameters" not in camera_imu_source else None)
     for camera_id, source_camera in selected.items():
         if camera_imu_source is None:
             imu_values[camera_id] = {
@@ -397,57 +494,72 @@ def _vision_body(profile, camera_source, camera_imu_source, baselink_source,
                 "camera.{}.td_cam_to_imu".format(camera_id),
                 "camera.{}.T_imu_cam".format(camera_id),
             ])
+        elif "parameters" in camera_imu_source:
+            imu_values[camera_id] = {
+                "T_imu_cam": _matrix(source_camera.get("T_imu_cam"),
+                                      camera_id + ".T_imu_cam"),
+                "td_cam_to_imu": _finite(source_camera.get("td_cam_to_imu"),
+                                          camera_id + ".td_cam_to_imu"),
+            }
         else:
             imu_values[camera_id] = {
                 "T_imu_cam": _matrix(
-                    source_camera.get("T_imu_cam"),
+                    native_imu[camera_id].get("T_imu_cam"),
                     camera_id + ".T_imu_cam"),
                 "td_cam_to_imu": _finite(
-                    source_camera.get("timeshift_cam_imu"),
+                    native_imu[camera_id].get("timeshift_cam_imu"),
                     camera_id + ".timeshift_cam_imu"),
             }
-        imu_values[camera_id]["line_delay_s"] = _line_delay(
-            source_camera, base_cameras[camera_id], camera_id,
-            camera_imu_available=camera_imu_source is not None,
-            camera_mode=camera_mode, camera_imu_mode=camera_imu_mode)
+        if camera_imu_source is not None and (
+                "parameters" in camera_imu_source
+                or camera_imu_mode == "rolling_shutter"):
+            line_delay = _source_line_delay(
+                camera_imu_source, camera_id, "Camera-IMU " + camera_id)
+        elif "parameters" in camera_source or camera_mode == "rolling_shutter":
+            line_delay = _source_line_delay(camera_source, camera_id,
+                                            "camera " + camera_id)
+        else:
+            line_delay = 0.0
+        imu_values[camera_id]["line_delay_s"] = line_delay
 
     base_transform, pitch = _baselink_values(baselink_source)
     if baselink_source is None:
         defaulted.extend(["camera.cam0.T_base_cam", "camera.cam0.pitch"])
 
-    cam0 = _camera_parameters(selected["cam0"], "cam0")
+    optical_fields = ("model", "resolution", "intrinsic", "distortion")
+    cam0 = {field: deepcopy(selected["cam0"][field]) for field in optical_fields}
     cam0.update({
         "T_base_cam": base_transform,
         "T_imu_cam": imu_values["cam0"]["T_imu_cam"],
         "td_cam_to_imu": imu_values["cam0"]["td_cam_to_imu"],
         "line_delay_s": imu_values["cam0"]["line_delay_s"],
         "pitch": pitch,
-        "rms": _rms(selected["cam0"], "cam0"),
+        "rms": _rms(base_cameras["cam0"], "stereo cam0"),
     })
-    cam1 = _camera_parameters(selected["cam1"], "cam1")
+    cam1 = {field: deepcopy(selected["cam1"][field]) for field in optical_fields}
     cam1.update({
         "T_cn_cnm1": _matrix(
             selected["cam1"].get("T_cn_cnm1"), "cam1.T_cn_cnm1"),
         "T_imu_cam": imu_values["cam1"]["T_imu_cam"],
         "td_cam_to_imu": imu_values["cam1"]["td_cam_to_imu"],
         "line_delay_s": imu_values["cam1"]["line_delay_s"],
-        "rms": _rms(selected["cam1"], "cam1"),
+        "rms": _rms(base_cameras["cam1"], "stereo cam1"),
     })
     return {
         "imu": imu,
         "camera": {
             "cam0": cam0,
             "cam1": cam1,
-            "cam0_cam1_correct": _stereo_correction(
-                selected, rectification),
+            "cam0_cam1_correct": correction,
         },
         "odom": deepcopy(profile["odom"]),
     }, defaulted, metric_source
 
 
 def _mono_body(camera_source, baselink_source):
-    camera = _camera_map(camera_source, ["cam0"], "mono result")["cam0"]
-    public = _camera_parameters(camera, "camera")
+    camera = _source_cameras(camera_source, ["cam0"], "mono result")["cam0"]
+    public = {field: deepcopy(camera[field])
+              for field in ("model", "resolution", "intrinsic", "distortion")}
     transform, pitch = _baselink_values(baselink_source)
     defaulted = []
     if baselink_source is None:
@@ -502,7 +614,7 @@ def _artifact(identity, generated_at, profile, body, defaulted,
 
 def build_calib_params(machine_dir, profile_dir, deliveries, generated_at,
                        *, camera_mode="standard",
-                       camera_imu_mode="standard"):
+                       camera_imu_mode="standard", reused=None):
     """Return active parameter documents derivable from current deliveries.
 
     Missing downstream stages intentionally produce numeric defaults.  A
@@ -513,6 +625,9 @@ def build_calib_params(machine_dir, profile_dir, deliveries, generated_at,
     generated_at = _timestamp(generated_at)
     if not isinstance(deliveries, dict):
         raise TaskError("workflow deliveries must be a mapping")
+    reused = {} if reused is None else reused
+    if not isinstance(reused, dict):
+        raise TaskError("reused parameter sources must be a mapping")
     for label, mode in (("camera_mode", camera_mode),
                         ("camera_imu_mode", camera_imu_mode)):
         if mode not in {"standard", "rolling_shutter"}:
@@ -526,6 +641,14 @@ def build_calib_params(machine_dir, profile_dir, deliveries, generated_at,
         "mono_camera_baselink": _delivery_source(
             deliveries, "mono_camera_baselink", "cameras_baselink"),
     }
+    if set(reused) - set(sources):
+        raise TaskError("unknown reused parameter stages")
+    for stage in sources:
+        source = _reused_source(reused, stage)
+        if source is not None:
+            if sources[stage] is not None:
+                raise TaskError("{} has both local and reused sources".format(stage))
+            sources[stage] = source
     artifacts = {}
     if sources["camera"] is not None:
         body, defaulted, metric_source = _vision_body(
@@ -535,9 +658,10 @@ def build_calib_params(machine_dir, profile_dir, deliveries, generated_at,
         for key in ("camera_imu", "camera_baselink"):
             if sources[key] is not None:
                 source_files[key] = _source_record(sources[key])
-        metric_name = ("camera_imu_metrics" if sources["camera_imu"] is not None
-                       else "camera_metrics")
-        source_files[metric_name] = metric_source
+        if metric_source is not None:
+            metric_name = ("camera_imu_metrics" if sources["camera_imu"] is not None
+                           else "camera_metrics")
+            source_files[metric_name] = metric_source
         artifacts["vision"] = _artifact(
             identity, generated_at, profile, body, defaulted,
             source_files, CALIB_PARAM_OUTPUTS["vision"], {

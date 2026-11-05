@@ -28,35 +28,16 @@ def _copy_file(source, destination):
     shutil.copy2(source, destination)
 
 
-def _preserve_local_machine_yaml(existing, destination):
-    root = existing / "config" / "mechine"
-    if not root.exists():
-        return
-    if root.is_symlink() or not root.is_dir():
-        raise RuntimeError(
-            "existing machine configuration must be a directory: {}".format(root))
-    for current, directories, filenames in os.walk(root, followlinks=False):
+def _copy_configuration(source, destination):
+    # Copy links as links first, then reject them without reading their targets.
+    _copy_tree(source, destination)
+    for current, directories, filenames in os.walk(destination, followlinks=False):
         current_path = Path(current)
-        for name in directories:
+        for name in directories + filenames:
             if (current_path / name).is_symlink():
                 raise RuntimeError(
-                    "existing machine configuration contains a symlink: {}"
+                    "configuration contains a symlink: {}"
                     .format(current_path / name))
-        for name in filenames:
-            source = current_path / name
-            if source.suffix.lower() != ".yaml":
-                continue
-            if source.is_symlink() or not source.is_file():
-                raise RuntimeError(
-                    "existing machine configuration is not a regular file: {}"
-                    .format(source))
-            relative = source.relative_to(root)
-            if (relative.parts
-                    and relative.parts[0] == "workflow_v1.0.0"):
-                continue
-            target = destination / "config" / "mechine" / relative
-            if not target.exists():
-                _copy_file(source, target)
 
 
 def assemble_runtime(source, destination, *, existing=None, user_config=None):
@@ -68,9 +49,9 @@ def assemble_runtime(source, destination, *, existing=None, user_config=None):
             destination))
     for name in RUNTIME_DIRECTORIES:
         _copy_tree(source / name, destination / name)
-    _copy_tree(
-        source / "config" / "mechine",
-        destination / "config" / "mechine")
+    configuration_source = (Path(existing) if existing is not None else source)
+    _copy_configuration(
+        configuration_source / "config", destination / "config")
     _copy_file(source / "LICENSE", destination / "LICENSE")
     license_directory = source / "licenses"
     if license_directory.is_dir() and not license_directory.is_symlink():
@@ -78,14 +59,7 @@ def assemble_runtime(source, destination, *, existing=None, user_config=None):
     else:
         (destination / "licenses").mkdir()
 
-    if existing is not None:
-        existing = Path(existing)
-        _preserve_local_machine_yaml(existing, destination)
     selected_user = Path(user_config) if user_config is not None else None
-    if selected_user is None and existing is not None:
-        candidate = existing / "config" / "user.yaml"
-        if candidate.exists() or candidate.is_symlink():
-            selected_user = candidate
     if selected_user is not None:
         _copy_file(selected_user, destination / "config" / "user.yaml")
 

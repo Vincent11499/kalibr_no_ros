@@ -906,10 +906,11 @@ class MachineWorkflowTest(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         block = deepcopy(BASELINK_CONFIG)
         block["cameras"][0]["translation_base_camera_m"][0] += 0.01
-        with self.assertRaisesRegex(TaskError, "new batch"):
-            run_machine_workflow(self.prefix, self.write_config(
-                extra={"camera_baselink": block}), runner=runner)
-        self.assertEqual(len(calls), 2)
+        changed = run_machine_workflow(self.prefix, self.write_config(
+            extra={"camera_baselink": block}), runner=runner)
+        self.assertEqual(changed["camera_baselink"]["action"], "executed")
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(calls[-1]["force"])
 
     def test_all_three_stages_and_rolling_shutter_mode(self):
         self.write_dataset("stereo_260916_2136")
@@ -1365,7 +1366,7 @@ class MachineWorkflowTest(unittest.TestCase):
             summary["mono_camera_baselink"]["status"],
             "waiting_for_prerequisite_dataset")
 
-    def test_add_mono_after_stereo_and_require_new_batch_for_config_changes(self):
+    def test_add_mono_after_stereo_and_recalculate_config_changes(self):
         self.write_dataset("stereo_261021_1500")
         calls = []
         runner = self._mock_runner(calls)
@@ -1384,14 +1385,18 @@ class MachineWorkflowTest(unittest.TestCase):
         self.assertEqual(completed["camera"]["action"], "reused")
         self.assertEqual(completed["mono_camera"]["action"], "reused")
         self.assertEqual(completed["mono_camera_baselink"]["action"], "executed")
-        before = Path(completed["mono_camera_baselink"]["result"]).read_bytes()
         changed = deepcopy(MONO_BASELINK_CONFIG)
         changed["cameras"][0]["translation_base_camera_m"][0] += 0.01
-        with self.assertRaisesRegex(TaskError, "mono_camera_baselink.*new batch"):
-            run_machine_workflow(self.prefix, self.write_config(extra={
+        recalibrated = run_machine_workflow(
+            self.prefix, self.write_config(extra={
                 "mono_camera_baselink": changed}), runner=runner)
-        self.assertEqual(len(calls), 3)
-        self.assertEqual(Path(completed["mono_camera_baselink"]["result"]).read_bytes(), before)
+        self.assertEqual(
+            recalibrated["mono_camera_baselink"]["action"], "executed")
+        self.assertEqual(len(calls), 4)
+        self.assertTrue(calls[-1]["force"])
+        self.assertEqual(
+            calls[-1]["task"]["cameras"][0]["translation_base_camera_m"],
+            changed["cameras"][0]["translation_base_camera_m"])
 
     def test_machine_cli_returns_nonzero_for_a_blocked_stage(self):
         summary = {
@@ -2018,7 +2023,7 @@ class MachineWorkflowTest(unittest.TestCase):
         self.assertTrue(second["mono_camera_baselink"]["result"].endswith(
             "usb_base_link_261029_1500/usb_base_link_261029_1500.yaml"))
 
-    def test_bound_dataset_cannot_disappear_without_a_replacement(self):
+    def test_bound_dataset_can_wait_after_it_disappears(self):
         old = self.write_dataset("stereo_261029_1000")
         config = self.write_config()
         calls = []
@@ -2028,10 +2033,10 @@ class MachineWorkflowTest(unittest.TestCase):
         before = result.read_bytes()
 
         old.rename(self.machine / (old.name + "_bk"))
-        with self.assertRaisesRegex(TaskError, "stereo dataset disappeared"):
-            run_machine_workflow(self.prefix, config, runner=runner)
+        waiting = run_machine_workflow(self.prefix, config, runner=runner)
 
         self.assertEqual(len(calls), 1)
+        self.assertEqual(waiting["camera"]["status"], "waiting_for_dataset")
         self.assertEqual(result.read_bytes(), before)
 
     def test_explicit_dataset_can_switch_while_old_capture_remains(self):
@@ -2105,7 +2110,7 @@ class MachineWorkflowTest(unittest.TestCase):
             "pending_recalibration",
             json.loads(state_path.read_text(encoding="utf-8")))
 
-    def test_pending_recalibration_rejects_another_replacement(self):
+    def test_pending_recalibration_accepts_another_replacement(self):
         old = self.write_dataset("stereo_261029_1000")
         self.write_dataset("stereo_imu_261029_1100", imu=True)
         config = self.write_config()
@@ -2129,14 +2134,16 @@ class MachineWorkflowTest(unittest.TestCase):
 
         replacement.rename(self.machine / (replacement.name + "_bk"))
         self.write_dataset("stereo_261029_1600")
-        with self.assertRaisesRegex(TaskError, "inputs changed.*pending"):
-            run_machine_workflow(self.prefix, config, runner=runner)
+        completed = run_machine_workflow(self.prefix, config, runner=runner)
 
         self.assertEqual(
             [(call["job"], call["force"]) for call in replacement_calls],
             [("camera_calibration", False),
              ("camera_imu_calibration", True)])
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(completed["camera"]["action"], "executed")
+        self.assertEqual(completed["camera_imu"]["action"], "executed")
+        self.assertTrue(calls[-1]["force"])
 
     def test_tampered_downstream_blocks_recalibration_before_solver(self):
         old = self.write_dataset("stereo_261029_1000")
@@ -2168,7 +2175,7 @@ class MachineWorkflowTest(unittest.TestCase):
             run_machine_workflow(
                 self.prefix, config, runner=self._mock_runner([]))
 
-    def test_dataset_changed_in_place_requires_a_new_directory_name(self):
+    def test_dataset_changed_in_place_is_recalculated(self):
         dataset = self.write_dataset("stereo_260916_2136")
         config = self.write_config()
         calls = []
@@ -2178,9 +2185,65 @@ class MachineWorkflowTest(unittest.TestCase):
         manifest = load_yaml(manifest_path)
         manifest["dataset_id"] = "stereo_260916_2136_changed"
         dump_yaml(manifest, manifest_path)
-        with self.assertRaisesRegex((TaskError, ValueError), "changed in place"):
-            run_machine_workflow(self.prefix, config, runner=runner)
+        changed = run_machine_workflow(self.prefix, config, runner=runner)
+        self.assertEqual(changed["camera"]["action"], "executed")
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(calls[-1]["force"])
+
+    def test_software_provenance_change_recalculates_current_datasets(self):
+        self.write_dataset("stereo_260916_2136")
+        config = self.write_config()
+        calls = []
+        runner = self._mock_runner(calls)
+        run_machine_workflow(self.prefix, config, runner=runner)
+        state_path = (self.machine / "result" / ".kalibr-cedarobot"
+                      / "state.json")
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["binding"]["software"]["implementation_sha256"] = "0" * 64
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        changed = run_machine_workflow(self.prefix, config, runner=runner)
+
+        self.assertEqual(changed["camera"]["action"], "executed")
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(calls[-1]["force"])
+
+    def test_camera_mode_change_recalculates_in_the_same_batch(self):
+        self.write_dataset("stereo_260916_2136")
+        calls = []
+        runner = self._mock_runner(calls)
+        run_machine_workflow(
+            self.prefix, self.write_config(camera_mode="standard"), runner=runner)
+
+        changed = run_machine_workflow(
+            self.prefix,
+            self.write_config(camera_mode="rolling_shutter"),
+            runner=runner)
+
+        self.assertEqual(
+            [call["job"] for call in calls],
+            ["camera_calibration", "camera_rolling_shutter_calibration"])
+        self.assertEqual(changed["camera"]["action"], "executed")
+        self.assertTrue(calls[-1]["force"])
+
+    def test_state_path_can_move_between_native_and_container_mounts(self):
+        self.write_dataset("stereo_260916_2136")
+        config = self.write_config()
+        calls = []
+        runner = self._mock_runner(calls)
+        run_machine_workflow(self.prefix, config, runner=runner)
+        state_path = (self.machine / "result" / ".kalibr-cedarobot"
+                      / "state.json")
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["machine_dir"] = "/data/EVT312-02/1029"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        resumed = run_machine_workflow(self.prefix, config, runner=runner)
+
+        self.assertEqual(resumed["camera"]["action"], "reused")
         self.assertEqual(len(calls), 1)
+        migrated = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual(migrated["machine_dir"], str(self.machine))
 
     def test_selected_target_uses_semantic_change_for_recalibration(self):
         self.write_dataset("stereo_260916_2136")
