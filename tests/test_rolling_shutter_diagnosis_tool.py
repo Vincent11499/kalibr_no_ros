@@ -3,11 +3,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import cv2
 import numpy as np
 import yaml
 
 from tools.rolling_shutter_diagnosis import analysis, reporting
 from tools.rolling_shutter_diagnosis.workflow import (
+    _camera_model_from_result,
     _execute_task,
     _formal_evidence,
     _incomplete_formal_evidence,
@@ -29,7 +31,7 @@ class RollingShutterDiagnosisToolTest(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def _config(self, motion="continuous"):
+    def _config(self, motion="continuous", model="pinhole-equi"):
         task = self.root / "task.yaml"
         _write_yaml(task, {
             "schema_version": "1.0.0",
@@ -37,7 +39,7 @@ class RollingShutterDiagnosisToolTest(unittest.TestCase):
             "job": "camera_calibration",
             "dataset": {"type": "directory", "path": "dataset"},
             "target": {"path": "aprilgrid.yaml"},
-            "cameras": [{"id": "cam0", "model": "pinhole-equi"}],
+            "cameras": [{"id": "cam0", "model": model}],
         })
         path = self.root / "diagnosis.yaml"
         _write_yaml(path, {
@@ -55,6 +57,49 @@ class RollingShutterDiagnosisToolTest(unittest.TestCase):
         self.assertEqual(config["bootstrap_samples"], 1000)
         self.assertEqual(config["bootstrap_seed"], 0)
         self.assertEqual(config["source_task"]["dataset"]["path"], str((self.root / "dataset").resolve()))
+
+    def test_config_accepts_extended_radtan_models(self):
+        for model in ("pinhole-radtan5", "pinhole-radtan8"):
+            with self.subTest(model=model):
+                config = load_config(self._config(model=model))
+                self.assertEqual(config["source_task"]["cameras"][0]["model"], model)
+
+    def test_extended_radtan_projection_matches_opencv(self):
+        pose = np.array([0.02, -0.03, 0.01, 0.1, -0.05, 0.2])
+        xyz = np.array([[0.1, 0.2, 1.5], [-0.3, 0.1, 2.0]])
+        matrix = np.array([[500.0, 0.0, 320.0], [0.0, 501.0, 240.0], [0.0, 0.0, 1.0]])
+        for distortion_model, coefficients in (
+                ("radtan5", [-0.1, 0.02, 0.001, -0.002, 0.003]),
+                ("radtan8", [-0.1, 0.02, 0.001, -0.002, 0.003, 0.01, -0.002, 0.0003])):
+            camera = {
+                "camera_model": "pinhole",
+                "distortion_model": distortion_model,
+                "intrinsics": [500.0, 501.0, 320.0, 240.0],
+                "distortion_coeffs": coefficients,
+            }
+            expected = cv2.projectPoints(
+                xyz, pose[:3], pose[3:], matrix, np.asarray(coefficients)
+            )[0].reshape(-1, 2)
+            with self.subTest(distortion_model=distortion_model):
+                np.testing.assert_allclose(
+                    analysis.project(pose, xyz, camera), expected,
+                    rtol=0.0, atol=1e-12)
+
+    def test_extended_radtan_result_models_preserve_coefficient_count(self):
+        for distortion_model, public_model, count in (
+                ("radtan5", "pinhole-radtan5", 5),
+                ("radtan8", "pinhole-radtan8", 8)):
+            camera = {
+                "camera_model": "pinhole",
+                "distortion_model": distortion_model,
+                "intrinsics": [500.0, 501.0, 320.0, 240.0],
+                "distortion_coeffs": [0.0] * count,
+            }
+            with self.subTest(distortion_model=distortion_model):
+                self.assertEqual(_camera_model_from_result(camera), public_model)
+                invalid = dict(camera, distortion_coeffs=[0.0] * (count - 1))
+                with self.assertRaisesRegex(ValueError, str(count)):
+                    analysis._camera_family(invalid)
 
     def test_unknown_motion_and_camera_ids_are_rejected(self):
         path = self._config("fast")

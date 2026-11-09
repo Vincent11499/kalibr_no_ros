@@ -23,7 +23,7 @@ from kalibr_no_ros.task import TaskError, dump_yaml, load_yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROFILE = ROOT / "config" / "mechine" / "workflow_v1.0.0"
+PROFILE = ROOT / "config" / "mechine" / "EVT320"
 BASELINK_CONFIG = {
     "base_link": {"position_scale_m": 0.01},
     "cameras": [
@@ -53,8 +53,8 @@ class MachineWorkflowTest(unittest.TestCase):
         # The test installation is independent from build/install outputs.
         shutil.copytree(ROOT / "config" / "mechine", installed)
         shutil.copy2(
-            installed / "workflow_v1.0.0" / "测试场_aprilgrid_8x8.yaml",
-            installed / "aprilgrid_1.yaml")
+            installed / "EVT320" / "测试场_aprilgrid_8x8.yaml",
+            installed / "EVT320" / "aprilgrid_1.yaml")
 
     def test_native_config_printers_resolve_stdout_at_call_time(self):
         from kalibr_camera_calibration.CameraUtils import printParameters
@@ -120,6 +120,7 @@ class MachineWorkflowTest(unittest.TestCase):
         document = {
             "schema_version": "1.0.0",
             "kind": "machine_calibration_workflow",
+            "template": "EVT320",
             "machine_dir": str(self.machine),
             "camera_imu": {
                 "mode": mode,
@@ -145,7 +146,7 @@ class MachineWorkflowTest(unittest.TestCase):
 
     def profile_file(self, name):
         return (self.prefix / "config" / "mechine"
-                / "workflow_v1.0.0" / name)
+                / "EVT320" / name)
 
     def test_workflow_yaml_is_strict_and_resolves_machine_relative_to_config(self):
         relative_machine = self.root / "EVT312-03" / "run_01"
@@ -154,8 +155,9 @@ class MachineWorkflowTest(unittest.TestCase):
         dump_yaml({
             "schema_version": "1.0.0",
             "kind": "machine_calibration_workflow",
+            "template": "EVT320",
             "machine_dir": "EVT312-03/run_01",
-            "targets": {"camera": "aprilgrid_1"},
+            "targets": {"stereo": "aprilgrid_1"},
             "camera": {"mode": "rolling_shutter"},
             "camera_imu": {"mode": "rolling_shutter"},
             "datasets": {"stereo": "stereo_260916_2136"},
@@ -165,12 +167,16 @@ class MachineWorkflowTest(unittest.TestCase):
         self.assertEqual(loaded["camera_imu"]["mode"], "rolling_shutter")
         self.assertEqual(loaded["camera"]["mode"], "rolling_shutter")
         self.assertEqual(loaded["targets"], {"camera": "aprilgrid_1"})
+        self.assertEqual(loaded["template"], "EVT320")
         self.assertEqual(Path(loaded["machine_root"]), relative_machine.parent)
         self.assertEqual(loaded["batch_name"], "run_01")
         self.assertEqual(loaded["machine_version"], "EVT312")
         self.assertEqual(loaded["machine_num"], "03")
 
         invalid_documents = [
+            ({"schema_version": "1.0.0", "kind": "machine_calibration_workflow",
+              "machine_dir": str(self.machine),
+              "camera_imu": {"mode": "standard"}}, "template"),
             ({"schema_version": "1", "kind": "machine_calibration_workflow",
               "machine_dir": str(self.machine), "camera_imu": {"mode": "standard"}},
              "schema_version"),
@@ -208,6 +214,8 @@ class MachineWorkflowTest(unittest.TestCase):
         ]
         for index, (document, message) in enumerate(invalid_documents):
             with self.subTest(index=index):
+                if message != "template":
+                    document.setdefault("template", "EVT320")
                 invalid = self.root / ("invalid_{}.yaml".format(index))
                 dump_yaml(document, invalid)
                 with self.assertRaisesRegex((TaskError, ValueError), message):
@@ -220,8 +228,9 @@ class MachineWorkflowTest(unittest.TestCase):
                 dump_yaml({
                     "schema_version": "1.0.0",
                     "kind": "machine_calibration_workflow",
+                    "template": "EVT320",
                     "machine_dir": str(self.machine),
-                    "targets": {"camera": target},
+                    "targets": {"stereo": target},
                     "camera_imu": {"mode": "standard"},
                 }, invalid)
                 with self.assertRaisesRegex(TaskError, "target"):
@@ -243,11 +252,8 @@ class MachineWorkflowTest(unittest.TestCase):
 
     def test_unicode_target_stem_is_resolved_from_installed_config(self):
         target = "测试场_aprilgrid_8x8"
-        installed = self.prefix / "config" / "mechine"
-        shutil.copy2(
-            installed / "workflow_v1.0.0" / (target + ".yaml"),
-            installed / (target + ".yaml"))
-        config = self.write_config(targets={"camera": target})
+        installed = self.prefix / "config" / "mechine" / "EVT320"
+        config = self.write_config(targets={"stereo": target})
         loaded = load_workflow_config(config)
         self.assertEqual(loaded["targets"], {"camera": target})
         self.write_dataset("stereo_260916_2136")
@@ -325,7 +331,7 @@ class MachineWorkflowTest(unittest.TestCase):
         with self.assertRaisesRegex(TaskError, "target.*missing|missing.*target"):
             run_machine_workflow(
                 self.prefix, self.write_config(
-                    targets={"camera": "not_installed"}),
+                    targets={"stereo": "not_installed"}),
                 runner=self._mock_runner([]))
 
     def test_discovery_validates_sensor_composition_and_rejects_symlink(self):
@@ -521,14 +527,14 @@ class MachineWorkflowTest(unittest.TestCase):
             PROFILE, "camera", stereo,
             "stereo_260916_2136_rs_pinhole_equi",
             camera_mode="rolling_shutter",
-            target_path=(self.prefix / "config" / "mechine"
+            target_path=(self.prefix / "config" / "mechine" / "EVT320"
                          / "aprilgrid_1.yaml"))
         self.assertEqual(
             rolling_camera["job"], "camera_rolling_shutter_calibration")
         self.assertEqual(set(rolling_camera["rolling_shutter"]), {"cam0", "cam1"})
         self.assertEqual(
             Path(rolling_camera["target"]["path"]),
-            (self.prefix / "config" / "mechine"
+            (self.prefix / "config" / "mechine" / "EVT320"
              / "aprilgrid_1.yaml").resolve())
 
         mono_dataset = self.write_dataset(
@@ -562,28 +568,87 @@ class MachineWorkflowTest(unittest.TestCase):
             self.assertTrue(task["output"]["save_diagnostics"])
             self.assertTrue(task["output"]["save_metrics"])
 
-    def test_task_auxiliary_paths_are_relative_and_confined_to_machine_config(self):
+    def test_build_task_accepts_machine_radtan5_and_radtan8_templates(self):
+        stereo = self.write_dataset("stereo_260916_2136")
+        mono_dataset = self.write_dataset(
+            "usb_260916_2137", cameras=("cam0",))
+        profile = self.prefix / "config" / "mechine" / "EVT320"
+        for model, coefficient_count in (
+                ("pinhole-radtan5", 5), ("pinhole-radtan8", 8)):
+            with self.subTest(model=model):
+                for filename in (
+                        "stereo_camera_calibration_task.yaml",
+                        "stereo_camera_rs_calibration_task.yaml"):
+                    path = profile / filename
+                    document = load_yaml(path)
+                    for camera in document["cameras"]:
+                        camera["model"] = model
+                    dump_yaml(document, path)
+                mono_path = profile / "mono_camera_calibration_task.yaml"
+                mono = load_yaml(mono_path)
+                mono["cameras"][0]["model"] = model
+                dump_yaml(mono, mono_path)
+
+                stereo_initialization = load_yaml(
+                    profile / "initialization_stereo_camera.yaml")
+                for camera in stereo_initialization["cameras"].values():
+                    camera["distortion_coeffs"] = [0.0] * coefficient_count
+                dump_yaml(
+                    stereo_initialization,
+                    profile / "initialization_stereo_camera.yaml")
+                mono_initialization = load_yaml(
+                    profile / "initialization_mono_camera.yaml")
+                mono_initialization["cameras"]["cam0"][
+                    "distortion_coeffs"] = [0.0] * coefficient_count
+                dump_yaml(
+                    mono_initialization,
+                    profile / "initialization_mono_camera.yaml")
+
+                standard = build_task(
+                    profile, "camera", stereo, "standard-" + model)
+                rolling = build_task(
+                    profile, "camera", stereo, "rolling-" + model,
+                    camera_mode="rolling_shutter")
+                mono_task = build_task(
+                    profile, "mono_camera", mono_dataset, "mono-" + model)
+                self.assertEqual(
+                    [camera["model"] for camera in standard["cameras"]],
+                    [model, model])
+                self.assertEqual(
+                    [camera["model"] for camera in rolling["cameras"]],
+                    [model, model])
+                self.assertEqual(mono_task["cameras"][0]["model"], model)
+
+        mono_path = profile / "mono_camera_calibration_task.yaml"
+        mono = load_yaml(mono_path)
+        mono["cameras"][0]["model"] = "pinhole-fov"
+        dump_yaml(mono, mono_path)
+        with self.assertRaisesRegex(TaskError, "pinhole-radtan8"):
+            build_task(
+                profile, "mono_camera", mono_dataset, "unsupported-model")
+
+    def test_task_auxiliary_paths_are_confined_to_selected_template(self):
         stereo = self.write_dataset("stereo_260916_2136")
         machine_config = self.prefix / "config" / "mechine"
-        profile = machine_config / "workflow_v1.0.0"
+        profile = machine_config / "EVT320"
         shutil.copy2(profile / "实验室_aprilgrid_8x10.yaml",
-                     machine_config / "custom_target.yaml")
+                     profile / "custom_target.yaml")
         shutil.copy2(profile / "initialization_stereo_camera.yaml",
-                     machine_config / "custom_initialization.yaml")
+                     profile / "custom_initialization.yaml")
         template = profile / "stereo_camera_calibration_task.yaml"
         document = load_yaml(template)
-        document["target"]["path"] = "../custom_target.yaml"
-        document["initialization"]["path"] = "../custom_initialization.yaml"
+        document["target"]["path"] = "custom_target.yaml"
+        document["initialization"]["path"] = "custom_initialization.yaml"
         dump_yaml(document, template)
 
         task = build_task(profile, "camera", stereo, stereo.name)
         self.assertEqual(Path(task["target"]["path"]),
-                         (machine_config / "custom_target.yaml").resolve())
+                         (profile / "custom_target.yaml").resolve())
         self.assertEqual(
             Path(task["initialization"]["path"]),
-            (machine_config / "custom_initialization.yaml").resolve())
+            (profile / "custom_initialization.yaml").resolve())
 
-        document["initialization"]["path"] = "../../outside.yaml"
+        document["initialization"]["path"] = "../custom_initialization.yaml"
         dump_yaml(document, template)
         with self.assertRaisesRegex(TaskError, "must stay inside"):
             build_task(profile, "camera", stereo, stereo.name)
@@ -873,9 +938,10 @@ class MachineWorkflowTest(unittest.TestCase):
         first = run_machine_workflow(self.prefix, config, runner=runner)
         self.assertEqual(first["camera_baselink"]["status"], "waiting_for_dataset")
         first_vision = load_yaml(first["calib_params"]["vision"]["result"])
-        self.assertEqual(first_vision["camera"]["cam0"]["pitch"], 0.0)
+        self.assertFalse(first_vision["stereo_baselink_calibrated"])
+        self.assertEqual(first_vision["camera"]["cam0"]["pitch"], 10.0)
         self.assertEqual(
-            first_vision["camera"]["cam0"]["T_base_cam"][0][3], 0.0)
+            first_vision["camera"]["cam0"]["T_base_cam"][0][3], 0.20213)
         self.write_dataset("stereo_base_link_261021_1630")
         second = run_machine_workflow(self.prefix, config, runner=runner)
         self.assertEqual([call["job"] for call in calls], [
@@ -898,6 +964,7 @@ class MachineWorkflowTest(unittest.TestCase):
             "stereo_base_link_261021_1630/stereo_base_link_261021_1630.yaml"))
         self.assertEqual(second["calib_params"]["vision"]["action"], "updated")
         vision_params = load_yaml(second["calib_params"]["vision"]["result"])
+        self.assertTrue(vision_params["stereo_baselink_calibrated"])
         self.assertEqual(vision_params["camera"]["cam0"]["pitch"], 8.0)
         self.assertEqual(
             vision_params["camera"]["cam0"]["T_base_cam"][0][3], 0.2)
@@ -925,8 +992,8 @@ class MachineWorkflowTest(unittest.TestCase):
         config = self.write_config(
             mode="rolling_shutter", camera_mode="rolling_shutter",
             recompute_extrinsics=True,
-            targets={stage: "aprilgrid_1" for stage in (
-                "camera", "camera_imu", "camera_baselink")},
+            targets={role: "aprilgrid_1" for role in (
+                "stereo", "stereo_imu", "stereo_baselink")},
             extra={"camera_baselink": cam0_baselink})
         calls = []
         summary = run_machine_workflow(self.prefix, config, runner=self._mock_runner(calls))
@@ -1092,7 +1159,7 @@ class MachineWorkflowTest(unittest.TestCase):
             self.assertEqual(calls[index]["task"]["target"], calls[0]["task"]["target"])
         self.assertEqual(
             Path(calls[3]["task"]["initialization"]["path"]),
-            (self.prefix / "config" / "mechine" / "workflow_v1.0.0"
+            (self.prefix / "config" / "mechine" / "EVT320"
              / "initialization_mono_camera.yaml").resolve())
         self.assertNotIn("initialization", calls[4]["task"])
         self.assertEqual(load_yaml(mono_result)["cameras"][0]["id"], "cam0")
@@ -1295,8 +1362,9 @@ class MachineWorkflowTest(unittest.TestCase):
         self.assertEqual(first["mono_camera_baselink"]["status"], "waiting_for_dataset")
         self.assertEqual(set(first["calib_params"]), {"mono"})
         first_mono = load_yaml(first["calib_params"]["mono"]["result"])
-        self.assertEqual(first_mono["camera"]["T_base_cam"][0][3], 0.0)
-        self.assertEqual(first_mono["camera"]["pitch"], 0.0)
+        self.assertFalse(first_mono["mono_baselink_calibrated"])
+        self.assertEqual(first_mono["camera"]["T_base_cam"][0][3], -0.21306)
+        self.assertEqual(first_mono["camera"]["pitch"], 37.5)
         self.write_dataset("usb_base_link_261021_1640", cameras=("cam0",))
         second = run_machine_workflow(self.prefix, config, runner=runner)
         self.assertEqual(len(calls), 2)
@@ -1305,6 +1373,7 @@ class MachineWorkflowTest(unittest.TestCase):
         self.assertEqual(second["camera"]["status"], "waiting_for_dataset")
         self.assertEqual(second["calib_params"]["mono"]["action"], "updated")
         second_mono = load_yaml(second["calib_params"]["mono"]["result"])
+        self.assertTrue(second_mono["mono_baselink_calibrated"])
         self.assertEqual(second_mono["camera"]["T_base_cam"][0][3], 0.2)
         self.assertEqual(second_mono["camera"]["pitch"], 8.0)
         self.assertTrue(second["mono_camera"]["result"].endswith(
@@ -1627,7 +1696,7 @@ class MachineWorkflowTest(unittest.TestCase):
             ]
         }
         profile = {
-            "version": machine_workflow.PROFILE_VERSION,
+            "version": "EVT320",
             "files": files,
             "target": {"name": "aprilgrid_1.yaml", "sha256": "target"},
         }
@@ -1672,13 +1741,14 @@ class MachineWorkflowTest(unittest.TestCase):
         current = deepcopy(profile)
         current.pop("target")
         current["targets"] = {
-            stage: {"path": "../aprilgrid_1.yaml", "sha256": "target"}
+            stage: {"path": "aprilgrid_1.yaml", "sha256": "target"}
             for stage in machine_workflow._STAGE_ROLES
         }
         current["target_overrides"] = list(machine_workflow._STAGE_ROLES)
         self.assertEqual(
             machine_workflow._profile_recalibration(
-                profile, current, binding)[1], [])
+                profile, current, binding)[1],
+            list(machine_workflow._STAGE_ROLES))
         expected_by_stage = {
             "camera": ["camera", "camera_imu", "camera_baselink"],
             "camera_imu": ["camera_imu"],
@@ -1689,7 +1759,7 @@ class MachineWorkflowTest(unittest.TestCase):
         for stage, expected in expected_by_stage.items():
             changed = deepcopy(current)
             changed["targets"][stage] = {
-                "path": "../aprilgrid_2.yaml", "sha256": "target-2"}
+                "path": "aprilgrid_2.yaml", "sha256": "target-2"}
             with self.subTest(target_stage=stage):
                 self.assertEqual(
                     machine_workflow._profile_recalibration(
@@ -1783,16 +1853,16 @@ class MachineWorkflowTest(unittest.TestCase):
         self.assertEqual(params_only["calib_params"]["mono"]["action"],
                          "updated")
 
-    def test_external_initialization_change_reruns_its_dependent_chain(self):
+    def test_template_initialization_change_reruns_its_dependent_chain(self):
         self.write_dataset("stereo_261029_1000")
         self.write_dataset("stereo_imu_261029_1100", imu=True)
-        machine_config = self.prefix / "config" / "mechine"
-        custom = machine_config / "custom_initialization.yaml"
+        profile = self.prefix / "config" / "mechine" / "EVT320"
+        custom = profile / "custom_initialization.yaml"
         shutil.copy2(
             self.profile_file("initialization_stereo_camera.yaml"), custom)
         template = self.profile_file("stereo_camera_calibration_task.yaml")
         document = load_yaml(template)
-        document["initialization"]["path"] = "../custom_initialization.yaml"
+        document["initialization"]["path"] = "custom_initialization.yaml"
         dump_yaml(document, template)
 
         calls = []
@@ -2247,11 +2317,11 @@ class MachineWorkflowTest(unittest.TestCase):
 
     def test_selected_target_uses_semantic_change_for_recalibration(self):
         self.write_dataset("stereo_260916_2136")
-        config = self.write_config(targets={"camera": "aprilgrid_1"})
+        config = self.write_config(targets={"stereo": "aprilgrid_1"})
         calls = []
         runner = self._mock_runner(calls)
         run_machine_workflow(self.prefix, config, runner=runner)
-        target = (self.prefix / "config" / "mechine"
+        target = (self.prefix / "config" / "mechine" / "EVT320"
                   / "aprilgrid_1.yaml")
         target.write_text(
             target.read_text(encoding="utf-8") + "\n# onsite comment\n",
@@ -2270,16 +2340,16 @@ class MachineWorkflowTest(unittest.TestCase):
         self.assertTrue(calls[-1]["force"])
 
     def test_new_baselink_target_does_not_rerun_camera_or_imu(self):
-        installed = self.prefix / "config" / "mechine"
+        installed = self.prefix / "config" / "mechine" / "EVT320"
         shutil.copy2(
             installed / "aprilgrid_1.yaml",
             installed / "aprilgrid_2.yaml")
         self.write_dataset("stereo_260916_2136")
         self.write_dataset("stereo_imu_260916_2200", imu=True)
         first_targets = {
-            "camera": "aprilgrid_1",
-            "camera_imu": "aprilgrid_1",
-            "camera_baselink": "aprilgrid_1",
+            "stereo": "aprilgrid_1",
+            "stereo_imu": "aprilgrid_1",
+            "stereo_baselink": "aprilgrid_1",
         }
         calls = []
         runner = self._mock_runner(calls)
@@ -2307,7 +2377,7 @@ class MachineWorkflowTest(unittest.TestCase):
         state_path.write_text(json.dumps(state), encoding="utf-8")
 
         self.write_dataset("stereo_base_link_261021_1741")
-        second_targets = dict(first_targets, camera_baselink="aprilgrid_2")
+        second_targets = dict(first_targets, stereo_baselink="aprilgrid_2")
         second = run_machine_workflow(
             self.prefix,
             self.write_config(

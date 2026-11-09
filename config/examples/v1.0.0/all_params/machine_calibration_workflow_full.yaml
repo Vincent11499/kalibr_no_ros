@@ -1,5 +1,6 @@
 schema_version: "1.0.0"
 kind: machine_calibration_workflow
+template: EVT320 # 必填；选择config/mechine/EVT320；必须是安全直接子目录，任务及辅助YAML不能跨模板引用。
 machine_dir: /path/to/EVT312-02/1029 # 必填；单次标定批次目录；父目录必须为<机型>-<编号>，批次名为安全文件名；相对路径以本YAML所在目录为基准。
 reuse_calib_params: # 可选映射；每项默认false；true从当前result/calib_params复用该任务参数并跳过数据集搜索和求解；无需原始数据或metrics。
   camera: false # 双目模型/K/D/分辨率、双目外参、校正参数及行时间；true可作为本机Camera–IMU/BaseLink的前置输入。
@@ -8,11 +9,11 @@ reuse_calib_params: # 可选映射；每项默认false；true从当前result/cal
   mono_camera: false # USB单目模型/K/D/分辨率及RMS；true可作为本机USB BaseLink的前置输入。
   mono_camera_baselink: false # USB单目的T_base_cam/pitch。
 targets: # 可选；按任务覆盖标定板；未列出的任务使用对应task模板的target.path。
-  camera: aprilgrid_1 # 安全文件名stem；读取安装的config/mechine/aprilgrid_1.yaml。
-  camera_imu: aprilgrid_1
-  camera_baselink: aprilgrid_2
-  mono_camera: aprilgrid_1
-  mono_camera_baselink: aprilgrid_2
+  stereo: 测试场_aprilgrid_8x8 # 安全文件名stem；读取所选模板目录中的同名YAML。
+  stereo_imu: 实验室_aprilgrid_8x10
+  stereo_baselink: 测试场_aprilgrid_8x8
+  mono: 测试场_aprilgrid_8x8
+  mono_baselink: 测试场_aprilgrid_8x8
 datasets: # 可省略或部分填写；填写的角色强制使用指定目录，其余角色仍自动选择唯一候选。
   stereo: stereo_261021_1500
   stereo_imu: stereo_imu_261021_1600

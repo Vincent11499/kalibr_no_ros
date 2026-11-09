@@ -19,12 +19,29 @@ import kalibr_common as kc
 import kalibr_runtime as native_runtime
 import sm
 
+import kalibr_radtan5 as kr5
+kr5.install()
+import kalibr_radtan8 as kr8
+kr8.install()
+
 from kalibr_rs_camera_calibration.SystemCalibrator import SystemRsCalibrator
 
 
 CAMERA_MODELS = {
     "pinhole-equi": acvb.EquidistantPinholeRs,
     "pinhole-radtan": acvb.DistortedPinholeRs,
+    # The system solver owns row timing as a separate bounded state and feeds
+    # per-corner times into the shared pose spline.  These models therefore
+    # reuse their existing projection/distortion geometry and Jacobians.
+    "pinhole-radtan5": kr5.PinholeRadtan5,
+    "pinhole-radtan8": kr8.PinholeRadtan8,
+}
+
+DISTORTION_MODELS = {
+    "pinhole-equi": "equidistant",
+    "pinhole-radtan": "radtan",
+    "pinhole-radtan5": "radtan5",
+    "pinhole-radtan8": "radtan8",
 }
 
 
@@ -178,8 +195,7 @@ def _camera_output(camera, model_name, topic, shutter):
     projection = camera.geometry.projection()
     return {
         "camera_model": "pinhole",
-        "distortion_model": (
-            "equidistant" if model_name == "pinhole-equi" else "radtan"),
+        "distortion_model": DISTORTION_MODELS[model_name],
         "intrinsics": np.asarray(
             projection.getParameters(), dtype=float).reshape(-1).tolist(),
         "distortion_coeffs": np.asarray(

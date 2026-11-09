@@ -1025,6 +1025,8 @@ RS job 接受普通相机字段中的 `freeze_intrinsics`、`window_half_size_px
 `synchronization_tolerance_s`、`min_views_for_outlier_statistics`、
 `remove_outliers`、`final_filtering` 和 `blake_zisserman`。它不执行增量 view 选择，
 因此拒绝 `qr_tolerance`、`information_gain_tolerance` 和 `shuffle`，避免配置被静默忽略。
+正式入口和临时原生单目对照均支持 `pinhole-equi`、`pinhole-radtan`、
+`pinhole-radtan5` 和 `pinhole-radtan8`；临时入口仍只支持单目。
 该求解器也没有普通相机任务的逐批异常点删除；只有 `remove_outliers` 与
 `final_filtering` 同时为 true 才执行一次最终过滤，逐坐标阈值为
 `max(4 * sigma, feature_sigma_px)`，删除后用同一联合模型重新求解。

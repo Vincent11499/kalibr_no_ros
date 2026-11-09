@@ -22,6 +22,11 @@ _STAGE_FILES = {
     "mono_camera": "mono_camera/usb_mono_calib.yaml",
     "mono_camera_baselink": "mono_camera/usb_mono_calib.yaml",
 }
+_CALIBRATED_FLAGS = {
+    "camera_imu": "stereo_imu_calibrated",
+    "camera_baselink": "stereo_baselink_calibrated",
+    "mono_camera_baselink": "mono_baselink_calibrated",
+}
 _MODELS = {
     "pinhole-equidistant": ("pinhole", "equidistant", 4, 4),
     "pinhole-equi": ("pinhole", "equidistant", 4, 4),
@@ -139,6 +144,11 @@ def validate_reused_stage(document, stage, identity):
     """
     parameter_path(".", stage)
     _header(document, identity)
+    calibrated_flag = _CALIBRATED_FLAGS.get(stage)
+    if calibrated_flag is not None and document.get(calibrated_flag) is not True:
+        raise TaskError(
+            "calib_params {} must be true to reuse {}"
+            .format(calibrated_flag, stage))
     cameras = _mapping(document.get("camera"), "camera")
     try:
         if stage == "mono_camera":

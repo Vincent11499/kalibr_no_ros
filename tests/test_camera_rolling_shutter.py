@@ -1,6 +1,7 @@
 """Pure-Python contracts for the visual rolling-shutter camera task."""
 
 import copy
+import runpy
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,6 +26,9 @@ from kalibr_no_ros.task import (
     load_yaml,
 )
 from kalibr_no_ros.validation import _validate_shutter_result, load_cameras
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _task(camera_count=2):
@@ -120,8 +124,8 @@ class VisualRollingShutterContractTest(unittest.TestCase):
     def test_job_is_strict_about_models_and_camera_only_parameters(self):
         invalid = []
         unsupported_model = _task()
-        unsupported_model["cameras"][1]["model"] = "pinhole-radtan8"
-        invalid.append((unsupported_model, "supports pinhole-equi and pinhole-radtan"))
+        unsupported_model["cameras"][1]["model"] = "pinhole-fov"
+        invalid.append((unsupported_model, "supports .*pinhole-radtan8"))
         ordinary_only_parameter = _task()
         ordinary_only_parameter["calibration"]["qr_tolerance"] = 1e-8
         invalid.append((ordinary_only_parameter, "unknown fields"))
@@ -144,6 +148,52 @@ class VisualRollingShutterContractTest(unittest.TestCase):
                         TaskError, message):
                     load_task(_write_task(
                         directory, document, "invalid-{}.yaml".format(index)))
+
+    def test_system_accepts_extended_radtan_models(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for model in ("pinhole-radtan5", "pinhole-radtan8"):
+                with self.subTest(model=model):
+                    document = _task(1)
+                    document["cameras"][0]["model"] = model
+                    task = load_task(_write_task(
+                        root, document, "{}.yaml".format(model)))
+                    arguments = _rs_camera_arguments(
+                        task, root / "dataset.bag", root / "target.yaml",
+                        root, {})
+                    models = arguments.index("--models")
+                    shutters = arguments.index("--rolling-shutter-config")
+                    self.assertEqual(arguments[models + 1:shutters], [model])
+
+    def test_system_native_entry_registers_extended_radtan_models(self):
+        namespace = runpy.run_path(
+            str(ROOT / "src" / "kalibr" / "calibration" / "kalibr"
+                / "python" / "kalibr_calibrate_rs_camera_system"),
+            run_name="kalibr_rs_camera_system_contract")
+        self.assertEqual(
+            set(namespace["CAMERA_MODELS"]), {
+                "pinhole-equi", "pinhole-radtan",
+                "pinhole-radtan5", "pinhole-radtan8",
+            })
+        self.assertEqual(namespace["DISTORTION_MODELS"], {
+            "pinhole-equi": "equidistant",
+            "pinhole-radtan": "radtan",
+            "pinhole-radtan5": "radtan5",
+            "pinhole-radtan8": "radtan8",
+        })
+        native = runpy.run_path(
+            str(ROOT / "src" / "kalibr" / "calibration" / "kalibr"
+                / "python" / "kalibr_calibrate_rs_cameras"),
+            run_name="kalibr_native_rs_camera_contract")
+        self.assertEqual(
+            native["cameraModels"]["pinhole-radtan5"].__name__,
+            "PinholeRadtan5Rs")
+        self.assertEqual(
+            native["cameraModels"]["pinhole-radtan8"].__name__,
+            "PinholeRadtan8Rs")
+        self.assertEqual(
+            native["cameraModels"]["pinhole-radtan5"].shutterType.__name__,
+            "RollingShutter")
 
     def test_system_arguments_preserve_camera_order_ids_and_parameters(self):
         document = _task(3)
@@ -196,6 +246,21 @@ class VisualRollingShutterContractTest(unittest.TestCase):
                     r"does not support output\.export_poses.*use cameras-rs"):
                 _native_rs_camera_arguments(
                     task, root / "input.bag", root / "target.yaml", root, {})
+
+            with mock.patch(
+                    "kalibr_no_ros.task._selected_frame_rate_hz",
+                    return_value=5.0):
+                for model in ("pinhole-radtan5", "pinhole-radtan8"):
+                    extended = _task(1)
+                    extended["cameras"][0]["model"] = model
+                    task = load_task(_write_task(
+                        root, extended, "native-{}.yaml".format(model)))
+                    with self.subTest(model=model):
+                        arguments = _native_rs_camera_arguments(
+                            task, root / "input.bag", root / "target.yaml",
+                            root, {})
+                        self.assertEqual(
+                            arguments[arguments.index("--model") + 1], model)
 
     def test_camera_initialization_is_shared_and_keeps_three_camera_chain(self):
         task = _task(3)

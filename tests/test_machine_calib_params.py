@@ -21,7 +21,8 @@ from kalibr_no_ros.task import TaskError, dump_yaml, load_yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROFILE = ROOT / "config" / "mechine" / "workflow_v1.0.0"
+PROFILE = ROOT / "config" / "mechine" / "EVT320"
+PROFILE_DEFAULTS = load_yaml(PROFILE / "mechine_base_param.yaml")
 IDENTITY = [
     [1.0, 0.0, 0.0, 0.0],
     [0.0, 1.0, 0.0, 0.0],
@@ -177,24 +178,35 @@ class MachineCalibParamsTest(unittest.TestCase):
         vision = artifacts["vision"]["document"]
         self.assertEqual(list(vision), [
             "machine_version", "machine_num", "time", "algorithm_version",
-            "calib_file_version", "imu", "camera", "odom",
+            "calib_file_version", "stereo_imu_calibrated",
+            "stereo_baselink_calibrated", "imu", "camera", "odom", "lidar",
         ])
         self.assertEqual(vision["algorithm_version"], "1.0.0")
         self.assertEqual(vision["calib_file_version"], "1.0.0")
         self.assertNotIn("calib_version", vision)
         self.assertNotIn("T_BS", vision["imu"])
-        self.assertEqual(vision["imu"]["gyro_bias"], [0.0, 0.0, 0.0])
+        self.assertFalse(vision["stereo_imu_calibrated"])
+        self.assertFalse(vision["stereo_baselink_calibrated"])
+        self.assertEqual(
+            vision["imu"]["gyro_bias"], PROFILE_DEFAULTS["imu"]["gyro_bias"])
+        self.assertEqual(
+            vision["imu"]["acc_bias"], PROFILE_DEFAULTS["imu"]["acc_bias"])
         self.assertEqual(vision["imu"]["gyro_scale"], [0.9934] * 3)
         self.assertEqual(vision["imu"]["acc_scale"], [0.989362] * 3)
-        self.assertEqual(vision["camera"]["cam0"]["T_base_cam"], IDENTITY)
+        self.assertEqual(
+            vision["camera"]["cam0"]["T_base_cam"],
+            PROFILE_DEFAULTS["stereo_camera"]["cam0"]["T_base_cam"])
         self.assertEqual(list(vision["camera"]["cam0"]), [
             "model", "resolution", "intrinsic", "distortion", "T_base_cam",
             "T_imu_cam", "td_cam_to_imu", "line_delay_s", "pitch", "rms",
         ])
-        self.assertEqual(vision["camera"]["cam0"]["pitch"], 0.0)
+        self.assertEqual(vision["camera"]["cam0"]["pitch"], 10.0)
         self.assertEqual(vision["camera"]["cam0"]["rms"], 0.21)
-        self.assertEqual(vision["camera"]["cam0"]["T_imu_cam"], IDENTITY)
-        self.assertEqual(vision["camera"]["cam0"]["line_delay_s"], 1.0e-6)
+        self.assertEqual(
+            vision["camera"]["cam0"]["T_imu_cam"],
+            PROFILE_DEFAULTS["stereo_camera"]["cam0"]["T_imu_cam"])
+        self.assertEqual(
+            vision["camera"]["cam0"]["line_delay_s"], 7.45e-6)
         self.assertEqual(vision["camera"]["cam1"]["T_cn_cnm1"], BASE)
         self.assertEqual(list(vision["camera"]["cam1"]), [
             "model", "resolution", "intrinsic", "distortion", "T_cn_cnm1",
@@ -210,6 +222,7 @@ class MachineCalibParamsTest(unittest.TestCase):
         self.assertEqual(correction["alignment"], 0.31)
         self.assertNotIn("T_BS", vision["odom"])
         self.assertNotIn("T_base_cam", vision["odom"])
+        self.assertEqual(vision["lidar"], PROFILE_DEFAULTS["lidar"])
         written = write_calib_param(self.output, artifacts["vision"])
         restored = load_yaml(written["path"])
         self.assertEqual(restored, vision)
@@ -219,15 +232,18 @@ class MachineCalibParamsTest(unittest.TestCase):
         mono = artifacts["mono"]["document"]
         self.assertEqual(list(mono), [
             "machine_version", "machine_num", "time", "algorithm_version",
-            "calib_file_version", "camera",
+            "calib_file_version", "mono_baselink_calibrated", "camera",
         ])
+        self.assertFalse(mono["mono_baselink_calibrated"])
         self.assertEqual(list(mono["camera"]), [
             "model", "resolution", "intrinsic", "distortion", "T_base_cam",
             "pitch", "rms",
         ])
         self.assertEqual(mono["camera"]["resolution"], [1280, 800])
-        self.assertEqual(mono["camera"]["T_base_cam"], IDENTITY)
-        self.assertEqual(mono["camera"]["pitch"], 0.0)
+        self.assertEqual(
+            mono["camera"]["T_base_cam"],
+            PROFILE_DEFAULTS["usb_camera"]["T_base_cam"])
+        self.assertEqual(mono["camera"]["pitch"], 37.5)
         self.assertEqual(mono["camera"]["rms"], 0.41)
         self.assertEqual(artifacts["mono"]["defaulted_fields"], [
             "camera.T_base_cam", "camera.pitch",
@@ -241,6 +257,7 @@ class MachineCalibParamsTest(unittest.TestCase):
             }, "2026-10-11-20:01:02")
         self.assertEqual(set(artifacts), {"mono"})
         mono = artifacts["mono"]["document"]
+        self.assertTrue(mono["mono_baselink_calibrated"])
         self.assertEqual(mono["camera"]["T_base_cam"], BASE)
         self.assertEqual(mono["camera"]["pitch"], 8.5)
         self.assertEqual(mono["camera"]["rms"], 0.41)
@@ -271,6 +288,8 @@ class MachineCalibParamsTest(unittest.TestCase):
             camera_mode="rolling_shutter",
             camera_imu_mode="rolling_shutter")
         vision = artifacts["vision"]["document"]
+        self.assertTrue(vision["stereo_imu_calibrated"])
+        self.assertTrue(vision["stereo_baselink_calibrated"])
         self.assertEqual(vision["camera"]["cam0"]["T_base_cam"], BASE)
         self.assertEqual(vision["camera"]["cam0"]["pitch"], 8.5)
         self.assertEqual(vision["camera"]["cam0"]["rms"], 0.21)
@@ -310,7 +329,7 @@ class MachineCalibParamsTest(unittest.TestCase):
         for name in ("R1", "P1", "R2", "P2"):
             np.testing.assert_allclose(actual[name], expected[name], atol=0.0)
 
-    def test_line_delay_requires_the_completed_rs_source(self):
+    def test_profile_line_delay_is_used_until_camera_imu_is_calibrated(self):
         stereo = self.stereo()
         document = load_yaml(stereo["result"])
         for camera in document["cameras"]:
@@ -323,12 +342,13 @@ class MachineCalibParamsTest(unittest.TestCase):
             "2026-10-10-19:58:00")
         self.assertEqual(
             standard["vision"]["document"]["camera"]["cam0"]["line_delay_s"],
-            0.0)
-        with self.assertRaisesRegex(TaskError, "lacks line_delay_s"):
-            build_calib_params(
-                self.machine, PROFILE, {"camera": stereo},
-                "2026-10-10-19:58:00",
-                camera_mode="rolling_shutter")
+            PROFILE_DEFAULTS["stereo_camera"]["cam0"]["line_delay_s"])
+        rolling = build_calib_params(
+            self.machine, PROFILE, {"camera": stereo},
+            "2026-10-10-19:58:00", camera_mode="rolling_shutter")
+        self.assertEqual(
+            rolling["vision"]["document"]["camera"]["cam1"]["line_delay_s"],
+            PROFILE_DEFAULTS["stereo_camera"]["cam1"]["line_delay_s"])
 
         camera_imu = self.camera_imu()
         imu_document = load_yaml(camera_imu["result"])
@@ -449,9 +469,14 @@ class MachineCalibParamsTest(unittest.TestCase):
                 "camera": self.reused("camera", original["vision"]["document"]),
             })["vision"]
         document = restored["document"]
-        self.assertEqual(document["camera"]["cam0"]["T_base_cam"], IDENTITY)
-        self.assertEqual(document["camera"]["cam0"]["T_imu_cam"], IDENTITY)
-        self.assertEqual(document["imu"]["gyro_bias"], [0.0, 0.0, 0.0])
+        self.assertEqual(
+            document["camera"]["cam0"]["T_base_cam"],
+            PROFILE_DEFAULTS["stereo_camera"]["cam0"]["T_base_cam"])
+        self.assertEqual(
+            document["camera"]["cam0"]["T_imu_cam"],
+            PROFILE_DEFAULTS["stereo_camera"]["cam0"]["T_imu_cam"])
+        self.assertEqual(
+            document["imu"]["gyro_bias"], PROFILE_DEFAULTS["imu"]["gyro_bias"])
         self.assertIn("camera.cam0.T_imu_cam", restored["defaulted_fields"])
 
     def test_local_baselink_updates_reused_mono_without_changing_optics(self):

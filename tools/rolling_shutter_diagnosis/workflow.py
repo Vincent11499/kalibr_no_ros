@@ -28,7 +28,18 @@ from .analysis import (
 
 
 SUPPORTED_SOURCE_JOBS = {"camera_calibration", "camera_imu_calibration"}
-CAMERA_MODELS = {"pinhole-equi", "pinhole-radtan"}
+CAMERA_MODELS = frozenset({
+    "pinhole-equi",
+    "pinhole-radtan",
+    "pinhole-radtan5",
+    "pinhole-radtan8",
+})
+RESULT_CAMERA_MODELS = {
+    "equidistant": "pinhole-equi",
+    "radtan": "pinhole-radtan",
+    "radtan5": "pinhole-radtan5",
+    "radtan8": "pinhole-radtan8",
+}
 MANAGED_DIRECTORIES = ("configs", "runs", "logs", "charts")
 MANAGED_FILES = (
     "diagnosis_manifest.json",
@@ -101,13 +112,17 @@ def _resolve_task_paths(task: dict[str, Any], task_path: Path) -> dict[str, Any]
 
 def _camera_model_from_result(camera: dict[str, Any]) -> str:
     if camera.get("camera_model") != "pinhole":
-        raise ValueError("only pinhole-equi and pinhole-radtan are supported")
-    distortion = camera.get("distortion_model")
-    if distortion == "equidistant":
-        return "pinhole-equi"
-    if distortion == "radtan":
-        return "pinhole-radtan"
-    raise ValueError("only pinhole-equi and pinhole-radtan are supported")
+        raise ValueError(
+            "diagnosis supports pinhole-equi, pinhole-radtan, "
+            "pinhole-radtan5, and pinhole-radtan8 only"
+        )
+    try:
+        return RESULT_CAMERA_MODELS[camera.get("distortion_model")]
+    except KeyError as error:
+        raise ValueError(
+            "diagnosis supports pinhole-equi, pinhole-radtan, "
+            "pinhole-radtan5, and pinhole-radtan8 only"
+        ) from error
 
 
 def load_config(path: Path | str) -> dict[str, Any]:
@@ -151,7 +166,10 @@ def load_config(path: Path | str) -> dict[str, Any]:
             raise ValueError("camera source task must contain cameras")
         ids = [str(camera.get("id")) for camera in cameras]
         if any(camera.get("model") not in CAMERA_MODELS for camera in cameras):
-            raise ValueError("diagnosis supports pinhole-equi and pinhole-radtan only")
+            raise ValueError(
+                "diagnosis supports pinhole-equi, pinhole-radtan, "
+                "pinhole-radtan5, and pinhole-radtan8 only"
+            )
         camera_result = None
     else:
         dependency = task.get("camera_calibration")

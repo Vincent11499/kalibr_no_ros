@@ -8,6 +8,7 @@
 BOOST_PYTHON_MODULE(libkalibr_radtan5_backend_python) {
   using aslam::cameras::RadialTangentialDistortion5;
   using aslam::cameras::Radtan5PinholeCameraGeometry;
+  using aslam::cameras::Radtan5PinholeRsCameraGeometry;
   using aslam::cameras::Radtan5PinholeProjection;
   aslam::python::exportGenericProjectionDesignVariable<
       RadialTangentialDistortion5>("RadialTangentialDistortion5");
@@ -17,4 +18,10 @@ BOOST_PYTHON_MODULE(libkalibr_radtan5_backend_python) {
       "Radtan5Pinhole");
   aslam::python::exportCameraDesignVariables<Radtan5PinholeCameraGeometry>(
       "Radtan5PinholeCameraGeometry");
+  aslam::python::exportReprojectionErrors<Radtan5PinholeRsCameraGeometry>(
+      "Radtan5PinholeRs");
+  aslam::python::exportCovarianceReprojectionError<
+      Radtan5PinholeRsCameraGeometry>("Radtan5PinholeRs");
+  aslam::python::exportCameraDesignVariables<Radtan5PinholeRsCameraGeometry>(
+      "Radtan5PinholeRsCameraGeometry");
 }

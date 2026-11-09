@@ -42,8 +42,11 @@ rolling_shutter:
 检测参数和线程预算解析为绝对路径，再在自己的隔离输出目录执行。Camera–IMU 输入必须显式
 提供 `camera_calibration.path`；新的隔离输出目录不能可靠猜测原任务曾经依赖哪一份相机结果。
 
-只支持 `pinhole-equi` 和 `pinhole-radtan`。`rolling_shutter` 只填写每目搜索上界，不能
-填写预期行时间。离线筛查从 0 开始，只有证据满足门槛才用候选值构造正式对照。
+支持 `pinhole-equi`、四参数 `pinhole-radtan`、`pinhole-radtan5` 和
+`pinhole-radtan8`。离线逐帧投影对 equi 使用 OpenCV fisheye，对三种 radtan 按各自
+4／5／8 个畸变系数使用 OpenCV pinhole 投影；后续正式对照沿用源 task 的模型和完整
+系数，不截断高阶项。`rolling_shutter` 只填写每目搜索上界，不能填写预期行时间。离线
+筛查从 0 开始，只有证据满足门槛才用候选值构造正式对照。
 
 `capture.motion` 必须根据真实采集方式填写：
 

@@ -15,3 +15,5 @@ __pycache__/
 !/config/mechine/aprilgrid_1.yaml
 !/config/mechine/workflow_v1.0.0/
 !/config/mechine/workflow_v1.0.0/**
+!/config/mechine/EVT320/
+!/config/mechine/EVT320/**

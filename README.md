@@ -69,15 +69,14 @@ kalibr-cedarobot machine
 同一机器的独立单目模组使用 `usb_*` 标定内参，使用 `usb_base_link_*` 和
 `mono_camera_baselink` 配置复用单目结果求旋转；不会混用双目 `cam0`。两模组共用当前
 AprilGrid，均使用 `pinhole-equi`。
-`user.yaml` 可用 `camera.mode: rolling_shutter` 选择 RS 双目，用
+`user.yaml` 必须用 `template: EVT320` 选择 `config/mechine/EVT320/`，可用
+`camera.mode: rolling_shutter` 选择 RS 双目，用
 `camera_imu.recompute_extrinsics: true` 控制 Camera–IMU 联合阶段重新优化相机链外参；
-`targets` 可按 `camera`、`camera_imu`、`camera_baselink`、`mono_camera` 和
-`mono_camera_baselink` 分别选择安装在 `config/mechine` 下的标定板文件名 stem；
+`targets` 可按 `stereo`、`stereo_imu`、`stereo_baselink`、`mono` 和
+`mono_baselink` 分别选择安装在当前模板目录下的标定板文件名 stem；
 未指定的任务使用自身 task 模板中的 `target.path`。
-算法开发者也可在 `config/mechine/` 增加初始化或标定板 YAML，并在
-`config/mechine/workflow_v1.0.0/*.task.yaml` 中填写相对路径。路径以 task 所在目录为
-基准，例如根目录文件写成 `../custom_initialization.yaml`，且不能逃出
-`config/mechine/`。
+算法开发者在 `config/mechine/EVT320/` 增加初始化或标定板 YAML，并在同目录 task 中
+填写相对文件名；绝对路径、`../` 跨模板引用和符号链接均会被拒绝。
 数据发现、批次目录、重名处理和输出
 位置见[机器级一键标定工作流](docs/MACHINE_CALIBRATION_WORKFLOW_ZH.md)。
 `datasets` 可省略或部分填写：未填写的双目、Camera–IMU、双目 BaseLink、USB 单目和
@@ -96,6 +95,8 @@ USB BaseLink 角色都从 `machine_dir` 自动选择唯一候选；填写的角�
 `result/calib_params/` 按已完成模组分别生成 `vision/stereo_imu_calib.yaml` 和
 `mono_camera/usb_mono_calib.yaml`；不再生成 `stereo_calib.yaml`。
 双目、Camera–IMU 与双目 BaseLink 更新 vision，独立单目及其 BaseLink 更新 usb 文件。
+两个文件在版本字段后明确写入对应 `*_calibrated` 布尔状态；未完成的下游阶段使用
+`mechine_base_param.yaml` 中 EVT320 默认参数，而不会伪装成已标定结果。
 跨电脑续做时，只需复制同一设备的 `result/calib_params/` 到当前批次的 `result/`，
 在 `user.yaml` 的 `reuse_calib_params` 映射中将要沿用的任务设为 `true`。支持上述
 五个任务名，每项省略默认 `false`；`true` 跳过对应数据集搜索和求解，其他任务照常执行，

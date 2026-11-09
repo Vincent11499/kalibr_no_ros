@@ -26,10 +26,10 @@
 表中的“单相机参数量”只统计投影参数和畸变参数，不包含相机之间的外参、标定板
 位姿、Camera–IMU 外参或时间偏移。
 
-这 10 个值是普通 `camera_calibration` 的模型集合。纯视觉
-`camera_rolling_shutter_calibration` 目前只接受 `pinhole-equi` 与
-`pinhole-radtan`；快门类型由 job 选择，不新增 `*-rs` 公共模型名。RS 相机的活动状态、
-行时间与上游单目对照见
+这 10 个值是普通 `camera_calibration` 的模型集合。正式纯视觉
+`camera_rolling_shutter_calibration` 接受 `pinhole-equi`、`pinhole-radtan`、
+`pinhole-radtan5` 与 `pinhole-radtan8`；临时原生单目对照也接受这四种。快门类型
+由 job 选择，不新增 `*-rs` 公共模型名。RS 相机的活动状态、行时间与上游单目对照见
 [`ROLLING_SHUTTER_CAMERA_CALIBRATION_ZH.md`](ROLLING_SHUTTER_CAMERA_CALIBRATION_ZH.md)。
 
 默认 `camera_calibration` 流程中，这 10 种模型的全部投影参数和畸变参数都会进入每台

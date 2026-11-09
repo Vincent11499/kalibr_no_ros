@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 import yaml
 
+import aslam_cv
 import kalibr_camera_calibration as kcc
 import kalibr_radtan5 as radtan5
 from kalibr_common import ConfigReader as cr
@@ -138,6 +139,29 @@ class Radtan5ModelTest(unittest.TestCase):
         self.assertIsNotNone(design_variable.projectionDesignVariable())
         self.assertIsNotNone(design_variable.distortionDesignVariable())
         self.assertIsNotNone(design_variable.shutterDesignVariable())
+
+    def test_rolling_shutter_geometry_serialization_and_design_variables(self):
+        projection = radtan5.Radtan5PinholeProjection(
+            458.2, 457.8, 367.1, 248.3, 752, 480, self.distortion
+        )
+        geometry = radtan5.Radtan5PinholeRsCameraGeometry(
+            projection, aslam_cv.RollingShutter(8e-6)
+        )
+        restored = pickle.loads(pickle.dumps(geometry))
+        self.assertAlmostEqual(restored.shutter().lineDelay(), 8e-6)
+        np.testing.assert_array_equal(
+            restored.projection().distortion().getParameters().reshape(-1),
+            COEFFICIENTS,
+        )
+        design_variable = radtan5.PinholeRadtan5Rs.designVariable(geometry)
+        self.assertIsNotNone(design_variable.projectionDesignVariable())
+        self.assertIsNotNone(design_variable.distortionDesignVariable())
+        self.assertIsNotNone(design_variable.shutterDesignVariable())
+        self.assertEqual(
+            radtan5.PinholeRadtan5Rs.shutterType, aslam_cv.RollingShutter
+        )
+        self.assertEqual(radtan5.PinholeRadtan5Rs.cameraModel, "pinhole")
+        self.assertEqual(radtan5.PinholeRadtan5Rs.distortionModel, "radtan5")
 
 
 class Radtan5ConfigTest(unittest.TestCase):

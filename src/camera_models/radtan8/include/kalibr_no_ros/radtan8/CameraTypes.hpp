@@ -5,6 +5,7 @@
 #include <aslam/cameras/GlobalShutter.hpp>
 #include <aslam/cameras/NoMask.hpp>
 #include <aslam/cameras/PinholeProjection.hpp>
+#include <aslam/cameras/RollingShutter.hpp>
 #include <boost/serialization/export.hpp>
 
 #include "RadialTangentialDistortion8.hpp"
@@ -16,10 +17,13 @@ using Radtan8PinholeProjection =
     PinholeProjection<RadialTangentialDistortion8>;
 using Radtan8PinholeCameraGeometry =
     CameraGeometry<Radtan8PinholeProjection, GlobalShutter, NoMask>;
+using Radtan8PinholeRsCameraGeometry =
+    CameraGeometry<Radtan8PinholeProjection, RollingShutter, NoMask>;
 
 }  // namespace cameras
 }  // namespace aslam
 
 BOOST_CLASS_EXPORT_KEY(aslam::cameras::Radtan8PinholeCameraGeometry);
+BOOST_CLASS_EXPORT_KEY(aslam::cameras::Radtan8PinholeRsCameraGeometry);
 
 #endif

@@ -63,15 +63,20 @@ task schema，并不表示任一具体 YAML 中的后端专用参数都可直接
 
 “不支持”表示 task 在启动 native 求解器前明确报错，不是静默忽略。
 
-两条公开入口都只支持下列两种模型：
+两个入口的模型范围不同：
 
-| task 模型名 | 两条入口使用的底层 RS geometry |
-|---|---|
-| `pinhole-equi` | `EquidistantPinholeRs` |
-| `pinhole-radtan` | `DistortedPinholeRs` |
+| task 模型名 | 正式 system | 临时 native | system 使用的光学 geometry | native 使用的 RS geometry |
+|---|---:|---:|---|---|
+| `pinhole-equi` | 支持 | 支持 | `EquidistantPinholeRs` | `EquidistantPinholeRs` |
+| `pinhole-radtan` | 支持 | 支持 | `DistortedPinholeRs` | `DistortedPinholeRs` |
+| `pinhole-radtan5` | 支持 | 支持 | `PinholeRadtan5` + 独立行时间状态 | `Radtan5PinholeRsCameraGeometry` |
+| `pinhole-radtan8` | 支持 | 支持 | `PinholeRadtan8` + 独立行时间状态 | `Radtan8PinholeRsCameraGeometry` |
 
-因此 RS 相机任务不接受 `pinhole-radtan5`、`pinhole-radtan8`、
-`pinhole-opencv-fisheye` 或 omni 模型。内部脚本为上游兼容保留了
+system 的物理行时间由独立有界状态表示，并在查询共享轨迹时进入角点时刻；因此
+radtan5/8 不需要复制原生 shutter geometry。native 则必须把 `RollingShutter` 直接组合进
+相机 geometry，才能复用原生 `RsCalibrator` 的 shutter design variable、自适应协方差
+残差和逐角点时间表达式。两条路径都保留 5／8 个畸变系数及解析 Jacobian。
+两个入口均不接受 `pinhole-opencv-fisheye` 或 omni 模型。内部脚本为上游兼容保留了
 `pinhole-equi-rs`、`pinhole-radtan-rs` 等别名，但它们不是
 `kalibr-noros calibrate native-rs-cameras` 的公开 task 契约。在 RS 专用入口中，
 快门类型由 job 决定，task 不使用 `pinhole-equi-rs` 这类内部名称。
@@ -206,14 +211,16 @@ task 转换成该脚本的原生参数，包括实际入选帧率、模型、行
 连续时间 spline 和 Optimizer2 基础设施，但状态参数化、误差权重、轨迹节点策略、信赖域
 算法和多目能力不同。
 
-## 4. `pinhole-equi` 与 `pinhole-radtan` 光学投影
+## 4. 正式入口的四种光学投影
 
-两种后端对公开模型的映射相同：
+正式 system 与临时 native 对照都支持以下四种光学模型；两者的行时间状态封装不同：
 
-| task 模型 | 原生 RS geometry | 内参 | 畸变 |
-|---|---|---|---|
-| `pinhole-equi` | `EquidistantPinholeRs` | $[f_x,f_y,c_x,c_y]$ | $[k_1,k_2,k_3,k_4]$ |
-| `pinhole-radtan` | `DistortedPinholeRs` | $[f_x,f_y,c_x,c_y]$ | $[k_1,k_2,p_1,p_2]$ |
+| task 模型 | system geometry | native | 内参 | 畸变 |
+|---|---|---:|---|---|
+| `pinhole-equi` | `EquidistantPinholeRs` | 支持 | $[f_x,f_y,c_x,c_y]$ | $[k_1,k_2,k_3,k_4]$ |
+| `pinhole-radtan` | `DistortedPinholeRs` | 支持 | $[f_x,f_y,c_x,c_y]$ | $[k_1,k_2,p_1,p_2]$ |
+| `pinhole-radtan5` | `PinholeRadtan5` + 独立行时间状态 | `Radtan5PinholeRsCameraGeometry` | $[f_x,f_y,c_x,c_y]$ | $[k_1,k_2,p_1,p_2,k_3]$ |
+| `pinhole-radtan8` | `PinholeRadtan8` + 独立行时间状态 | `Radtan8PinholeRsCameraGeometry` | $[f_x,f_y,c_x,c_y]$ | $[k_1,k_2,p_1,p_2,k_3,k_4,k_5,k_6]$ |
 
 设目标角点在自己的坐标系中为 $\mathbf P_j$，该角点时刻的相机位姿将其转换为：
 
@@ -223,7 +230,7 @@ $$
 \qquad x=\frac XZ,\quad y=\frac YZ.
 $$
 
-`pinhole-radtan` 令 $r^2=x^2+y^2$：
+radial-tangential 系列令 $r^2=x^2+y^2$。四参数 `pinhole-radtan` 使用：
 
 $$
 L(r)=1+k_1r^2+k_2r^4,
@@ -235,6 +242,22 @@ x_d &=xL(r)+2p_1xy+p_2(r^2+2x^2),\\
 y_d &=yL(r)+p_1(r^2+2y^2)+2p_2xy.
 \end{aligned}
 $$
+
+`pinhole-radtan5` 只把径向项扩展为：
+
+$$
+L_5(r)=1+k_1r^2+k_2r^4+k_3r^6.
+$$
+
+`pinhole-radtan8` 使用 OpenCV rational 径向比例：
+
+$$
+L_8(r)=
+\frac{1+k_1r^2+k_2r^4+k_3r^6}
+{1+k_4r^2+k_5r^4+k_6r^6}.
+$$
+
+两者的切向项仍使用上式中的 $p_1,p_2$。
 
 `pinhole-equi` 令 $r=\sqrt{x^2+y^2}$、$\theta=\arctan(r)$：
 
@@ -272,8 +295,8 @@ $$
 t_{ij}=t_i+v_{ij}\tau.
 $$
 
-因此 `pinhole-equi` 与 `pinhole-radtan` 的 RS 求解架构相同，区别只在 $\pi(K,D,\cdot)$
-内部采用角度多项式还是径向－切向畸变。模型选择应由镜头成像特性和独立测试决定，不能
+因此四种正式模型的 RS 求解架构相同，区别只在 $\pi(K,D,\cdot)$ 内部采用角度多项式、
+径向－切向多项式或 rational 畸变。模型选择应由镜头成像特性和独立测试决定，不能
 根据哪个模型把训练 RMS 压得更低就直接认定。
 
 ### 4.1 单目 `pinhole-equi` task
@@ -689,9 +712,9 @@ cameras:
       - [0.0, 0.0, 0.0, 1.0]
 ```
 
-参数维数必须与 task 中的模型一致。`pinhole-equi` 和项目公开的 `pinhole-radtan` 都使用
-四个投影参数 `[fu,fv,cu,cv]`；本任务支持的畸变参数维数由所选模型严格检查，不能通过
-补零或截断把另一模型的 seed 直接套用。
+参数维数必须与 task 中的模型一致。四种正式模型都使用四个投影参数
+`[fu,fv,cu,cv]`；equi/radtan4、radtan5、radtan8 的畸变参数分别为 4、5、8 项。
+不能通过截断或自动补零把另一模型的 seed 直接套用。
 
 初始化文件中的键使用 task 的相机 ID，加载后再按 `task.cameras` 的列表顺序映射为内部
 cam0、cam1……。例如 task 的 ID 是 `left`、`right`，初始化文件也必须写 `left`、
@@ -897,7 +920,8 @@ $$
 共同点包括：
 
 - 同一公开 task schema、目录/bag reader、AprilGrid 和亚像素检测参数；
-- 同一 `pinhole-equi`/`pinhole-radtan` 底层光学投影与解析 Jacobian；
+- 四种模型都使用同一套底层光学投影与解析 Jacobian；native 的 radtan5/8 另外组合
+  `RollingShutter` geometry，光学参数顺序不变；
 - 每个角点用自己的 $t_i+v\tau$ 查询连续轨迹；
 - K、D、行时间和轨迹在同一个非线性问题中联合调整；
 - 均使用 Optimizer2 基础设施并在输出时重算未加权物理像素 RMS；

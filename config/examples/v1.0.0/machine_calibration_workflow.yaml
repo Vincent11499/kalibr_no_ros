@@ -1,5 +1,6 @@
 schema_version: "1.0.0"
 kind: machine_calibration_workflow
+template: EVT320
 machine_dir: /path/to/EVT312-02/1029
 camera:
   mode: standard

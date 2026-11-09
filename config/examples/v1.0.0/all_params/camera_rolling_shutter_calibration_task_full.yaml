@@ -14,9 +14,9 @@ target:
 
 cameras: # 列表顺序定义 cam0、cam1…及相邻外参方向。
   - id: cam0 # 目录输入必填且无默认值；可选任意唯一安全ID，本例取cam0。
-    model: pinhole-equi # 必填，无默认值；可选pinhole-equi/pinhole-radtan，本例取前者。
+    model: pinhole-equi # 必填，无默认值；正式入口与临时原生单目对照均可选pinhole-equi/pinhole-radtan/pinhole-radtan5/pinhole-radtan8，本例取前者。
   - id: cam1 # 目录输入必填且无默认值；可选任意唯一安全ID，本例取cam1。
-    model: pinhole-equi # 必填，无默认值；可选pinhole-equi/pinhole-radtan，本例取前者。
+    model: pinhole-equi # 必填，无默认值；正式入口与临时原生单目对照均可选pinhole-equi/pinhole-radtan/pinhole-radtan5/pinhole-radtan8，本例取前者。
 
 # initialization: # 与普通相机任务共用 camera_calibration_initialization。
 #   path: ../initialization_stereo.yaml # 可包含每目K/D及相邻T_cn_cnm1。

@@ -8,6 +8,7 @@ from .version import SCHEMA_VERSION
 from .initialization import CAMERA_MODEL_DIMENSIONS, _inverse_transform, _transform
 from .rolling_shutter import (
     CAMERA_RS_JOB,
+    CAMERA_RS_MODELS,
     CAMERA_CALIBRATION_JOBS,
     ROLLING_SHUTTER_JOBS,
 )
@@ -176,9 +177,10 @@ def validate_options(task):
             if not isinstance(camera.get("model"), str) or camera["model"] not in CAMERA_MODEL_DIMENSIONS:
                 raise TaskError("unsupported camera model: {}".format(camera.get("model")))
             if (task["job"] == CAMERA_RS_JOB
-                    and camera["model"] not in {"pinhole-equi", "pinhole-radtan"}):
+                    and camera["model"] not in CAMERA_RS_MODELS):
                 raise TaskError(
-                    "camera_rolling_shutter_calibration supports pinhole-equi and pinhole-radtan")
+                    "camera_rolling_shutter_calibration supports {}".format(
+                        ", ".join(sorted(CAMERA_RS_MODELS))))
             topics.add(topic)
     elif task["job"] == CAMERA_BASELINK_JOB:
         if dataset["type"] != "directory":

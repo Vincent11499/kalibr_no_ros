@@ -13,6 +13,11 @@ import argparse
 import sys
 import signal
 
+import kalibr_radtan5 as kr5
+kr5.install()
+import kalibr_radtan8 as kr8
+kr8.install()
+
 try:
     from kalibr_no_ros import artifacts as run_artifacts
 except ImportError:
@@ -35,6 +40,8 @@ cameraModels = {
     # Project-facing pinhole-equi is always rolling shutter in this command.
     'pinhole-equi':      acvb.EquidistantPinholeRs,
     'pinhole-radtan':    acvb.DistortedPinholeRs,
+    'pinhole-radtan5':   kr5.PinholeRadtan5Rs,
+    'pinhole-radtan8':   kr8.PinholeRadtan8Rs,
     'omni-radtan-rs':    acvb.DistortedOmniRs,
     # global shutter
     'pinhole-radtan-gs': acvb.DistortedPinhole,
@@ -83,7 +90,7 @@ def __parseArgs():
 
     parser = KalibrArgParser(description='Calibrate the intrinsics of a single rolling shutter camera.', usage=usage)
     parser.add_argument('--model', dest='model', help='The camera model to estimate. '
-                        'Project-facing pinhole-equi and pinhole-radtan select rolling shutter; explicit *-rs aliases remain supported. Available models: {0}.'.format(', '.join(list(cameraModels.keys()))), required=True)
+                        'Project-facing pinhole-equi, pinhole-radtan, pinhole-radtan5, and pinhole-radtan8 select rolling shutter; explicit *-rs aliases remain supported. Available models: {0}.'.format(', '.join(list(cameraModels.keys()))), required=True)
     parser.add_argument('--frame-rate', dest='framerate', type=native_runtime.positive_float, help='Approximate rate of observations passed to the solver [Hz].', required=True)
 
     groupSource = parser.add_argument_group('Data source')

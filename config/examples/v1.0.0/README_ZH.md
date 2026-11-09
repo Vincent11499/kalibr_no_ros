@@ -20,7 +20,7 @@ cam0 表示左目、cam1 表示右目；单目示例只使用 cam0。
 | `dataset.type` | `directory` 或 `bag` | `directory` |
 | `dataset.path`、各类 `path` | 对应类型的非空有效路径 | 示例相对路径 |
 | 普通相机 `model` | `pinhole-radtan`、`pinhole-radtan5`、`pinhole-radtan8`、`pinhole-equi`、`pinhole-fov`、`pinhole-opencv-fisheye`、`omni-none`、`omni-radtan`、`eucm-none`、`ds-none` | `pinhole-equi` |
-| 纯视觉 RS 相机 `model` | `pinhole-equi` 或 `pinhole-radtan` | `pinhole-equi` |
+| 纯视觉 RS 相机 `model` | `pinhole-equi`、`pinhole-radtan`、`pinhole-radtan5` 或 `pinhole-radtan8`；正式与临时原生单目对照均支持 | `pinhole-equi` |
 | `parallelism`、`detector_processes`、`optimizer_threads` | 任意正整数 | `4` |
 | `rolling_shutter.*.max_abs_line_delay_s` | 有限正数且严格大于行时间初值绝对值 | `0.00002 s/行` |
 | `knots_per_second` | 任意有限正数 Hz；省略时自动取观测中位频率 | `1.0 Hz` |
@@ -53,7 +53,7 @@ baseline。`freeze_intrinsics: true` 仍只适用于至少双目且每目提供�
 | `initialization_stereo.yaml` | 双目初值，默认不启用 |
 | `initialization_imu.yaml` | Camera–IMU 初值，默认不启用 |
 | `evaluation.yaml` | 从已归档观测重新生成指标、判定和图像 |
-| `machine_calibration_workflow.yaml` | 机器级入口的最小 `user.yaml`；复制后填写形如 `EVT312-02/1029` 的单次标定批次目录和 Camera–IMU 模式 |
+| `machine_calibration_workflow.yaml` | 机器级入口的最小 `user.yaml`；复制后选择 `template: EVT320`，填写形如 `EVT312-02/1029` 的单次标定批次目录和 Camera–IMU 模式 |
 | `all_params/machine_calibration_workflow_full.yaml` | 机器级完整注释示例；双目模组与独立单目模组分别标定、分别复用结果求 BaseLink，并按数据集名生成任务目录、根目录报告及 vision、usb 两份设备参数 |
 | `rolling_shutter_diagnosis.yaml` | 输入普通任务，自动判断数据是否支持逐行时间模型 |
 

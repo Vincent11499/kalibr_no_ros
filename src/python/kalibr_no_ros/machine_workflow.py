@@ -68,7 +68,6 @@ except ImportError:
 
 WORKFLOW_KIND = "machine_calibration_workflow"
 STATE_KIND = "machine_calibration_state"
-PROFILE_VERSION = "workflow_v1.0.0"
 CONTROL_DIRECTORY = ".kalibr-cedarobot"
 INPUT_HASH_CACHE = "input_hash_cache.json"
 INPUT_HASH_CACHE_KIND = "machine_input_hash_cache"
@@ -90,6 +89,7 @@ _STAGE_ROLES = {
     "mono_camera": "mono",
     "mono_camera_baselink": "mono_baselink",
 }
+_TARGET_STAGES = {role: stage for stage, role in _STAGE_ROLES.items()}
 _RECALIBRATION_STAGES = {
     "stereo": ("camera", "camera_imu", "camera_baselink"),
     "stereo_imu": ("camera_imu",),
@@ -125,6 +125,11 @@ _RENAMED_CALIB_PARAMS = {
         Path("vision") / "stereo_imu_calib.yaml",
     ),
 }
+_MACHINE_CAMERA_MODELS = frozenset((
+    "pinhole-equi",
+    "pinhole-radtan5",
+    "pinhole-radtan8",
+))
 
 
 _sha256 = file_sha256
@@ -182,7 +187,7 @@ def load_workflow_config(path):
     config_path = Path(path).expanduser().resolve()
     value = load_yaml(config_path)
     allowed = {
-        "schema_version", "kind", "machine_dir", "datasets",
+        "schema_version", "kind", "template", "machine_dir", "datasets",
         "targets", "camera", "camera_imu", "camera_baselink",
         "mono_camera_baselink", "reuse_calib_params",
     }
@@ -200,6 +205,12 @@ def load_workflow_config(path):
                 SCHEMA_VERSION))
     if value.get("kind") != WORKFLOW_KIND:
         raise TaskError("machine workflow kind must be " + WORKFLOW_KIND)
+
+    template = value.get("template")
+    if (not isinstance(template, str)
+            or not _BATCH_NAME_PATTERN.fullmatch(template)):
+        raise TaskError(
+            "template must match [A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 
     configured_machine = value.get("machine_dir")
     if not isinstance(configured_machine, str) or not configured_machine.strip():
@@ -248,17 +259,19 @@ def load_workflow_config(path):
     targets = value.get("targets", {})
     if not isinstance(targets, dict):
         raise TaskError("targets must be a mapping")
-    unknown_targets = sorted(set(targets) - set(_STAGE_ROLES))
+    unknown_targets = sorted(set(targets) - set(_TARGET_STAGES))
     if unknown_targets:
         raise TaskError("unknown targets fields: {}".format(
             ", ".join(unknown_targets)))
-    for stage, target in targets.items():
+    for role, target in targets.items():
         if (not isinstance(target, str)
                 or not _TARGET_STEM_PATTERN.fullmatch(target)):
             raise TaskError(
                 "targets.{} must be a config/mechine YAML filename stem "
                 "using Unicode letters/digits, underscores, or hyphens"
-                .format(stage))
+                .format(role))
+    targets = {_TARGET_STAGES[role]: target
+               for role, target in targets.items()}
 
     camera = value.get("camera", {})
     if not isinstance(camera, dict):
@@ -325,6 +338,7 @@ def load_workflow_config(path):
     canonical = {
         "schema_version": SCHEMA_VERSION,
         "kind": WORKFLOW_KIND,
+        "template": template,
         "machine_dir": str(machine),
         "datasets": selected,
         "targets": targets,
@@ -338,6 +352,7 @@ def load_workflow_config(path):
     canonical.update(baselinks)
     return {
         "config_path": config_path,
+        "template": template,
         "machine_dir": machine,
         "machine_root": machine_root,
         "batch_name": machine.name,
@@ -769,9 +784,9 @@ def dataset_fingerprint(dataset, role):
     return _fingerprint_dataset(dataset, role, force_content=True)[0]
 
 
-def _profile_directory(prefix):
+def _profile_directory(prefix, template):
     machine_config = Path(prefix).resolve() / "config" / "mechine"
-    path = machine_config / PROFILE_VERSION
+    path = machine_config / template
     if machine_config.is_symlink() or path.is_symlink():
         raise TaskError(
             "installed machine configuration must not use symlinks: {}"
@@ -794,7 +809,7 @@ def _profile_directory(prefix):
 def _target_file(prefix, profile, target_stem):
     if target_stem is None:
         return None
-    root = Path(prefix).resolve() / "config" / "mechine"
+    root = Path(profile).resolve()
     path = root / (target_stem + ".yaml")
     if path.is_symlink() or not path.is_file():
         raise TaskError(
@@ -811,14 +826,14 @@ def _profile_relative_path(profile, path):
 
 
 def _profile_reference(profile, relative, label):
-    """Resolve a task-relative YAML path inside config/mechine."""
+    """Resolve a task-relative YAML path inside one machine template."""
     if not isinstance(relative, str) or not relative.strip():
         raise TaskError("{} must be a non-empty relative path".format(label))
     value = Path(relative)
     if value.is_absolute():
         raise TaskError("{} must be relative to its task template".format(label))
     profile = Path(profile).resolve()
-    config_root = profile.parent
+    config_root = profile
     lexical = profile
     for part in value.parts:
         if part in {"", "."}:
@@ -919,13 +934,13 @@ def _profile_target_record(profile, path):
 def _profile_provenance(profile, target_overrides, config):
     targets = _effective_target_paths(profile, target_overrides, config)
     files = {}
-    config_root = profile.parent
+    config_root = profile
     for path in sorted(config_root.rglob("*.yaml")):
         if path.is_symlink() or not path.is_file():
             raise TaskError("profile YAML must be a regular file: {}".format(path))
         files[_profile_relative_path(profile, path)] = _sha256(path)
     return {
-        "version": PROFILE_VERSION,
+        "version": profile.name,
         "files": files,
         "dependencies": _profile_dependencies(profile, targets, config),
         "targets": {
@@ -1006,11 +1021,13 @@ def build_task(profile_dir, stage, dataset, output_name,
         cameras = task.get("cameras")
         if (not isinstance(cameras, list)
                 or any(not isinstance(camera, dict) for camera in cameras)
-                or [(camera.get("id"), camera.get("model"))
-                    for camera in cameras]
-                != [(camera_id, "pinhole-equi") for camera_id in camera_ids]):
+                or [camera.get("id") for camera in cameras] != camera_ids
+                or any(camera.get("model") not in _MACHINE_CAMERA_MODELS
+                       for camera in cameras)):
             raise TaskError(
-                "machine {} template must define {} as pinhole-equi".format(stage, camera_ids))
+                "machine {} template must define {} in order using {}"
+                .format(stage, camera_ids,
+                        ", ".join(sorted(_MACHINE_CAMERA_MODELS))))
         if (expected_job == CAMERA_RS_JOB
                 and set(task.get("rolling_shutter", {})) != {"cam0", "cam1"}):
             raise TaskError(
@@ -2064,7 +2081,7 @@ def run_machine_workflow(prefix, config_path, runner=None, progress=None):
     if output.exists() and not output.is_dir():
         raise TaskError("machine result path must be a directory: {}".format(output))
     control = output / CONTROL_DIRECTORY
-    profile_dir = _profile_directory(prefix)
+    profile_dir = _profile_directory(prefix, config["template"])
     target_paths = {
         stage: _target_file(prefix, profile_dir, stem)
         for stage, stem in config["targets"].items()

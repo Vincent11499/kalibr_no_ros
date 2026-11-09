@@ -26,6 +26,8 @@ from .filesystem import file_sha256
 from .rolling_shutter import (
     JOB as ROLLING_SHUTTER_JOB,
     CAMERA_RS_JOB,
+    CAMERA_RS_MODELS,
+    NATIVE_CAMERA_RS_MODELS,
     CAMERA_IMU_JOBS,
     CAMERA_CALIBRATION_JOBS,
     ROLLING_SHUTTER_JOBS,
@@ -847,10 +849,11 @@ def _rs_camera_arguments(task, bag, target, temporary, overrides,
     """Build the private command line for mono/stereo/multicamera RS solving."""
     cameras = _rs_task_cameras(task)
     models = [str(camera["model"]) for camera in cameras]
-    unsupported = sorted(set(models) - {"pinhole-equi", "pinhole-radtan"})
+    unsupported = sorted(set(models) - CAMERA_RS_MODELS)
     if unsupported:
         raise TaskError(
-            "cameras-rs supports pinhole-equi and pinhole-radtan; got {}".format(
+            "cameras-rs supports {}; got {}".format(
+                ", ".join(sorted(CAMERA_RS_MODELS)),
                 ", ".join(unsupported)))
     shutter_path, _ = _rolling_shutter_config(task, temporary)
     arguments = [
@@ -947,9 +950,10 @@ def _native_rs_camera_arguments(task, bag, target, temporary, overrides,
     _validate_camera_rs_backend(task, "native")
     cameras = _rs_task_cameras(task)
     camera = cameras[0]
-    if camera["model"] not in {"pinhole-equi", "pinhole-radtan"}:
+    if camera["model"] not in NATIVE_CAMERA_RS_MODELS:
         raise TaskError(
-            "native-rs-cameras supports pinhole-equi and pinhole-radtan")
+            "native-rs-cameras supports {}".format(
+                ", ".join(sorted(NATIVE_CAMERA_RS_MODELS))))
     _, shutters = _rolling_shutter_config(task, temporary)
     camera_id = task["cameras"][0].get("id", "cam0")
     shutter = shutters[camera_id]

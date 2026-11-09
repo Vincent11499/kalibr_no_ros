@@ -19,6 +19,14 @@ import yaml
 cv2.setNumThreads(1)
 
 
+DISTORTION_MODELS = {
+    "equidistant": ("pinhole-equi", 4),
+    "radtan": ("pinhole-radtan", 4),
+    "radtan5": ("pinhole-radtan5", 5),
+    "radtan8": ("pinhole-radtan8", 8),
+}
+
+
 def read_archive(path: Path) -> list[dict[str, Any]]:
     """Read the project CSV.gz format, whose cells are individually JSON encoded."""
     with gzip.open(path, "rt", encoding="utf-8", newline="") as stream:
@@ -38,12 +46,26 @@ def rms(vectors: np.ndarray) -> float:
 def _camera_family(camera: dict[str, Any]) -> str:
     model = camera.get("distortion_model")
     if camera.get("camera_model") != "pinhole":
-        raise ValueError("diagnosis supports pinhole-equi and pinhole-radtan only")
-    if model == "equidistant":
-        return "pinhole-equi"
-    if model == "radtan":
-        return "pinhole-radtan"
-    raise ValueError("diagnosis supports pinhole-equi and pinhole-radtan only")
+        raise ValueError(
+            "diagnosis supports pinhole-equi, pinhole-radtan, "
+            "pinhole-radtan5, and pinhole-radtan8 only"
+        )
+    try:
+        family, coefficient_count = DISTORTION_MODELS[model]
+    except KeyError as error:
+        raise ValueError(
+            "diagnosis supports pinhole-equi, pinhole-radtan, "
+            "pinhole-radtan5, and pinhole-radtan8 only"
+        ) from error
+    intrinsics = np.asarray(camera.get("intrinsics", []), dtype=float)
+    distortion = np.asarray(camera.get("distortion_coeffs", []), dtype=float)
+    if intrinsics.shape != (4,) or not np.all(np.isfinite(intrinsics)):
+        raise ValueError(f"{family} requires four finite intrinsics")
+    if distortion.shape != (coefficient_count,) or not np.all(np.isfinite(distortion)):
+        raise ValueError(
+            f"{family} requires {coefficient_count} finite distortion coefficients"
+        )
+    return family
 
 
 def project(pose: np.ndarray, xyz: np.ndarray, camera: dict[str, Any]) -> np.ndarray:

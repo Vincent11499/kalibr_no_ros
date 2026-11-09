@@ -8,6 +8,7 @@
 BOOST_PYTHON_MODULE(libkalibr_radtan8_backend_python) {
   using aslam::cameras::RadialTangentialDistortion8;
   using aslam::cameras::Radtan8PinholeCameraGeometry;
+  using aslam::cameras::Radtan8PinholeRsCameraGeometry;
   using aslam::cameras::Radtan8PinholeProjection;
   aslam::python::exportGenericProjectionDesignVariable<
       RadialTangentialDistortion8>("RadialTangentialDistortion8");
@@ -17,4 +18,10 @@ BOOST_PYTHON_MODULE(libkalibr_radtan8_backend_python) {
       "Radtan8Pinhole");
   aslam::python::exportCameraDesignVariables<Radtan8PinholeCameraGeometry>(
       "Radtan8PinholeCameraGeometry");
+  aslam::python::exportReprojectionErrors<Radtan8PinholeRsCameraGeometry>(
+      "Radtan8PinholeRs");
+  aslam::python::exportCovarianceReprojectionError<
+      Radtan8PinholeRsCameraGeometry>("Radtan8PinholeRs");
+  aslam::python::exportCameraDesignVariables<Radtan8PinholeRsCameraGeometry>(
+      "Radtan8PinholeRsCameraGeometry");
 }

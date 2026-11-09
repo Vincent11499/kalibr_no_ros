@@ -15,11 +15,13 @@
 #include <kalibr_no_ros/radtan5/CameraTypes.hpp>
 
 BOOST_CLASS_EXPORT_IMPLEMENT(aslam::cameras::Radtan5PinholeCameraGeometry);
+BOOST_CLASS_EXPORT_IMPLEMENT(aslam::cameras::Radtan5PinholeRsCameraGeometry);
 
 namespace bp = boost::python;
 using aslam::cameras::CameraGeometryBase;
 using aslam::cameras::RadialTangentialDistortion5;
 using aslam::cameras::Radtan5PinholeCameraGeometry;
+using aslam::cameras::Radtan5PinholeRsCameraGeometry;
 using aslam::cameras::Radtan5PinholeProjection;
 
 namespace {
@@ -127,21 +129,24 @@ void exportProjection() {
       .def("keypointToEuclidean", &backProject);
 }
 
-void exportGeometry() {
-  using Geometry = Radtan5PinholeCameraGeometry;
-  Geometry::projection_t& (Geometry::*projection)() = &Geometry::projection;
-  Geometry::shutter_t& (Geometry::*shutter)() = &Geometry::shutter;
-  Geometry::mask_t& (Geometry::*mask)() = &Geometry::mask;
+template <typename Geometry>
+void exportGeometry(const char* geometry_name, const char* frame_name) {
+  using Projection = typename Geometry::projection_t;
+  using Shutter = typename Geometry::shutter_t;
+  using Mask = typename Geometry::mask_t;
+  Projection& (Geometry::*projection)() = &Geometry::projection;
+  Shutter& (Geometry::*shutter)() = &Geometry::shutter;
+  Mask& (Geometry::*mask)() = &Geometry::mask;
   bp::class_<Geometry, boost::shared_ptr<Geometry>, bp::bases<CameraGeometryBase> >(
-      "Radtan5PinholeCameraGeometry", bp::init<>())
-      .def(bp::init<Geometry::projection_t>())
-      .def(bp::init<Geometry::projection_t, Geometry::shutter_t>())
+      geometry_name, bp::init<>())
+      .def(bp::init<Projection>())
+      .def(bp::init<Projection, Shutter>())
       .def("projection", projection, bp::return_internal_reference<>())
       .def("shutter", shutter, bp::return_internal_reference<>())
       .def("mask", mask, bp::return_internal_reference<>())
       .def_pickle(sm::python::pickle_suite<Geometry>());
   sm::python::unique_register_ptr_to_python<boost::shared_ptr<Geometry> >();
-  aslam::python::exportFrame<Geometry>("Radtan5PinholeFrame");
+  aslam::python::exportFrame<Geometry>(frame_name);
 }
 
 }  // namespace
@@ -149,5 +154,8 @@ void exportGeometry() {
 BOOST_PYTHON_MODULE(libkalibr_radtan5_cv_python) {
   exportDistortion();
   exportProjection();
-  exportGeometry();
+  exportGeometry<Radtan5PinholeCameraGeometry>(
+      "Radtan5PinholeCameraGeometry", "Radtan5PinholeFrame");
+  exportGeometry<Radtan5PinholeRsCameraGeometry>(
+      "Radtan5PinholeRsCameraGeometry", "Radtan5PinholeRsFrame");
 }

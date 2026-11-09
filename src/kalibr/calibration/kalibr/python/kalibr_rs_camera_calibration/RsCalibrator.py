@@ -680,7 +680,10 @@ class RsCalibrator(object):
             acvb.DistortedPinhole: 'pinhole',
             acvb.EquidistantPinhole: 'pinhole',
             acvb.DistortedOmni: 'omni'}
-        cameraModel = cameraModels[self.__cameraGeometry.model]
+        if self.__cameraGeometry.model in cameraModels:
+            cameraModel = cameraModels[self.__cameraGeometry.model]
+        else:
+            cameraModel = self.__cameraGeometry.model.cameraModel
         proj = self.__camera_dv.projectionDesignVariable().value()
         camParams.setIntrinsics(cameraModel, proj.getParameters().flatten())
         camParams.setResolution([proj.ru(), proj.rv()])
@@ -695,7 +698,10 @@ class RsCalibrator(object):
             acvb.DistortedPinhole: 'radtan',
             acvb.EquidistantPinhole: 'equidistant',
             acvb.DistortedOmni: 'radtan'}
-        distortionModel = distortionModels[self.__cameraGeometry.model]
+        if self.__cameraGeometry.model in distortionModels:
+            distortionModel = distortionModels[self.__cameraGeometry.model]
+        else:
+            distortionModel = self.__cameraGeometry.model.distortionModel
         dist = self.__camera_dv.distortionDesignVariable().value()
         camParams.setDistortion(distortionModel, dist.getParameters().flatten())
 

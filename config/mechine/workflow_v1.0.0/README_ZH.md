@@ -11,8 +11,8 @@
 
 模板固定用于以下传感器组合：
 
-- `cam0`、`cam1` 双目相机，模型为 `pinhole-equi`；
-- 另一个独立单目模组，其局部 ID 为 `cam0`，模型为 `pinhole-equi`；
+- `cam0`、`cam1` 双目相机，模板模型可为 `pinhole-equi`、`pinhole-radtan5` 或 `pinhole-radtan8`；
+- 另一个独立单目模组，其局部 ID 为 `cam0`，模板使用同一模型集合；
 - 可选 `imu0`，模型为 `calibrated`；
 - 省略 `user.yaml.target` 时，两个模组共用内部 AprilGrid：8×10、`tagSize=0.07 m`、
   `tagSpacing=0.3`、`tagStartId=0`；显式 target 从已安装 `config/mechine` 根目录按文件名stem选择。
@@ -21,6 +21,10 @@
 `initialization_mono_camera.yaml`、`imu_noise.yaml` 和 `mechine_base_param.yaml`。任务文件为
 `stereo_camera_calibration_task.yaml`、`stereo_camera_rs_calibration_task.yaml`、
 `stereo_imu_calibration_task.yaml`、`stereo_imu_rs_calibration_task.yaml` 及对应 BaseLink/单目任务。
+初始化文件必须与模板模型一致：equi 为 4 项畸变，radtan5 为 5 项，radtan8 为 8 项。
+普通/正式 RS 相机、普通/RS Camera–IMU、BaseLink、报告和参数汇总均保留该模型；临时
+`native-rs-cameras` 和 RS 行时间诊断工具不属于 machine 流程，但同样支持上述三种
+machine 模型；此外还兼容四参数 `pinhole-radtan`。
 
 占位符 `__DATASET_PATH__`、`__CAMERA_CALIBRATION_PATH__` 和
 `__OUTPUT_NAME__` 只用于防止模板被误当作真实任务运行。不要在产线手工替换这些值；

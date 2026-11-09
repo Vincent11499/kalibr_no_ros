@@ -67,7 +67,11 @@ def public_parameters(mono=False):
         "camera": (cam0 if mono else {
             "cam0": cam0, "cam1": cam1, "cam0_cam1_correct": correction}),
     }
-    if not mono:
+    if mono:
+        result["mono_baselink_calibrated"] = True
+    else:
+        result["stereo_imu_calibrated"] = True
+        result["stereo_baselink_calibrated"] = True
         result["imu"] = {
             "imu_data_rate": 100,
             "gyro_bias": [0.001, -0.002, 0.003],
@@ -109,6 +113,20 @@ class MachineParamReuseTest(unittest.TestCase):
         validate_reused_stage(document, "camera", MACHINE)
         with self.assertRaises(TaskError):
             validate_reused_stage(document, "camera_imu", MACHINE)
+
+    def test_downstream_reuse_requires_explicit_calibrated_status(self):
+        for mono, stage, flag in (
+                (False, "camera_imu", "stereo_imu_calibrated"),
+                (False, "camera_baselink", "stereo_baselink_calibrated"),
+                (True, "mono_camera_baselink", "mono_baselink_calibrated")):
+            with self.subTest(stage=stage):
+                document = public_parameters(mono=mono)
+                document[flag] = False
+                with self.assertRaisesRegex(TaskError, flag):
+                    validate_reused_stage(document, stage, MACHINE)
+                document.pop(flag)
+                with self.assertRaisesRegex(TaskError, flag):
+                    validate_reused_stage(document, stage, MACHINE)
 
     def test_baselink_is_not_corrected_again_or_rejected_for_zero_values(self):
         document = public_parameters(mono=True)

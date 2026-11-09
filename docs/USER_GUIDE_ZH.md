@@ -16,7 +16,8 @@
 kalibr-cedarobot machine
 ```
 
-`user.yaml` 由开发者提供并默认放在安装根的 `config/user.yaml`。工作流会发现唯一的 `stereo_*` 与 `stereo_imu_*`、生成 task、
+`user.yaml` 由开发者提供并默认放在安装根的 `config/user.yaml`，必须用
+`template: EVT320` 选择对应机型模板。工作流会发现唯一的 `stereo_*` 与 `stereo_imu_*`、生成 task、
 先完成或复用双目结果，再运行用户明确选择的普通或 RS Camera–IMU。当动态数据以后才
 采集时，重复同一命令即可继续。配置 `camera_baselink` 并提供
 `stereo_base_link_YYMMDD_HHMM` 后，另外复用双目
@@ -200,8 +201,9 @@ kalibr-noros calibrate cameras-rs \
 ```
 
 目录输入不写 `topic`；bag 输入必须为每台相机填写 `topic`。相机项与
-`rolling_shutter` 项必须使用完全相同的一组 ID。当前 RS 相机入口只接受
-`pinhole-equi` 和 `pinhole-radtan`。
+`rolling_shutter` 项必须使用完全相同的一组 ID。正式 `cameras-rs` 接受
+`pinhole-equi`、`pinhole-radtan`、`pinhole-radtan5` 和 `pinhole-radtan8`；临时
+`native-rs-cameras` 也接受这四种，但仍只支持单目。
 
 临时 `native-rs-cameras` 用于单目上游算法对照。它使用相同 job 与输入结构，但 task
 必须只保留一台相机，并且 `calibration` 只能包含

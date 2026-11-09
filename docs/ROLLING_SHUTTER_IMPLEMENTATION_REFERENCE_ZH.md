@@ -6,7 +6,7 @@
 - 对照入口：`kalibr-noros calibrate native-rs-cameras`，它包装项目内的
   `kalibr_calibrate_rs_cameras`。
 
-审计日期为 2026-10-08。若本文与后续代码发生冲突，应以代码和完整注释配置为准。本文只
+审计日期为 2026-11-05。若本文与后续代码发生冲突，应以代码和完整注释配置为准。本文只
 讨论纯视觉相机 RS；`imu-camera-rs` 是另一条包含 IMU 残差的求解链。
 
 ## 1. 先给出结论
@@ -17,7 +17,7 @@
 | 项目 | 正式 `cameras-rs` | 对照 `native-rs-cameras` |
 |---|---|---|
 | 相机数 | 单目、双目、多目 | 公共 CLI 恰好一台 |
-| 相机模型 | `pinhole-equi`、`pinhole-radtan` | 公共 CLI 同左，并映射到原生 RS geometry |
+| 相机模型 | `pinhole-equi`、`pinhole-radtan`、`pinhole-radtan5`、`pinhole-radtan8` | 同四种模型，均映射到含 `RollingShutter` 的原生 RS geometry |
 | 外参 | 联合优化相邻 `T_cn_cnm1` | 单目，无相机间外参 |
 | 行时间状态 | `tau = bound * tanh(q)`，求解中有界 | 原生 shutter 标量，求解中无界，结束后检查范围 |
 | 重投影权重 | 固定 `feature_sigma_px² I` | 随当前轨迹运动更新的 adaptive covariance |
@@ -145,7 +145,7 @@ PnP 的那台相机自己的源时间戳。
 | 每目行时间 latent `q_i` | `estimate: true` 时 active | 物理行时间由 tanh 映射 |
 | pose spline 控制系数 | active | 表示共享目标连续轨迹 |
 | 标定板三维角点 | fixed | 注册为 landmark，但不是估计参数 |
-| RS geometry 内部 shutter DV | inactive | 只为 camera error term 的 DV 集合完整注册；物理时间使用独立 latent |
+| camera geometry 内部 shutter DV | inactive | equi/radtan4 使用原生 RS geometry，radtan5/8 复用既有 global-shutter geometry；两者的物理时间都只使用独立 latent |
 
 将所有活动变量记为：
 
@@ -576,8 +576,10 @@ $d\tau/dq=b(1-\tanh^2q)$，接近边界时从 latent 信息强度直接推断物
 
 ## 12. 原生 `kalibr_calibrate_rs_cameras` 的状态与初始化
 
-公共 `native-rs-cameras` 只允许一台 `pinhole-equi` 或 `pinhole-radtan`。内部脚本还保留
-其他历史模型 alias，但它们不是当前公共 task 契约的一部分。
+公共 `native-rs-cameras` 只允许一台相机，模型可为 `pinhole-equi`、四参数
+`pinhole-radtan`、`pinhole-radtan5` 或 `pinhole-radtan8`。前两者使用上游原生 RS
+geometry；后两者使用本项目将既有 5／8 参数投影与 `RollingShutter` 组合得到的 RS
+geometry。内部脚本还保留其他历史模型 alias，但它们不是当前公共 task 契约的一部分。
 
 活动状态为：
 

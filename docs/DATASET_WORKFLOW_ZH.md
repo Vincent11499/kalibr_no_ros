@@ -243,7 +243,10 @@ kalibr-noros evaluate --run output/camera_calibration_cam0_cam1.yaml --output-di
 RMS、相邻外参、alignment 和双目校正矩阵，双目 BaseLink 更新
 `camera.cam0.T_base_cam/pitch`，Camera–IMU 更新 bias、`T_imu_cam`、时移及 RS 行延迟。
 独立单目更新 usb 的 K/D、分辨率和 RMS，单目 BaseLink 更新其 `T_base_cam/pitch`。
-尚未完成的下游阶段使用明确的单位阵/零默认值，已完成阶段若证据损坏则拒绝更新。完整字段和单位见
+两个文件用 `stereo_imu_calibrated`、`stereo_baselink_calibrated` 和
+`mono_baselink_calibrated` 明确区分真实标定与模板默认参数。尚未完成的下游阶段使用
+所选机型 `mechine_base_param.yaml` 中的 T、时间偏移、行时间、bias 或 pitch；已完成阶段
+若证据损坏则拒绝更新。vision 文件末尾还复制 profile 的 `lidar`。完整字段和单位见
 [机器级一键标定](MACHINE_CALIBRATION_WORKFLOW_ZH.md#51-设备参数文件)。
 
 `evaluate` 不读取一组新的测试图像。要用独立目录测试集固定验证已有双目 K/D/T，使用

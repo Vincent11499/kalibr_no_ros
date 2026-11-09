@@ -12,6 +12,7 @@ import tempfile
 
 from .evaluation import ReportingError, stereo_geometry, validate_output_options
 from .filesystem import file_sha256
+from .initialization import InitializationError, _transform
 from .task import TaskError, dump_yaml, load_yaml
 from .version import SCHEMA_VERSION, VERSION
 
@@ -24,14 +25,6 @@ CALIB_PARAM_OUTPUTS = {
 _MACHINE_NAME = re.compile(
     r"^(?P<machine_version>[A-Za-z][A-Za-z0-9]*)-(?P<machine_num>[0-9]+)$")
 _TIMESTAMP_FORMAT = "%Y-%m-%d-%H:%M:%S"
-_IDENTITY = [
-    [1.0, 0.0, 0.0, 0.0],
-    [0.0, 1.0, 0.0, 0.0],
-    [0.0, 0.0, 1.0, 0.0],
-    [0.0, 0.0, 0.0, 1.0],
-]
-
-
 def machine_identity(machine_dir):
     """Parse public identity from an exact ``MODEL-NUMBER`` basename."""
     match = _MACHINE_NAME.fullmatch(Path(machine_dir).name)
@@ -71,8 +64,11 @@ def _matrix(value, label):
             for row, values in enumerate(value)]
 
 
-def _identity():
-    return deepcopy(_IDENTITY)
+def _rigid_transform(value, label):
+    try:
+        return _transform(value, label)
+    except InitializationError as error:
+        raise TaskError(str(error)) from error
 
 
 def _load_profile(profile_dir):
@@ -83,12 +79,16 @@ def _load_profile(profile_dir):
     value = load_yaml(path)
     if (value.get("schema_version") != SCHEMA_VERSION
             or value.get("kind") != PROFILE_KIND
-            or set(value) != {"schema_version", "kind", "imu", "odom"}):
+            or set(value) != {
+                "schema_version", "kind", "imu", "stereo_camera",
+                "usb_camera", "odom", "lidar",
+            }):
         raise TaskError("machine calib_params profile has an invalid schema")
     imu = value.get("imu")
     imu_keys = {
         "imu_type", "imu_data_rate", "arw", "vrw", "gb_std", "ab_std",
-        "corr_time", "gravity", "gyro_scale", "acc_scale",
+        "corr_time", "gravity", "gyro_bias", "gyro_scale", "acc_bias",
+        "acc_scale",
     }
     if not isinstance(imu, dict) or set(imu) != imu_keys:
         raise TaskError("machine calib_params profile imu fields are invalid")
@@ -106,8 +106,72 @@ def _load_profile(profile_dir):
         normalized_imu[key] = imu[key]
     _vector(imu["gyro_scale"], 3, "gyro_scale")
     _vector(imu["acc_scale"], 3, "acc_scale")
+    normalized_imu["gyro_bias"] = _vector(
+        imu["gyro_bias"], 3, "gyro_bias")
     normalized_imu["gyro_scale"] = list(imu["gyro_scale"])
+    normalized_imu["acc_bias"] = _vector(
+        imu["acc_bias"], 3, "acc_bias")
     normalized_imu["acc_scale"] = list(imu["acc_scale"])
+
+    stereo = value.get("stereo_camera")
+    if (not isinstance(stereo, dict) or set(stereo) != {"cam0", "cam1"}
+            or not isinstance(stereo["cam0"], dict)
+            or set(stereo["cam0"]) != {
+                "T_base_cam", "T_imu_cam", "td_cam_to_imu",
+                "line_delay_s", "pitch",
+            }
+            or not isinstance(stereo["cam1"], dict)
+            or set(stereo["cam1"]) != {
+                "T_cn_cnm1", "T_imu_cam", "td_cam_to_imu",
+                "line_delay_s",
+            }):
+        raise TaskError(
+            "machine calib_params profile stereo_camera fields are invalid")
+    normalized_stereo = {
+        "cam0": {
+            "T_base_cam": _rigid_transform(
+                stereo["cam0"]["T_base_cam"], "stereo_camera.cam0.T_base_cam"),
+            "T_imu_cam": _rigid_transform(
+                stereo["cam0"]["T_imu_cam"], "stereo_camera.cam0.T_imu_cam"),
+            "td_cam_to_imu": _finite(
+                stereo["cam0"]["td_cam_to_imu"],
+                "stereo_camera.cam0.td_cam_to_imu"),
+            "line_delay_s": _finite(
+                stereo["cam0"]["line_delay_s"],
+                "stereo_camera.cam0.line_delay_s"),
+            "pitch": _finite(
+                stereo["cam0"]["pitch"], "stereo_camera.cam0.pitch",
+                minimum=0.0),
+        },
+        "cam1": {
+            "T_cn_cnm1": _rigid_transform(
+                stereo["cam1"]["T_cn_cnm1"],
+                "stereo_camera.cam1.T_cn_cnm1"),
+            "T_imu_cam": _rigid_transform(
+                stereo["cam1"]["T_imu_cam"], "stereo_camera.cam1.T_imu_cam"),
+            "td_cam_to_imu": _finite(
+                stereo["cam1"]["td_cam_to_imu"],
+                "stereo_camera.cam1.td_cam_to_imu"),
+            "line_delay_s": _finite(
+                stereo["cam1"]["line_delay_s"],
+                "stereo_camera.cam1.line_delay_s"),
+        },
+    }
+    if normalized_stereo["cam0"]["pitch"] > 90.0:
+        raise TaskError("stereo_camera.cam0.pitch must not exceed 90 degrees")
+
+    usb = value.get("usb_camera")
+    if (not isinstance(usb, dict)
+            or set(usb) != {"T_base_cam", "pitch"}):
+        raise TaskError(
+            "machine calib_params profile usb_camera fields are invalid")
+    normalized_usb = {
+        "T_base_cam": _rigid_transform(
+            usb["T_base_cam"], "usb_camera.T_base_cam"),
+        "pitch": _finite(usb["pitch"], "usb_camera.pitch", minimum=0.0),
+    }
+    if normalized_usb["pitch"] > 90.0:
+        raise TaskError("usb_camera.pitch must not exceed 90 degrees")
 
     odom = value.get("odom")
     odom_keys = {
@@ -122,11 +186,42 @@ def _load_profile(profile_dir):
             "v_x_std", "v_y_std", "v_z_std", "v_scale", "w_scale"):
         _finite(odom[key], "odom." + key, minimum=0.0)
         normalized_odom[key] = odom[key]
+
+    lidar = value.get("lidar")
+    if not isinstance(lidar, dict) or set(lidar) != {"front", "rear"}:
+        raise TaskError("machine calib_params profile lidar fields are invalid")
+    normalized_lidar = {}
+    for lidar_id in ("front", "rear"):
+        sensor = lidar[lidar_id]
+        if (not isinstance(sensor, dict)
+                or set(sensor) != {
+                    "x", "y", "yaw_deg", "block_angle_ranges_deg",
+                }
+                or not isinstance(sensor["block_angle_ranges_deg"], list)
+                or not sensor["block_angle_ranges_deg"]):
+            raise TaskError(
+                "machine calib_params profile lidar.{} fields are invalid"
+                .format(lidar_id))
+        normalized_lidar[lidar_id] = {
+            "x": _finite(sensor["x"], "lidar.{}.x".format(lidar_id)),
+            "y": _finite(sensor["y"], "lidar.{}.y".format(lidar_id)),
+            "yaw_deg": _finite(
+                sensor["yaw_deg"], "lidar.{}.yaw_deg".format(lidar_id)),
+            "block_angle_ranges_deg": [
+                _vector(angle_range, 2, "lidar.{}.block_angle_ranges_deg[{}]"
+                        .format(lidar_id, index))
+                for index, angle_range in enumerate(
+                    sensor["block_angle_ranges_deg"])
+            ],
+        }
     return {
         "path": path.resolve(),
         "sha256": file_sha256(path),
         "imu": normalized_imu,
+        "stereo_camera": normalized_stereo,
+        "usb_camera": normalized_usb,
         "odom": normalized_odom,
+        "lidar": normalized_lidar,
     }
 
 
@@ -373,7 +468,7 @@ def _header(identity, generated_at):
     }
 
 
-def _baselink_values(source):
+def _baselink_values(source, defaults):
     if source is not None and "parameters" in source:
         cameras = source["parameters"].get("camera", {})
         camera = (cameras if source["stage"] == "mono_camera_baselink"
@@ -385,7 +480,7 @@ def _baselink_values(source):
         return transform, pitch
     camera = _baselink_camera(source)
     if camera is None:
-        return _identity(), 0.0
+        return deepcopy(defaults["T_base_cam"]), defaults["pitch"]
     transform = _matrix(camera.get("T_base_camera"), "cam0.T_base_camera")
     pitch = _finite(camera.get("pitch"), "cam0.pitch", minimum=0.0)
     if pitch > 90.0:
@@ -440,8 +535,6 @@ def _vision_body(profile, camera_source, camera_imu_source, baselink_source,
     imu = deepcopy(profile["imu"])
     defaulted = []
     if camera_imu_source is None:
-        imu["gyro_bias"] = [0.0, 0.0, 0.0]
-        imu["acc_bias"] = [0.0, 0.0, 0.0]
         defaulted.extend(["imu.gyro_bias", "imu.acc_bias"])
     elif "parameters" in camera_imu_source:
         values = camera_imu_source["parameters"].get("imu", {})
@@ -486,13 +579,16 @@ def _vision_body(profile, camera_source, camera_imu_source, baselink_source,
                   and "parameters" not in camera_imu_source else None)
     for camera_id, source_camera in selected.items():
         if camera_imu_source is None:
+            defaults = profile["stereo_camera"][camera_id]
             imu_values[camera_id] = {
-                "T_imu_cam": _identity(),
-                "td_cam_to_imu": 0.0,
+                "T_imu_cam": deepcopy(defaults["T_imu_cam"]),
+                "td_cam_to_imu": defaults["td_cam_to_imu"],
+                "line_delay_s": defaults["line_delay_s"],
             }
             defaulted.extend([
                 "camera.{}.td_cam_to_imu".format(camera_id),
                 "camera.{}.T_imu_cam".format(camera_id),
+                "camera.{}.line_delay_s".format(camera_id),
             ])
         elif "parameters" in camera_imu_source:
             imu_values[camera_id] = {
@@ -510,19 +606,21 @@ def _vision_body(profile, camera_source, camera_imu_source, baselink_source,
                     native_imu[camera_id].get("timeshift_cam_imu"),
                     camera_id + ".timeshift_cam_imu"),
             }
-        if camera_imu_source is not None and (
-                "parameters" in camera_imu_source
-                or camera_imu_mode == "rolling_shutter"):
-            line_delay = _source_line_delay(
-                camera_imu_source, camera_id, "Camera-IMU " + camera_id)
-        elif "parameters" in camera_source or camera_mode == "rolling_shutter":
-            line_delay = _source_line_delay(camera_source, camera_id,
-                                            "camera " + camera_id)
-        else:
-            line_delay = 0.0
-        imu_values[camera_id]["line_delay_s"] = line_delay
+        if camera_imu_source is not None:
+            if ("parameters" in camera_imu_source
+                    or camera_imu_mode == "rolling_shutter"):
+                line_delay = _source_line_delay(
+                    camera_imu_source, camera_id, "Camera-IMU " + camera_id)
+            elif ("parameters" in camera_source
+                    or camera_mode == "rolling_shutter"):
+                line_delay = _source_line_delay(
+                    camera_source, camera_id, "camera " + camera_id)
+            else:
+                line_delay = 0.0
+            imu_values[camera_id]["line_delay_s"] = line_delay
 
-    base_transform, pitch = _baselink_values(baselink_source)
+    base_transform, pitch = _baselink_values(
+        baselink_source, profile["stereo_camera"]["cam0"])
     if baselink_source is None:
         defaulted.extend(["camera.cam0.T_base_cam", "camera.cam0.pitch"])
 
@@ -553,14 +651,16 @@ def _vision_body(profile, camera_source, camera_imu_source, baselink_source,
             "cam0_cam1_correct": correction,
         },
         "odom": deepcopy(profile["odom"]),
+        "lidar": deepcopy(profile["lidar"]),
     }, defaulted, metric_source
 
 
-def _mono_body(camera_source, baselink_source):
+def _mono_body(profile, camera_source, baselink_source):
     camera = _source_cameras(camera_source, ["cam0"], "mono result")["cam0"]
     public = {field: deepcopy(camera[field])
               for field in ("model", "resolution", "intrinsic", "distortion")}
-    transform, pitch = _baselink_values(baselink_source)
+    transform, pitch = _baselink_values(
+        baselink_source, profile["usb_camera"])
     defaulted = []
     if baselink_source is None:
         defaulted.extend(["camera.T_base_cam", "camera.pitch"])
@@ -587,8 +687,10 @@ def _timestamp(value):
 
 
 def _artifact(identity, generated_at, profile, body, defaulted,
-              source_files, relative_path, signature_context=None):
+              source_files, relative_path, status_fields,
+              signature_context=None):
     document = _header(identity, generated_at)
+    document.update(status_fields)
     document.update(body)
     defaulted = sorted(defaulted)
     signature = _json_sha256({
@@ -665,13 +767,18 @@ def build_calib_params(machine_dir, profile_dir, deliveries, generated_at,
         artifacts["vision"] = _artifact(
             identity, generated_at, profile, body, defaulted,
             source_files, CALIB_PARAM_OUTPUTS["vision"], {
-                "artifact_format": "combined_vision_v1",
+                "stereo_imu_calibrated": sources["camera_imu"] is not None,
+                "stereo_baselink_calibrated": (
+                    sources["camera_baselink"] is not None),
+            }, {
+                "artifact_format": "combined_vision_v2",
                 "camera_mode": camera_mode,
                 "camera_imu_mode": camera_imu_mode,
             })
     if sources["mono_camera"] is not None:
         body, defaulted = _mono_body(
-            sources["mono_camera"], sources["mono_camera_baselink"])
+            profile, sources["mono_camera"],
+            sources["mono_camera_baselink"])
         source_files = {
             "mono_camera": _source_record(sources["mono_camera"]),
         }
@@ -681,7 +788,10 @@ def build_calib_params(machine_dir, profile_dir, deliveries, generated_at,
         artifacts["mono"] = _artifact(
             identity, generated_at, profile, body, defaulted,
             source_files, CALIB_PARAM_OUTPUTS["mono"], {
-                "artifact_format": "usb_mono_v1",
+                "mono_baselink_calibrated": (
+                    sources["mono_camera_baselink"] is not None),
+            }, {
+                "artifact_format": "usb_mono_v2",
             })
     return artifacts
 

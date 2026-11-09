@@ -21,14 +21,32 @@ class PinholeRadtan8(object):
     frameType = Radtan8PinholeFrame
 
 
+class PinholeRadtan8Rs(object):
+    cameraModel = "pinhole"
+    distortionModel = "radtan8"
+    geometry = Radtan8PinholeRsCameraGeometry
+    reprojectionError = Radtan8PinholeRsReprojectionError
+    reprojectionErrorSimple = Radtan8PinholeRsReprojectionErrorSimple
+    reprojectionErrorAdaptiveCovariance = (
+        Radtan8PinholeRsReprojectionErrorAdaptiveCovariance)
+    designVariable = Radtan8PinholeRsCameraGeometryDesignVariable
+    projectionType = Radtan8PinholeProjection
+    distortionType = RadialTangentialDistortion8
+    shutterType = aslam_cv.RollingShutter
+    frameType = Radtan8PinholeRsFrame
+
+
 from .integration import install  # noqa: E402,F401
 
 
 __all__ = [
     "PinholeRadtan8",
+    "PinholeRadtan8Rs",
     "RadialTangentialDistortion8",
     "Radtan8PinholeProjection",
     "Radtan8PinholeCameraGeometry",
+    "Radtan8PinholeRsCameraGeometry",
     "Radtan8PinholeFrame",
+    "Radtan8PinholeRsFrame",
     "install",
 ]

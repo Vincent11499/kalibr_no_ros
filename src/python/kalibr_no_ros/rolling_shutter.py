@@ -6,6 +6,13 @@ CAMERA_RS_JOB = "camera_rolling_shutter_calibration"
 CAMERA_IMU_JOBS = frozenset(("camera_imu_calibration", JOB))
 CAMERA_CALIBRATION_JOBS = frozenset(("camera_calibration", CAMERA_RS_JOB))
 ROLLING_SHUTTER_JOBS = frozenset((CAMERA_RS_JOB, JOB))
+CAMERA_RS_MODELS = frozenset((
+    "pinhole-equi",
+    "pinhole-radtan",
+    "pinhole-radtan5",
+    "pinhole-radtan8",
+))
+NATIVE_CAMERA_RS_MODELS = CAMERA_RS_MODELS
 
 
 def validate_shutters(value, camera_ids=None):
