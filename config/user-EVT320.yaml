@@ -1,0 +1,24 @@
+schema_version: "1.0.0"
+kind: machine_calibration_workflow
+template: EVT320
+machine_dir: /mnt/q/File/machine_data/kalibr_no_ros/EVT320/EVT320-06/1102  
+targets:
+  stereo: 实验室_aprilgrid_8x10
+  stereo_imu: 实验室_aprilgrid_8x10
+  stereo_baselink: 测试场_aprilgrid_6x8
+  mono: 实验室_aprilgrid_8x10
+  mono_baselink: 测试场_aprilgrid_6x8
+stereo:
+  mode: standard #standard
+stereo_imu:
+  mode: rolling_shutter
+  recompute_extrinsics: false
+stereo_baselink: # 双目与车体
+  cameras:
+    - id: cam0
+      translation_base_camera_m: [0.20691, 0.190, 0.39706] # 3.2.0
+mono: {}
+mono_baselink:
+  cameras:
+    - id: cam0
+      translation_base_camera_m: [-0.21388, 0.0, 0.30776] # 3.2.0

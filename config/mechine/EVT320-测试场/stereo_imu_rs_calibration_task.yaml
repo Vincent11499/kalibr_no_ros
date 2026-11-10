@@ -1,18 +1,17 @@
 schema_version: "1.0.0"
 kind: calibration_task
-job: camera_rolling_shutter_calibration
+job: camera_imu_rolling_shutter_calibration
 dataset:
   type: directory
   path: __DATASET_PATH__
 target:
   path: 测试场_aprilgrid_8x8.yaml
-cameras:
-  - id: cam0
-    model: pinhole-equi
-  - id: cam1
-    model: pinhole-equi
-initialization:
-  path: initialization_stereo_camera.yaml
+camera_calibration:
+  path: __CAMERA_CALIBRATION_PATH__
+imus:
+  - id: imu0
+    path: imu_noise.yaml
+    model: calibrated
 rolling_shutter:
   cam0:
     line_delay_s: 0.000008
@@ -23,12 +22,12 @@ rolling_shutter:
     estimate: true
     max_abs_line_delay_s: 0.00002
 calibration:
-  freeze_intrinsics: false
   window_half_size_px: 7
-  max_displacement_px: 2.0
-  focal_initialization_min_visible_corner_ratio: 0.75
-  synchronization_tolerance_s: 0.0001
-  min_views_for_outlier_statistics: 20
+  max_displacement_px: 1.5
+  max_iterations: 30
+  time_offset_padding_s: 0.03
+  reprojection_sigma_px: 1.0
+  recompute_camera_chain_extrinsics: false
 execution:
   detector_processes: 8
   optimizer_threads: 8
@@ -40,9 +39,7 @@ output:
   save_metrics: true
   visualizations:
     enabled: true
-    sampling: uniform
     max_frames_per_camera: 20
     max_pairs: 20
-    undistortion:
-      enabled: true
-      crop: false
+    sampling: uniform
+

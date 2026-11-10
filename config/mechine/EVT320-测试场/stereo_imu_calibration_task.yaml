@@ -1,6 +1,6 @@
 schema_version: "1.0.0"
 kind: calibration_task
-job: camera_imu_rolling_shutter_calibration
+job: camera_imu_calibration
 dataset:
   type: directory
   path: __DATASET_PATH__
@@ -12,15 +12,6 @@ imus:
   - id: imu0
     path: imu_noise.yaml
     model: calibrated
-rolling_shutter:
-  cam0:
-    line_delay_s: 0.000008
-    estimate: true
-    max_abs_line_delay_s: 0.00002
-  cam1:
-    line_delay_s: 0.000008
-    estimate: true
-    max_abs_line_delay_s: 0.00002
 calibration:
   window_half_size_px: 7
   max_displacement_px: 2.0
@@ -42,3 +33,4 @@ output:
     max_frames_per_camera: 20
     max_pairs: 20
     sampling: uniform
+

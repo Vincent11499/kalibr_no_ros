@@ -5,26 +5,25 @@
 输出目录的受管工作区。
 
 模板内 `target.path`、`initialization.path`、`imus[].path` 均相对于当前目录。需要新增
-标定板或初始化时，可把 YAML 放到上一级 `config/mechine/`，并在模板中写
-`../文件名.yaml`。解析结果必须留在 `config/mechine/` 内，绝对路径、越界路径和符号
-链接会被拒绝；这些外部 YAML 也会进入任务指纹，语义变化时重跑实际依赖阶段。
+标定板、初始化或 IMU 配置时，必须把 YAML 放在当前 `EVT320/` 目录。绝对路径、`../`
+跨模板引用和符号链接都会被拒绝；被任务引用的 YAML 会进入任务指纹，语义变化时重跑
+实际依赖阶段。
 
 模板固定用于以下传感器组合：
 
-- `cam0`、`cam1` 双目相机，模板模型可为 `pinhole-equi`、`pinhole-radtan5` 或 `pinhole-radtan8`；
-- 另一个独立单目模组，其局部 ID 为 `cam0`，模板使用同一模型集合；
+- `cam0`、`cam1` 双目相机，模型为 `pinhole-equi`；
+- 另一个独立单目模组，其局部 ID 为 `cam0`，模型为 `pinhole-equi`；
 - 可选 `imu0`，模型为 `calibrated`；
-- 省略 `user.yaml.target` 时，两个模组共用内部 AprilGrid：8×10、`tagSize=0.07 m`、
-  `tagSpacing=0.3`、`tagStartId=0`；显式 target 从已安装 `config/mechine` 根目录按文件名stem选择。
+- 省略 `user.yaml.targets` 中某一角色时，该任务使用自身模板的 `target.path`；显式 target
+  从当前 `EVT320/` 目录按文件名 stem 选择。
 
 固定辅助文件为 `实验室_aprilgrid_8x10.yaml`、`initialization_stereo_camera.yaml`、
 `initialization_mono_camera.yaml`、`imu_noise.yaml` 和 `mechine_base_param.yaml`。任务文件为
 `stereo_camera_calibration_task.yaml`、`stereo_camera_rs_calibration_task.yaml`、
 `stereo_imu_calibration_task.yaml`、`stereo_imu_rs_calibration_task.yaml` 及对应 BaseLink/单目任务。
-初始化文件必须与模板模型一致：equi 为 4 项畸变，radtan5 为 5 项，radtan8 为 8 项。
-普通/正式 RS 相机、普通/RS Camera–IMU、BaseLink、报告和参数汇总均保留该模型；临时
-`native-rs-cameras` 和 RS 行时间诊断工具不属于 machine 流程，但同样支持上述三种
-machine 模型；此外还兼容四参数 `pinhole-radtan`。
+`mechine_base_param.yaml` 保存尚未完成 Camera–IMU 或 BaseLink 时的显式默认 T、时间偏移、
+行时间、bias 和 pitch，并保存固定 IMU/odom/lidar 参数；交付 YAML 另用 `*_calibrated`
+布尔字段区分这些默认值与真实标定结果。
 
 占位符 `__DATASET_PATH__`、`__CAMERA_CALIBRATION_PATH__` 和
 `__OUTPUT_NAME__` 只用于防止模板被误当作真实任务运行。不要在产线手工替换这些值；

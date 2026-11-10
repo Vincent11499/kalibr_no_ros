@@ -1,24 +1,21 @@
 schema_version: "1.0.0"
 kind: calibration_task
-job: camera_calibration
+job: camera_baselink_calibration
 dataset:
   type: directory
   path: __DATASET_PATH__
 target:
   path: 测试场_aprilgrid_8x8.yaml
-initialization:
-  path: initialization_mono_camera.yaml
+camera_calibration:
+  path: __CAMERA_CALIBRATION_PATH__
 cameras:
   - id: cam0
-    model: pinhole-equi
 calibration:
   window_half_size_px: 7
-  max_displacement_px: 2.0
-  synchronization_tolerance_s: 0.0001
-  shuffle: true
+  max_displacement_px: 1.5
+  rank_ratio_min: 0.0001
 execution:
-  detector_processes: 8
-  optimizer_threads: 8
+  detector_processes: 4
   detector_inflight_per_worker: 2
   detector_opencv_threads: 1
 output:

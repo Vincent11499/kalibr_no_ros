@@ -16,7 +16,7 @@ initialization:
 calibration:
   solver_mode: full_batch
   window_half_size_px: 7
-  max_displacement_px: 2.0
+  max_displacement_px: 1.5
   focal_initialization_min_visible_corner_ratio: 0.75
   synchronization_tolerance_s: 0.0001
   freeze_intrinsics: false

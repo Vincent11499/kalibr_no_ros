@@ -1,0 +1,72 @@
+schema_version: "1.0.0"
+kind: machine_calibration_workflow
+
+# 必填：选择 config/mechine/EVT320/ 下的任务模板和辅助配置
+template: EVT320
+
+# 必填：本次标定批次目录
+# 父目录必须形如“机型-编号”；相对路径以 user.yaml 所在目录为基准
+# 以下是示例占位路径，运行前必须替换为实际路径
+machine_dir: /path/to/EVT320-00/1110
+
+# 可选：指定本批次中的数据目录
+# 未填写的角色自动搜索；填写后必须是已存在的直接子目录
+# 以下均为示例目录名，运行前按实际数据修改或删除对应键以启用自动搜索
+datasets:
+  stereo: stereo_261110_1000
+  stereo_imu: stereo_imu_261110_1030
+  stereo_baselink: stereo_base_link_261110_1100
+  mono: usb_261110_1130
+  mono_baselink: usb_base_link_261110_1200
+
+# 可选：按任务指定标定板
+# 值为当前 template 目录内的文件名，不带 .yaml，不允许填写路径
+# 未填写的角色使用对应 task 中的 target.path
+targets:
+  stereo: 测试场_aprilgrid_8x8
+  stereo_imu: 实验室_aprilgrid_8x10
+  stereo_baselink: 测试场_aprilgrid_8x8
+  mono: 测试场_aprilgrid_8x8
+  mono_baselink: 测试场_aprilgrid_8x8
+
+# 可选：从当前批次 result/calib_params/ 复用已有参数
+# 每项默认 false；true 表示跳过对应数据搜索和标定
+reuse_calib_params:
+  stereo: false
+  stereo_imu: false
+  stereo_baselink: false
+  mono: false
+  mono_baselink: false
+
+# 双目相机标定方式
+stereo:
+  mode: standard                 # standard | rolling_shutter；默认 standard
+
+# 双目–IMU 标定方式
+stereo_imu:
+  mode: standard                 # 必填；standard | rolling_shutter，无默认
+  recompute_extrinsics: false     # 默认 false；true 放开双目相邻外参
+                                 # 不重新标定 K/D
+
+# 可选：双目相机到 BaseLink 的标定配置
+stereo_baselink:
+  base_link:
+    frame_id: base_link           # 参考坐标系名称
+    position_scale_m: 0.01        # 文件名位置数值的单位，米/单位
+                                 # 厘米：0.01，毫米：0.001，米：1.0
+  cameras:                       # 可只列 cam0，或按顺序列 cam0、cam1
+    - id: cam0
+      translation_base_camera_m: [0.0, 0.0, 0.0] # 占位值，必须换成实测米值
+    - id: cam1
+      translation_base_camera_m: [0.0, 0.0, 0.0] # 占位值，必须换成实测米值
+
+# 可选：独立 USB 单目相机到 BaseLink 的标定配置
+mono: {}
+
+mono_baselink:
+  base_link:
+    frame_id: base_link
+    position_scale_m: 0.01
+  cameras:                       # 只能有 cam0；不是上面双目的左相机
+    - id: cam0
+      translation_base_camera_m: [0.0, 0.0, 0.0] # 占位值，必须换成实测米值
