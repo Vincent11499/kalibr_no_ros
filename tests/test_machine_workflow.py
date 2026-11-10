@@ -37,6 +37,13 @@ MONO_BASELINK_CONFIG = {
         {"id": "cam0", "translation_base_camera_m": [-0.1, 0.05, 0.3]},
     ],
 }
+PUBLIC_WORKFLOW_KEYS = {
+    "camera": "stereo",
+    "camera_imu": "stereo_imu",
+    "camera_baselink": "stereo_baselink",
+    "mono_camera": "mono",
+    "mono_camera_baselink": "mono_baselink",
+}
 
 
 class MachineWorkflowTest(unittest.TestCase):
@@ -122,13 +129,13 @@ class MachineWorkflowTest(unittest.TestCase):
             "kind": "machine_calibration_workflow",
             "template": "EVT320",
             "machine_dir": str(self.machine),
-            "camera_imu": {
+            "stereo_imu": {
                 "mode": mode,
                 "recompute_extrinsics": recompute_extrinsics,
             },
         }
         if camera_mode is not None:
-            document["camera"] = {"mode": camera_mode}
+            document["stereo"] = {"mode": camera_mode}
         if targets is not None:
             document["targets"] = targets
         datasets = {}
@@ -139,7 +146,15 @@ class MachineWorkflowTest(unittest.TestCase):
         if datasets:
             document["datasets"] = datasets
         if extra:
-            document.update(extra)
+            extra = deepcopy(extra)
+            reuse = extra.get("reuse_calib_params")
+            if isinstance(reuse, dict):
+                extra["reuse_calib_params"] = {
+                    PUBLIC_WORKFLOW_KEYS.get(key, key): value
+                    for key, value in reuse.items()
+                }
+            for key, value in extra.items():
+                document[PUBLIC_WORKFLOW_KEYS.get(key, key)] = value
         path = self.root / "user.yaml"
         dump_yaml(document, path)
         return path
@@ -158,8 +173,8 @@ class MachineWorkflowTest(unittest.TestCase):
             "template": "EVT320",
             "machine_dir": "EVT312-03/run_01",
             "targets": {"stereo": "aprilgrid_1"},
-            "camera": {"mode": "rolling_shutter"},
-            "camera_imu": {"mode": "rolling_shutter"},
+            "stereo": {"mode": "rolling_shutter"},
+            "stereo_imu": {"mode": "rolling_shutter"},
             "datasets": {"stereo": "stereo_260916_2136"},
         }, path)
         loaded = load_workflow_config(path)
@@ -176,40 +191,40 @@ class MachineWorkflowTest(unittest.TestCase):
         invalid_documents = [
             ({"schema_version": "1.0.0", "kind": "machine_calibration_workflow",
               "machine_dir": str(self.machine),
-              "camera_imu": {"mode": "standard"}}, "template"),
+              "stereo_imu": {"mode": "standard"}}, "template"),
             ({"schema_version": "1", "kind": "machine_calibration_workflow",
-              "machine_dir": str(self.machine), "camera_imu": {"mode": "standard"}},
+              "machine_dir": str(self.machine), "stereo_imu": {"mode": "standard"}},
              "schema_version"),
             ({"schema_version": "1.0.0", "kind": "calibration_task",
-              "machine_dir": str(self.machine), "camera_imu": {"mode": "standard"}},
+              "machine_dir": str(self.machine), "stereo_imu": {"mode": "standard"}},
              "kind"),
             ({"schema_version": "1.0.0", "kind": "machine_calibration_workflow",
-              "machine_dir": str(self.machine)}, "camera_imu"),
+              "machine_dir": str(self.machine)}, "stereo_imu"),
             ({"schema_version": "1.0.0", "kind": "machine_calibration_workflow",
-              "machine_dir": str(self.machine), "camera_imu": {"mode": "auto"}},
+              "machine_dir": str(self.machine), "stereo_imu": {"mode": "auto"}},
              "mode"),
             ({"schema_version": "1.0.0", "kind": "machine_calibration_workflow",
-              "machine_dir": str(self.machine), "camera": {"mode": "auto"},
-              "camera_imu": {"mode": "standard"}}, "camera.mode"),
+              "machine_dir": str(self.machine), "stereo": {"mode": "auto"},
+              "stereo_imu": {"mode": "standard"}}, "stereo.mode"),
             ({"schema_version": "1.0.0", "kind": "machine_calibration_workflow",
               "machine_dir": str(self.machine), "target": "../target",
-              "camera_imu": {"mode": "standard"}}, "target"),
+              "stereo_imu": {"mode": "standard"}}, "target"),
             ({"schema_version": "1.0.0", "kind": "machine_calibration_workflow",
               "machine_dir": str(self.machine), "targets": [],
-              "camera_imu": {"mode": "standard"}}, "targets"),
+              "stereo_imu": {"mode": "standard"}}, "targets"),
             ({"schema_version": "1.0.0", "kind": "machine_calibration_workflow",
               "machine_dir": str(self.machine),
               "targets": {"unknown": "aprilgrid_1"},
-              "camera_imu": {"mode": "standard"}}, "targets"),
+              "stereo_imu": {"mode": "standard"}}, "targets"),
             ({"schema_version": "1.0.0", "kind": "machine_calibration_workflow",
               "machine_dir": str(self.machine),
-              "camera_imu": {"mode": "standard", "recompute_extrinsics": 1}},
+              "stereo_imu": {"mode": "standard", "recompute_extrinsics": 1}},
              "recompute_extrinsics"),
             ({"schema_version": "1.0.0", "kind": "machine_calibration_workflow",
-              "machine_dir": str(self.machine), "camera_imu": {"mode": "standard"},
+              "machine_dir": str(self.machine), "stereo_imu": {"mode": "standard"},
               "revision": "../escape"}, "revision"),
             ({"schema_version": "1.0.0", "kind": "machine_calibration_workflow",
-              "machine_dir": str(self.machine), "camera_imu": {"mode": "standard"},
+              "machine_dir": str(self.machine), "stereo_imu": {"mode": "standard"},
               "templates": "private"}, "unknown"),
         ]
         for index, (document, message) in enumerate(invalid_documents):
@@ -231,7 +246,7 @@ class MachineWorkflowTest(unittest.TestCase):
                     "template": "EVT320",
                     "machine_dir": str(self.machine),
                     "targets": {"stereo": target},
-                    "camera_imu": {"mode": "standard"},
+                    "stereo_imu": {"mode": "standard"},
                 }, invalid)
                 with self.assertRaisesRegex(TaskError, "target"):
                     load_workflow_config(invalid)
@@ -249,6 +264,50 @@ class MachineWorkflowTest(unittest.TestCase):
             load_workflow_config(self.write_config(extra={
                 "machine_dir": str(invalid_batch),
             }))
+
+    def test_public_stage_names_map_to_stable_internal_stages(self):
+        reuse = {name: True for name in PUBLIC_WORKFLOW_KEYS.values()}
+        config = self.write_config(extra={
+            "mono": {},
+            "stereo_baselink": BASELINK_CONFIG,
+            "mono_baselink": MONO_BASELINK_CONFIG,
+            "reuse_calib_params": reuse,
+        })
+        loaded = load_workflow_config(config)
+        self.assertEqual(
+            loaded["reuse_calib_params"],
+            {stage: True for stage in PUBLIC_WORKFLOW_KEYS})
+        self.assertEqual(
+            loaded["camera_baselink"]["cameras"],
+            BASELINK_CONFIG["cameras"])
+        self.assertEqual(
+            loaded["mono_camera_baselink"]["cameras"],
+            MONO_BASELINK_CONFIG["cameras"])
+
+        with self.assertRaisesRegex(TaskError, "mono.*empty"):
+            load_workflow_config(self.write_config(extra={
+                "mono": {"mode": "standard"},
+            }))
+
+        base = {
+            "schema_version": "1.0.0",
+            "kind": "machine_calibration_workflow",
+            "template": "EVT320",
+            "machine_dir": str(self.machine),
+            "stereo_imu": {"mode": "standard"},
+        }
+        for old, new in PUBLIC_WORKFLOW_KEYS.items():
+            with self.subTest(old=old):
+                path = self.root / ("legacy_" + old + ".yaml")
+                dump_yaml({**base, old: {}}, path)
+                with self.assertRaisesRegex(
+                        TaskError, "{}.*{}".format(old, new)):
+                    load_workflow_config(path)
+
+        path = self.root / "legacy_reuse.yaml"
+        dump_yaml({**base, "reuse_calib_params": {"camera": True}}, path)
+        with self.assertRaisesRegex(TaskError, "camera.*stereo"):
+            load_workflow_config(path)
 
     def test_unicode_target_stem_is_resolved_from_installed_config(self):
         target = "测试场_aprilgrid_8x8"
@@ -940,8 +999,12 @@ class MachineWorkflowTest(unittest.TestCase):
         first_vision = load_yaml(first["calib_params"]["vision"]["result"])
         self.assertFalse(first_vision["stereo_baselink_calibrated"])
         self.assertEqual(first_vision["camera"]["cam0"]["pitch"], 10.0)
+        base_parameters = load_yaml(
+            self.prefix / "config" / "mechine" / "EVT320"
+            / "mechine_base_param.yaml")
         self.assertEqual(
-            first_vision["camera"]["cam0"]["T_base_cam"][0][3], 0.20213)
+            first_vision["camera"]["cam0"]["T_base_cam"][0][3],
+            base_parameters["stereo_camera"]["cam0"]["T_base_cam"][0][3])
         self.write_dataset("stereo_base_link_261021_1630")
         second = run_machine_workflow(self.prefix, config, runner=runner)
         self.assertEqual([call["job"] for call in calls], [
@@ -1074,7 +1137,7 @@ class MachineWorkflowTest(unittest.TestCase):
         self.assertEqual(loaded["mono_camera_baselink"]["base_link"]["frame_id"], "base_link")
         self.assertIsNone(loaded["camera_baselink"])
         self.assertEqual(discover_dataset(self.machine, "mono_baselink", another.name), another)
-        with self.assertRaisesRegex(TaskError, "mono_camera_baselink.cameras"):
+        with self.assertRaisesRegex(TaskError, "mono_baselink.cameras"):
             load_workflow_config(self.write_config(extra={"mono_camera_baselink": BASELINK_CONFIG}))
         bad_units = deepcopy(MONO_BASELINK_CONFIG)
         bad_units["base_link"]["position_scale_m"] = 0

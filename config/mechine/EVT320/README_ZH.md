@@ -39,8 +39,8 @@
 保留，同名下游结果仅在新求解成功后替换。
 
 `stereo_camera_baselink_calibration_task.yaml` 另外由工作流注入
-`user.yaml` 的 `camera_baselink.cameras`。内部默认 `frame_id=base_link`、
-`position_scale_m=0.01`；其他文件名位置单位才需显式覆盖 `camera_baselink.base_link`。
+`user.yaml` 的 `stereo_baselink.cameras`。内部默认 `frame_id=base_link`、
+`position_scale_m=0.01`；其他文件名位置单位才需显式覆盖 `stereo_baselink.base_link`。
 每目实测平移仍必须明确配置；内部模板不提供零平移默认值。
 该可选阶段复用双目 K/D，按全部无序帧对直接差分求旋转，不依赖 IMU 数据。
 工作流在输出前固定左乘绕 X 轴 180° 的旋转修正，配置平移保持不变。
@@ -48,7 +48,7 @@
 `mono_camera_calibration_task.yaml` 只标定独立单目模组的 K/D，使用独立的
 `initialization_mono_camera.yaml`，不套用双目初始化。
 `mono_camera_baselink_calibration_task.yaml` 只引用它的结果，由工作流注入
-`user.yaml` 的 `mono_camera_baselink.base_link` 和 `mono_camera_baselink.cameras`。
+`user.yaml` 的 `mono_baselink.base_link` 和 `mono_baselink.cameras`。
 该配置只接受 `[cam0]`，不得引用双目相机结果或继承双目的配置平移。
 省略其 `base_link` 时同样使用 `frame_id=base_link`、`position_scale_m=0.01`。
 工作流在输出前固定左乘绕 Y 轴 180° 的旋转修正，配置平移保持不变。

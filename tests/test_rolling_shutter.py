@@ -43,8 +43,10 @@ class RollingShutterContractTest(unittest.TestCase):
                                    "observability": summary}, {"cameras": []})
         self.assertEqual(metrics["observability"], summary)
         sections = {title: rows for title, _, rows in _summary_sections(metrics, {}, {"cameras": []})}
-        self.assertIn(["Quality", "weakly_observable"], sections["Local observability"])
-        self.assertIn(["Operational rank", "9 / 10"], sections["Local observability"])
+        self.assertEqual(sections["Local observability"], [
+            ["Native numerical rank", "10 / 10"],
+            ["Operational rank", "9 / 10"],
+        ])
 
     def test_three_public_ids_map_to_native_order_without_changing_original_job(self):
         with tempfile.TemporaryDirectory() as directory:

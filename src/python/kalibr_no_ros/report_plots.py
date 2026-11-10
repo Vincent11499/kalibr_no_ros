@@ -373,39 +373,29 @@ def _html_table(headers, rows):
 
 def _summary_sections(metrics, assessment, calibration):
     """Shared table content makes the HTML and PDF summaries consistent."""
+    calibration_type = metrics.get("calibration_type")
     rows = []
     for name, camera in metrics.get("cameras", {}).items():
         error = camera.get("reprojection", {})
-        rows.append([name, camera.get("used_frames"), camera.get("selected_frames"), error.get("count"),
-                     error.get("rms_px"), error.get("p95"), error.get("max")])
-    yield "Calibration overview", ["Camera", "Used frames", "Selected", "Corners", "RMS [px]", "P95 [px]", "Max [px]"], rows
-    if metrics.get("calibration_type") == "cameras_baselink":
-        yield "base_link direct-difference solve", [
-            "Camera", "Pitch [deg]", "Left correction", "Effective pairs", "Movement RMS [mm]",
-            "Platform rank ratio", "Camera rank ratio", "Reflection corrected",
-        ], [[
-            name,
-            camera.get("pitch"),
-            camera.get("rotation_left_correction"),
-            camera.get("effective_pairs"),
-            camera.get("movement_residual_mm"),
-            camera.get("platform_second_first_ratio"),
-            camera.get("camera_second_first_ratio"),
-            camera.get("reflection_corrected"),
-        ] for name, camera in metrics.get("cameras", {}).items()]
-    if metrics.get("observability"):
-        observability = metrics["observability"]
-        yield "Local observability", ["Parameter", "Value"], [
-            ["Status", observability.get("status")],
-            ["Quality", observability.get("quality")],
-            ["Native numerical rank", "{} / {}".format(observability.get("rank"), observability.get("columns"))],
-            ["Operational rank", "{} / {}".format(observability.get("operational_rank"), observability.get("columns"))],
-            ["Unavailable reason", observability.get("reason")],
-            ["Interpretation", "Full numerical rank can still have weakly constrained directions. This is not a hardware accuracy guarantee."],
-        ]
+        row = [name, camera.get("used_frames"), camera.get("selected_frames"),
+               error.get("count"), error.get("rms_px"), error.get("p95")]
+        if calibration_type == "cameras":
+            straightness = camera.get("line_straightness") or {}
+            row.extend([straightness.get("rms_px"), straightness.get("p95")])
+        elif calibration_type != "camera_imu":
+            row.append(error.get("max"))
+        rows.append(row)
+    overview_headers = [
+        "Camera", "Used", "Selected", "Corners", "RMS [px]", "P95 [px]",
+    ]
+    if calibration_type == "cameras":
+        overview_headers.extend(["Line [px]", "Line P95 [px]"])
+    elif calibration_type != "camera_imu":
+        overview_headers.append("Max [px]")
+    yield "Calibration overview", overview_headers, rows
+
     if metrics.get("stereo_pairs"):
         rows = []
-        has_rolling_shutter = False
         for name, pair in metrics["stereo_pairs"].items():
             alignment = pair.get("alignment") or {}
             compensated = pair.get("rs_compensated_pair_residual") or {}
@@ -413,13 +403,32 @@ def _summary_sections(metrics, assessment, calibration):
             rows.append([name, baseline * 1000. if baseline is not None else None,
                          alignment.get("mean_abs_px", alignment.get("mean")), alignment.get("rms_px"),
                          compensated.get("rms_px"), alignment.get("count"), pair.get("status")])
-            has_rolling_shutter |= "rs_compensated_pair_residual" in pair
         yield "Stereo optical alignment", ["Pair", "Baseline [mm]", "Mean abs [px]", "Optical RMS [px]", "RS compensated RMS [px]", "Corners", "Status"], rows
-        if has_rolling_shutter:
-            yield "Rolling-shutter stereo metric definitions", ["Metric", "Meaning"], [
-                ["Optical alignment RMS", "Static OpenCV rectification of original measurements using K/D/T only; no row-time, trajectory, or target-depth compensation."],
-                ["RS compensated pair residual", "Measured non-disparity difference minus the fitted RS model's predicted difference at per-corner times. This is a fit-dependent diagnostic, not independent validation."],
-            ]
+
+    if calibration_type == "cameras_baselink":
+        yield "base_link direct-difference solve", [
+            "Camera", "Pitch [deg]", "Movement RMS [mm]",
+            "Platform rank ratio", "Camera rank ratio", "theta min [deg]",
+            "theta median [deg]", "theta mean [deg]", "theta P95 [deg]",
+            "theta max [deg]",
+        ], [[
+            name,
+            camera.get("pitch"),
+            camera.get("movement_residual_mm"),
+            camera.get("platform_second_first_ratio"),
+            camera.get("camera_second_first_ratio"),
+            (camera.get("pair_rotation_change") or {}).get("min"),
+            (camera.get("pair_rotation_change") or {}).get("median"),
+            (camera.get("pair_rotation_change") or {}).get("mean"),
+            (camera.get("pair_rotation_change") or {}).get("p95"),
+            (camera.get("pair_rotation_change") or {}).get("max"),
+        ] for name, camera in metrics.get("cameras", {}).items()]
+    if metrics.get("observability"):
+        observability = metrics["observability"]
+        yield "Local observability", ["Parameter", "Value"], [
+            ["Native numerical rank", "{} / {}".format(observability.get("rank"), observability.get("columns"))],
+            ["Operational rank", "{} / {}".format(observability.get("operational_rank"), observability.get("columns"))],
+        ]
     result_cameras = (calibration or {}).get("cameras", [])
     results = {camera.get("id", "cam{}".format(index)): camera for index, camera in enumerate(result_cameras)}
     previous_ids = {camera.get("id", "cam{}".format(index)): result_cameras[index - 1].get("id", "cam{}".format(index - 1))
@@ -460,6 +469,8 @@ def _summary_sections(metrics, assessment, calibration):
                 ("T_imu_cam", name, "IMU"),
                 ("T_base_camera", name,
                  (calibration or {}).get("base_frame", "base_link"))):
+            if calibration_type == "camera_imu" and field == "T_cam_imu":
+                continue
             transform = _matrix(final.get(field))
             if transform is not None:
                 source = final.get("from_camera", final.get("source_camera", previous_ids.get(name, source))) if field == "T_cn_cnm1" else source
@@ -471,6 +482,32 @@ def _summary_sections(metrics, assessment, calibration):
     for imu_id, imu in metrics.get("imus", {}).items():
         yield imu_id + " · IMU residuals", ["Kind", "Samples", "Vector RMS", "Unit"], [
             [kind, values.get("count"), values.get("rms"), values.get("unit")] for kind, values in imu.items()]
+        rows = []
+        for kind in ("gyro", "accel"):
+            bias = (imu.get(kind) or {}).get("bias_spline") or {}
+            axes = bias.get("axes") or {}
+            if not axes:
+                continue
+            rows.append([
+                kind,
+                *[(axes.get(axis) or {}).get("mean") for axis in ("x", "y", "z")],
+                *[(axes.get(axis) or {}).get("std") for axis in ("x", "y", "z")],
+                bias.get("unit"),
+            ])
+        if rows:
+            yield imu_id + " · IMU bias summary", [
+                "Bias", "Mean x", "Mean y", "Mean z", "Std x", "Std y",
+                "Std z", "Unit",
+            ], rows
+    gravity = metrics.get("gravity") or {}
+    vector_m_s2 = gravity.get("vector_m_s2")
+    if (isinstance(vector_m_s2, (list, tuple))
+            and len(vector_m_s2) == 3):
+        yield "Gravity vector", ["x", "y", "z", "Magnitude", "Unit"], [[
+            *vector_m_s2,
+            gravity.get("magnitude_m_s2"),
+            gravity.get("unit", "m/s^2"),
+        ]]
 
 
 def _pdf_table_page(title, headers, rows, subtitle):

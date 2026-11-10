@@ -6,9 +6,9 @@
 
 产线入口也支持双目和独立单目模组的该阶段：`kalibr-cedarobot machine`。
 数据放在机器根目录的 `stereo_base_link_YYMMDD_HHMM`，
-在 `user.yaml` 配置 `camera_baselink`；工作流自动引用本工单双目结果，不依赖 IMU。
+在 `user.yaml` 配置 `stereo_baselink`；工作流自动引用本工单双目结果，不依赖 IMU。
 独立单目模组则使用 `usb_YYMMDD_HHMM`、`usb_base_link_YYMMDD_HHMM`
-和 `mono_camera_baselink` 配置，只引用本工单的单目结果。
+和 `mono_baselink` 配置，只引用本工单的单目结果。
 两个模组的 `cam0` 是局部 ID，不能互换；当前机器 profile 的两模组均使用同一份 AprilGrid。
 配置和目录示例见[机器级一键标定](MACHINE_CALIBRATION_WORKFLOW_ZH.md)。
 
@@ -131,6 +131,10 @@ CSV 每行对应一对图像，列为 `camera`、`pair_index`、`from_frame`、`
 中位数、均值、P95 和最大值。固定姿态平移实验的理想值为 `0 deg`，数值越小表示两帧
 PnP 姿态越稳定。当前算法固定 `alpha=0`，所以这些角度只用于诊断；实际求解仍使用
 `Q_tilde_ij=I` 和 `b_ij=t_j-t_i`。坐标方向仍遵循项目统一约定：
+
+HTML/PDF 的 `base_link direct-difference solve` 同步显示每目 Pitch、Movement RMS、
+Platform rank ratio、Camera rank ratio，以及同一批帧对的 theta min／median／mean／P95／max；
+报告与 CSV 复用同一统计总体和百分位算法。
 
 ```text
 p_base = T_base_camera * p_camera

@@ -210,9 +210,9 @@ config/user.yaml
 根据机器任务检查其中的：
 
 - `targets`；
-- `camera.mode`；
-- `camera_imu.mode`；
-- `camera_imu.recompute_extrinsics`；
+- `stereo.mode`；
+- `stereo_imu.mode`；
+- `stereo_imu.recompute_extrinsics`；
 - BaseLink 相机与平移参数。
 
 运行脚本会在容器临时目录中把 `machine_dir` 自动改成稳定的容器路径，因此不需要为每台电脑手工修改配置中的主机绝对路径。原始 `config/user.yaml` 不会被容器修改。

@@ -90,6 +90,13 @@ _STAGE_ROLES = {
     "mono_camera_baselink": "mono_baselink",
 }
 _TARGET_STAGES = {role: stage for stage, role in _STAGE_ROLES.items()}
+_LEGACY_WORKFLOW_FIELDS = {
+    "camera": "stereo",
+    "camera_imu": "stereo_imu",
+    "camera_baselink": "stereo_baselink",
+    "mono_camera": "mono",
+    "mono_camera_baselink": "mono_baselink",
+}
 _RECALIBRATION_STAGES = {
     "stereo": ("camera", "camera_imu", "camera_baselink"),
     "stereo_imu": ("camera_imu",),
@@ -188,12 +195,16 @@ def load_workflow_config(path):
     value = load_yaml(config_path)
     allowed = {
         "schema_version", "kind", "template", "machine_dir", "datasets",
-        "targets", "camera", "camera_imu", "camera_baselink",
-        "mono_camera_baselink", "reuse_calib_params",
+        "targets", "stereo", "stereo_imu", "stereo_baselink", "mono",
+        "mono_baselink", "reuse_calib_params",
     }
     if "target" in value:
         raise TaskError(
             "target is no longer supported; use targets.<stage> instead")
+    legacy = sorted(set(value) & set(_LEGACY_WORKFLOW_FIELDS))
+    if legacy:
+        raise TaskError("{} is no longer supported; use {} instead".format(
+            legacy[0], _LEGACY_WORKFLOW_FIELDS[legacy[0]]))
     unknown = sorted(set(value) - allowed)
     if unknown:
         raise TaskError(
@@ -231,12 +242,21 @@ def load_workflow_config(path):
     machine_root = machine.parent
     identity = machine_identity(machine_root)
 
-    reuse = value.get("reuse_calib_params", {})
-    if (not isinstance(reuse, dict) or set(reuse) - set(_STAGE_ROLES)
-            or any(type(enabled) is not bool for enabled in reuse.values())):
+    reuse_config = value.get("reuse_calib_params", {})
+    legacy_reuse = (sorted(set(reuse_config) & set(_LEGACY_WORKFLOW_FIELDS))
+                    if isinstance(reuse_config, dict) else [])
+    if legacy_reuse:
+        raise TaskError(
+            "reuse_calib_params.{} is no longer supported; use {} instead"
+            .format(legacy_reuse[0], _LEGACY_WORKFLOW_FIELDS[legacy_reuse[0]]))
+    if (not isinstance(reuse_config, dict)
+            or set(reuse_config) - set(_TARGET_STAGES)
+            or any(type(enabled) is not bool
+                   for enabled in reuse_config.values())):
         raise TaskError(
             "reuse_calib_params must map the five task names to booleans")
-    reuse = {stage: reuse.get(stage, False) for stage in _STAGE_ROLES}
+    reuse = {stage: reuse_config.get(role, False)
+             for role, stage in _TARGET_STAGES.items()}
 
     datasets = value.get("datasets", {})
     if not isinstance(datasets, dict):
@@ -273,46 +293,52 @@ def load_workflow_config(path):
     targets = {_TARGET_STAGES[role]: target
                for role, target in targets.items()}
 
-    camera = value.get("camera", {})
-    if not isinstance(camera, dict):
-        raise TaskError("camera must be a mapping")
-    unknown_camera = sorted(set(camera) - {"mode"})
-    if unknown_camera:
-        raise TaskError("unknown camera fields: {}".format(
-            ", ".join(unknown_camera)))
-    camera_mode = camera.get("mode", "standard")
+    stereo = value.get("stereo", {})
+    if not isinstance(stereo, dict):
+        raise TaskError("stereo must be a mapping")
+    unknown_stereo = sorted(set(stereo) - {"mode"})
+    if unknown_stereo:
+        raise TaskError("unknown stereo fields: {}".format(
+            ", ".join(unknown_stereo)))
+    camera_mode = stereo.get("mode", "standard")
     if camera_mode not in {"standard", "rolling_shutter"}:
-        raise TaskError("camera.mode must be standard or rolling_shutter")
+        raise TaskError("stereo.mode must be standard or rolling_shutter")
 
-    camera_imu = value.get("camera_imu")
-    if not isinstance(camera_imu, dict):
-        raise TaskError("camera_imu must be a mapping")
-    unknown_camera_imu = sorted(
-        set(camera_imu) - {"mode", "recompute_extrinsics"})
-    if unknown_camera_imu:
+    stereo_imu = value.get("stereo_imu")
+    if not isinstance(stereo_imu, dict):
+        raise TaskError("stereo_imu must be a mapping")
+    unknown_stereo_imu = sorted(
+        set(stereo_imu) - {"mode", "recompute_extrinsics"})
+    if unknown_stereo_imu:
         raise TaskError(
-            "unknown camera_imu fields: {}".format(
-                ", ".join(unknown_camera_imu)))
-    mode = camera_imu.get("mode")
+            "unknown stereo_imu fields: {}".format(
+                ", ".join(unknown_stereo_imu)))
+    mode = stereo_imu.get("mode")
     if mode not in {"standard", "rolling_shutter"}:
         raise TaskError(
-            "camera_imu.mode must be standard or rolling_shutter")
-    recompute_extrinsics = camera_imu.get("recompute_extrinsics", False)
+            "stereo_imu.mode must be standard or rolling_shutter")
+    recompute_extrinsics = stereo_imu.get("recompute_extrinsics", False)
     if type(recompute_extrinsics) is not bool:
-        raise TaskError("camera_imu.recompute_extrinsics must be a boolean")
+        raise TaskError("stereo_imu.recompute_extrinsics must be a boolean")
+
+    mono = value.get("mono", {})
+    if not isinstance(mono, dict) or mono:
+        raise TaskError("mono must be an empty mapping")
 
     baselinks = {}
-    for key, camera_ids in (("camera_baselink", ["cam0", "cam1"]),
-                            ("mono_camera_baselink", ["cam0"])):
-        if key not in value:
+    for public_key, key, camera_ids in (
+            ("stereo_baselink", "camera_baselink", ["cam0", "cam1"]),
+            ("mono_baselink", "mono_camera_baselink", ["cam0"])):
+        if public_key not in value:
             continue
         from .validation import validate_options
-        baselink = deepcopy(value[key])
+        baselink = deepcopy(value[public_key])
         if (not isinstance(baselink, dict)
                 or not set(baselink) <= {"base_link", "cameras"}
                 or "cameras" not in baselink):
             raise TaskError(
-                "{} must contain cameras and may contain base_link".format(key))
+                "{} must contain cameras and may contain base_link".format(
+                    public_key))
         baselink.setdefault("base_link", deepcopy(_DEFAULT_BASE_LINK))
         cameras = baselink["cameras"]
         actual_ids = ([camera.get("id") for camera in cameras]
@@ -324,7 +350,7 @@ def load_workflow_config(path):
         if actual_ids not in valid_ids:
             expected = "[cam0]" if key == "mono_camera_baselink" else "[cam0] or [cam0, cam1]"
             raise TaskError("{}.cameras must define {} in order".format(
-                key, expected))
+                public_key, expected))
         # Share the low-level unit, translation and frame-ID contract.
         validate_options({
             "job": CAMERA_BASELINK_JOB,
@@ -342,14 +368,20 @@ def load_workflow_config(path):
         "machine_dir": str(machine),
         "datasets": selected,
         "targets": targets,
-        "reuse_calib_params": reuse,
-        "camera": {"mode": camera_mode},
-        "camera_imu": {
+        "reuse_calib_params": {
+            role: reuse_config.get(role, False) for role in _TARGET_STAGES
+        },
+        "stereo": {"mode": camera_mode},
+        "stereo_imu": {
             "mode": mode,
             "recompute_extrinsics": recompute_extrinsics,
         },
+        "mono": {},
     }
-    canonical.update(baselinks)
+    if "camera_baselink" in baselinks:
+        canonical["stereo_baselink"] = baselinks["camera_baselink"]
+    if "mono_camera_baselink" in baselinks:
+        canonical["mono_baselink"] = baselinks["mono_camera_baselink"]
     return {
         "config_path": config_path,
         "template": template,

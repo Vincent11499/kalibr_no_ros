@@ -1,6 +1,7 @@
 import copy
 import gzip
 import json
+import math
 from pathlib import Path
 import sys
 import tempfile
@@ -93,6 +94,58 @@ def synthetic_nine_parameter_stereo(alphas=(0.17, -0.11)):
         for corner, pixel in zip(corners, pixels.reshape(-1, 2)):
             corner.update(measurement_px=pixel.tolist(), prediction_px=pixel.tolist())
     return artifacts, calibration
+
+
+def set_line_grid(camera, result, model):
+    matrix = np.array([[220., 0., 320.], [0., 225., 240.], [0., 0., 1.]])
+    ideal = np.array([
+        [280. + 40. * column, 200. + 40. * row]
+        for row in range(3) for column in range(3)
+    ])
+    ideal[4, 1] += 3.
+    rays = (np.linalg.inv(matrix) @ np.c_[ideal, np.ones(len(ideal))].T).T
+    if model == "pinhole-equi":
+        distortion = np.array([.02, -.005, .001, -.0001])
+        measured, _ = cv2.fisheye.projectPoints(
+            rays.reshape(-1, 1, 3), np.zeros(3), np.zeros(3),
+            matrix, distortion)
+        distortion_model = "equidistant"
+    else:
+        distortion = np.array([.3, -.12, .0004, -.0002, .03, .1, -.04, .01])
+        measured, _ = cv2.projectPoints(
+            rays, np.zeros(3), np.zeros(3), matrix, distortion)
+        distortion_model = "radtan8"
+    camera.update(
+        model=model, intrinsics=[220., 225., 320., 240.],
+        distortion_coeffs=distortion.tolist())
+    result.update(
+        camera_model="pinhole", distortion_model=distortion_model,
+        intrinsics=[220., 225., 320., 240.],
+        distortion_coeffs=distortion.tolist())
+    frame = camera["frames"][0]
+    frame["corners"] = [{
+        "corner_id": index,
+        "target_xyz_m": [float(column), float(row), 0.],
+        "measurement_px": point.tolist(),
+        "prediction_px": point.tolist(),
+        "residual_px": [0., 0.],
+        "used": True,
+    } for index, (point, (row, column)) in enumerate(zip(
+        measured.reshape(-1, 2),
+        ((row, column) for row in range(3) for column in range(3))))]
+    frame["detected_corner_count"] = 9
+    return ideal
+
+
+def tls_grid_distances(points):
+    distances = []
+    grid = np.asarray(points).reshape(3, 3, 2)
+    for lines in (grid, np.swapaxes(grid, 0, 1)):
+        for line in lines:
+            centered = line - np.mean(line, axis=0)
+            normal = np.linalg.svd(centered, full_matrices=False)[2][-1]
+            distances.extend(np.abs(centered @ normal))
+    return np.asarray(distances)
 
 
 class ReportingTest(unittest.TestCase):
@@ -224,10 +277,70 @@ class ReportingTest(unittest.TestCase):
         chain = SimpleNamespace(camList=[native],
                                 getResultTrafoImuToCam=lambda index: SimpleNamespace(T=lambda: np.eye(4)),
                                 getResultTimeShift=lambda index: 0.)
-        imu_context.publish_imu_camera(SimpleNamespace(CameraChain=chain, ImuList=[]))
+        gravity = [0., 0., -9.80655]
+        imu_context.publish_imu_camera(SimpleNamespace(
+            CameraChain=chain, ImuList=[],
+            gravityDv=SimpleNamespace(toEuclidean=lambda: gravity)))
         for context in (camera_context, imu_context):
             self.assertEqual(context.artifacts["cameras"][0]["model"], "pinhole-opencv-fisheye")
             self.assertEqual(context.artifacts["cameras"][0]["intrinsics"], intrinsics)
+        self.assertEqual(imu_context.artifacts["gravity_vector_m_s2"], gravity)
+
+    def test_line_straightness_uses_tls_on_undistorted_rows_and_columns(self):
+        for model in ("pinhole-equi", "pinhole-radtan8"):
+            with self.subTest(model=model):
+                artifacts, calibration = synthetic_stereo()
+                artifacts["cameras"] = artifacts["cameras"][:1]
+                calibration["cameras"] = calibration["cameras"][:1]
+                ideal = set_line_grid(
+                    artifacts["cameras"][0], calibration["cameras"][0], model)
+                summary = compute_metrics(
+                    artifacts, calibration)["cameras"]["cam0"]["line_straightness"]
+                expected = tls_grid_distances(ideal)
+                self.assertEqual(summary["status"], "available")
+                self.assertEqual(summary["row_line_count"], 3)
+                self.assertEqual(summary["column_line_count"], 3)
+                self.assertEqual(summary["count"], 18)
+                self.assertAlmostEqual(
+                    summary["rms_px"], float(np.sqrt(np.mean(expected ** 2))),
+                    places=7)
+                self.assertAlmostEqual(
+                    summary["p95"], float(np.percentile(expected, 95)),
+                    places=7)
+
+        artifacts, calibration = synthetic_stereo()
+        summary = compute_metrics(
+            artifacts, calibration)["cameras"]["cam0"]["line_straightness"]
+        self.assertEqual(summary["status"], "unavailable")
+        self.assertEqual(summary["count"], 0)
+
+    def test_gravity_and_baselink_pair_rotation_metrics_use_final_evidence(self):
+        artifacts, calibration = synthetic_stereo()
+        artifacts["calibration_type"] = calibration["calibration_type"] = "camera_imu"
+        artifacts["gravity_vector_m_s2"] = [1., 2., -9.]
+        metrics = compute_metrics(artifacts, calibration)
+        self.assertEqual(metrics["gravity"]["vector_m_s2"], [1., 2., -9.])
+        self.assertAlmostEqual(
+            metrics["gravity"]["magnitude_m_s2"], math.sqrt(86.))
+        self.assertNotIn("line_straightness", metrics["cameras"]["cam0"])
+
+        artifacts, calibration = synthetic_stereo()
+        artifacts["calibration_type"] = calibration["calibration_type"] = (
+            "cameras_baselink")
+        artifacts["cameras"] = artifacts["cameras"][:1]
+        calibration["cameras"] = calibration["cameras"][:1]
+        angles = [1., 2., 10.]
+        artifacts["cameras"][0]["relative_rotation_pairs"] = [
+            {"theta_deg": value} for value in angles]
+        summary = compute_metrics(
+            artifacts, calibration)["cameras"]["cam0"]["pair_rotation_change"]
+        self.assertEqual(summary["unit"], "deg")
+        self.assertEqual(summary["count"], 3)
+        self.assertEqual(summary["min"], 1.)
+        self.assertEqual(summary["median"], 2.)
+        self.assertEqual(summary["mean"], sum(angles) / len(angles))
+        self.assertEqual(summary["p95"], float(np.percentile(angles, 95)))
+        self.assertEqual(summary["max"], 10.)
 
     def test_time_varying_bias_statistics_and_full_series_are_preserved(self):
         artifacts, calibration = synthetic_stereo()

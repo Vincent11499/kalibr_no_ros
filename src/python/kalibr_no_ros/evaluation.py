@@ -285,6 +285,104 @@ def camera_geometry(camera):
             "D": distortion, "size": tuple(size), "family": family, "model": model}
 
 
+def _undistorted_points(camera, points):
+    """Return distortion-free points in the camera's zero-skew pixel plane."""
+    import cv2
+
+    geometry = camera_geometry(camera)
+    points = np.asarray(points, dtype=np.float64).reshape(-1, 1, 2)
+    if geometry["alpha"]:
+        points = points.copy()
+        points[..., 0] -= (
+            geometry["K"][0, 1] / geometry["K"][1, 1]
+        ) * (points[..., 1] - geometry["K"][1, 2])
+    try:
+        if geometry["family"] == "fisheye":
+            result = cv2.fisheye.undistortPoints(
+                points, geometry["K_no_skew"], geometry["D"],
+                P=geometry["K_no_skew"])
+        else:
+            result = cv2.undistortPointsIter(
+                points, geometry["K_no_skew"], geometry["D"],
+                None, geometry["K_no_skew"],
+                (cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS,
+                 100, 1e-12),
+            )
+    except cv2.error as error:
+        raise ReportingError("camera point undistortion failed: {}".format(error)) from error
+    return result.reshape(-1, 2)
+
+
+def _line_straightness(camera):
+    """TLS straightness of final row/column corners after undistortion."""
+    distances = []
+    row_lines = column_lines = missing_points = 0
+    for frame in camera.get("frames", []):
+        if not frame.get("used"):
+            continue
+        records = []
+        for corner in frame.get("corners", []):
+            if not corner.get("used", True):
+                continue
+            measurement = vector(corner.get("measurement_px"), 2)
+            target = vector(corner.get("target_xyz_m"), 3)
+            if measurement is None or target is None:
+                missing_points += 1
+                continue
+            records.append((measurement, target))
+        if not records:
+            continue
+        try:
+            undistorted = _undistorted_points(
+                camera, [measurement for measurement, _ in records])
+        except (ReportingError, ValueError, TypeError, RuntimeError) as error:
+            result = distribution([])
+            result.update({
+                "row_line_count": 0, "column_line_count": 0,
+                "missing_point_count": missing_points + len(records),
+                "minimum_points_per_line": 3,
+                "reason": str(error),
+            })
+            return result
+        finite = np.all(np.isfinite(undistorted), axis=1)
+        missing_points += int(np.sum(~finite))
+        targets = np.asarray([target for _, target in records], dtype=float)
+        for coordinate, label in ((1, "row"), (0, "column")):
+            groups = {}
+            for target, point, valid in zip(targets, undistorted, finite):
+                if valid:
+                    groups.setdefault(round(float(target[coordinate]), 12), []).append(point)
+            for points in groups.values():
+                if len(points) < 3:
+                    continue
+                points = np.asarray(points, dtype=float)
+                centered = points - np.mean(points, axis=0)
+                if float(np.linalg.norm(centered)) <= 1e-12:
+                    missing_points += len(points)
+                    continue
+                normal = np.linalg.svd(centered, full_matrices=False)[2][-1]
+                distances.extend(np.abs(centered @ normal).tolist())
+                if label == "row":
+                    row_lines += 1
+                else:
+                    column_lines += 1
+    result = distribution(distances)
+    result.update({
+        "row_line_count": row_lines,
+        "column_line_count": column_lines,
+        "missing_point_count": missing_points,
+        "minimum_points_per_line": 3,
+        "definition": (
+            "TLS orthogonal distances for final retained corners on target "
+            "rows and columns after distortion removal"),
+    })
+    if not distances:
+        result["reason"] = "no retained target row or column contains at least three valid points"
+    elif missing_points:
+        result["status"] = "incomplete"
+    return result
+
+
 def stereo_geometry(left, right, rectification):
     import cv2
 
@@ -480,7 +578,7 @@ def _paired_corner_vectors(left, right, field):
     return common, values
 
 
-def _camera_metrics(camera):
+def _camera_metrics(camera, include_line_straightness=False):
     frames = camera.get("frames", [])
     used_frames = [frame for frame in frames if frame.get("used")]
     residual_norms = []
@@ -532,6 +630,21 @@ def _camera_metrics(camera):
     )
     result["intrinsics"] = camera.get("intrinsics")
     result["distortion_coeffs"] = camera.get("distortion_coeffs")
+    if include_line_straightness:
+        result["line_straightness"] = _line_straightness(camera)
+    rotation_pairs = camera.get("relative_rotation_pairs")
+    if rotation_pairs is not None:
+        values = []
+        for pair in rotation_pairs:
+            value = pair.get("theta_deg") if isinstance(pair, dict) else None
+            if (not isinstance(value, bool) and isinstance(value, (int, float))
+                    and math.isfinite(value)):
+                values.append(float(value))
+        result["pair_rotation_change"] = distribution(values, "deg")
+        missing = len(rotation_pairs) - len(values)
+        result["pair_rotation_change"]["missing_pair_count"] = missing
+        if values and missing:
+            result["pair_rotation_change"]["status"] = "incomplete"
     if camera.get("shutter"):
         result["shutter"] = dict(camera["shutter"])
     for field in (
@@ -832,13 +945,25 @@ def compute_metrics(artifacts, calibration, options=None):
         metrics["rolling_shutter_solver_backend"] = str(
             artifacts["rolling_shutter_solver_backend"])
     for camera in cameras:
-        metrics["cameras"][camera["id"]] = _camera_metrics(camera)
+        metrics["cameras"][camera["id"]] = _camera_metrics(
+            camera, include_line_straightness=calibration_type == "cameras")
     if calibration_type != "cameras_baselink":
         for left, right in zip(cameras, cameras[1:]):
             identifier = left["id"] + "_" + right["id"]
             metrics["stereo_pairs"][identifier] = _stereo_pair_metrics(
                 artifacts, left, right, calibration_type, options)
     metrics["imus"] = _imu_metrics(artifacts)
+    if calibration_type == "camera_imu":
+        gravity = vector(artifacts.get("gravity_vector_m_s2"), 3)
+        metrics["gravity"] = {
+            "status": "available" if gravity is not None else "unavailable",
+            "unit": "m/s^2",
+            "vector_m_s2": gravity.tolist() if gravity is not None else None,
+            "magnitude_m_s2": (
+                float(np.linalg.norm(gravity)) if gravity is not None else None),
+        }
+        if gravity is None:
+            metrics["gravity"]["reason"] = "final optimized gravity vector was not captured"
     metrics["solver_state"] = artifacts.get("state")
     metrics["optimizer"] = artifacts.get("optimizer")
     metrics["objective"] = artifacts.get("objective")

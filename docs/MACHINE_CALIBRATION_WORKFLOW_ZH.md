@@ -34,10 +34,10 @@ kalibr-cedarobot machine
    的双目结果，只运行 Camera–IMU 阶段。
 3. 两套数据一开始就齐全时，程序先完成双目，再把本次双目结果的精确路径交给
    Camera–IMU 阶段。
-4. 添加 `camera_baselink` 配置和 `stereo_base_link_*` 数据后，程序复用双目 K/D，
+4. 添加 `stereo_baselink` 配置和 `stereo_base_link_*` 数据后，程序复用双目 K/D，
    运行 Camera–BaseLink。该阶段不需要 IMU 数据，不因缺少 `stereo_imu_*` 而等待。
 5. 同一机器还可放入独立单目模组的 `usb_*` 数据。程序执行单目标定；加入
-   `usb_base_link_*` 数据及 `mono_camera_baselink` 配置后，复用该单目结果求 BaseLink
+   `usb_base_link_*` 数据及 `mono_baselink` 配置后，复用该单目结果求 BaseLink
    旋转。不需要等双目或 IMU 数据齐全。
 6. 各阶段已完成且数据、模板和软件来源一致时，命令复用结果，不重复求解。
 
@@ -45,11 +45,11 @@ kalibr-cedarobot machine
 
 | 模组 | 工作流阶段名 | 任务及上游依赖 |
 |---|---|---|
-| 双目 `cam0/cam1` | `camera` | 普通或 RS 双目 K/D 和双目外参 |
-| 双目 `cam0/cam1` | `camera_imu` | 仅复用 `camera` 结果，普通或 RS Camera–IMU |
-| 双目 `cam0/cam1` | `camera_baselink` | 仅复用 `camera` 结果，逐目旋转和配置平移 |
-| 独立单目 `cam0` | `mono_camera` | 单目 K/D，使用原生自动初始化，不套用双目初值 |
-| 独立单目 `cam0` | `mono_camera_baselink` | 仅复用 `mono_camera` 结果，旋转和配置平移 |
+| 双目 `cam0/cam1` | `stereo` | 普通或 RS 双目 K/D 和双目外参 |
+| 双目 `cam0/cam1` | `stereo_imu` | 仅复用 `stereo` 结果，普通或 RS Camera–IMU |
+| 双目 `cam0/cam1` | `stereo_baselink` | 仅复用 `stereo` 结果，逐目旋转和配置平移 |
+| 独立单目 `cam0` | `mono` | 单目 K/D，使用原生自动初始化，不套用双目初值 |
+| 独立单目 `cam0` | `mono_baselink` | 仅复用 `mono` 结果，旋转和配置平移 |
 
 单目中的 `cam0` 是该模组的局部 ID，不是双目的左相机。目录角色、独立 task、结果
 文件名、上游精确路径和 SHA256 一起区分它们；不能因两个文件都有 `cam0` 就互换。
@@ -98,7 +98,7 @@ EVT312-02/
 `cam0`、`cam1` 且没有 IMU；BaseLink 数据相同；双目＋IMU 数据必须提供 `cam0`、`cam1`、`imu0`。
 双目清单中的相机顺序必须是 `[cam0, cam1]`。`usb_*` 和 `usb_base_link_*` 清单
 必须且只能包含 `[cam0]`，不能包含 IMU。当前机器 profile 不自动处理此前 USB 棋盘格、
-bag 或三目任务；纯视觉 RS 双目通过 `camera.mode: rolling_shutter` 显式启用，其他任务继续使用底层 `kalibr-noros`。
+bag 或三目任务；纯视觉 RS 双目通过 `stereo.mode: rolling_shutter` 显式启用，其他任务继续使用底层 `kalibr-noros`。
 `.inprogress`、`.failed`、`*_bk`、旧名、缺少时间后缀的目录、隐藏目录和其他任意
 非规范名称都静默跳过，不影响正常标定；严格命名的符号链接会被明确拒绝并停止运行，
 防止输入跳出机器目录。
@@ -191,9 +191,9 @@ schema_version: "1.0.0"
 kind: machine_calibration_workflow
 template: EVT320
 machine_dir: "1029"
-camera:
+stereo:
   mode: standard
-camera_imu:
+stereo_imu:
   mode: standard
   recompute_extrinsics: false
 ```
@@ -230,8 +230,9 @@ datasets:
 USB 单目目录统一使用上述 `usb_` / `usb_base_link_` 前缀，`HHMM` 为四位小时、分钟。
 不再识别 `stereo_baselink_*`、`usb_baselink_*`、`mono_*`、`mono_base_link_*` 或
 `mono_baselink_*` 目录名称；这类旧名及形似任务但后缀不合法的目录会被静默跳过。
-这次只改目录约定；`datasets.mono`、`datasets.mono_baselink`、`mono_camera_baselink`
-以及单目阶段名保持不变；各任务默认使用模板中的 AprilGrid，也可由 `targets` 分别覆盖。
+`datasets`、`targets`、顶层任务配置和 `reuse_calib_params` 统一使用
+`stereo/stereo_imu/stereo_baselink/mono/mono_baselink`；各任务默认使用模板中的
+AprilGrid，也可由 `targets` 分别覆盖。
 
 字段含义：
 
@@ -247,11 +248,12 @@ USB 单目目录统一使用上述 `usb_` / `usb_base_link_` 前缀，`HHMM` 为
 | `datasets.stereo_baselink` | 可选；强制指定严格命名的双目 BaseLink 数据直接子目录 |
 | `datasets.mono` | 可选；指定 `usb_YYMMDD_HHMM` 单目内参数据的直接子目录名 |
 | `datasets.mono_baselink` | 可选；指定 `usb_base_link_YYMMDD_HHMM` 单目 BaseLink 数据的直接子目录名 |
-| `camera.mode` | 可选；`standard` 或 `rolling_shutter`，默认 `standard`；控制双目相机阶段 |
-| `camera_imu.mode` | 必填；`standard` 或 `rolling_shutter`，程序不自动切换 |
-| `camera_imu.recompute_extrinsics` | 可选布尔值，默认 `false`；映射到底层 `recompute_camera_chain_extrinsics` |
-| `camera_baselink` | 可选；省略且无对应数据时为 `disabled`；有数据但缺配置时只阻塞该分支并返回非零状态，其他独立分支继续 |
-| `mono_camera_baselink` | 可选；单目 BaseLink 配置，只能含 `cam0`；有数据但缺配置时只阻塞该分支并返回非零状态，其他独立分支继续 |
+| `stereo.mode` | 可选；`standard` 或 `rolling_shutter`，默认 `standard`；控制双目相机阶段 |
+| `stereo_imu.mode` | 必填；`standard` 或 `rolling_shutter`，程序不自动切换 |
+| `stereo_imu.recompute_extrinsics` | 可选布尔值，默认 `false`；映射到底层 `recompute_camera_chain_extrinsics` |
+| `stereo_baselink` | 可选；省略且无对应数据时为 `disabled`；有数据但缺配置时只阻塞该分支并返回非零状态，其他独立分支继续 |
+| `mono` | 可选空映射；单目当前没有额外工作流参数，非空字段会被拒绝 |
+| `mono_baselink` | 可选；单目 BaseLink 配置，只能含 `cam0`；有数据但缺配置时只阻塞该分支并返回非零状态，其他独立分支继续 |
 
 任务模板、IMU 参数、初始化、求解线程和输出开关属于已安装的机型 profile，
 不放到操作员接口。`targets` 只暴露已安装标定板文件的安全 stem，不接受任意路径。
@@ -286,7 +288,7 @@ USB 单目目录统一使用上述 `usb_` / `usb_base_link_` 前缀，`HHMM` 为
 在原 `user.yaml` 中增加以下块。平移值仅为格式示例，**必须换成该机器的实测值**：
 
 ```yaml
-camera_baselink:
+stereo_baselink:
   cameras:
     - id: cam0
       translation_base_camera_m: [0.1, 0.2, 0.3]
@@ -294,11 +296,11 @@ camera_baselink:
 
 | 字段 | 默认值、单位、范围与作用 |
 |---|---|
-| `camera_baselink.base_link` | 可省略；内部默认 `frame_id: base_link`、`position_scale_m: 0.01`；使用其他坐标系或文件名单位时显式覆盖 |
-| `camera_baselink.base_link.frame_id` | 默认 `base_link`；匹配 `[A-Za-z0-9][A-Za-z0-9_/-]*` 的非空坐标系 ID；标记结果的基准坐标系 |
-| `camera_baselink.base_link.position_scale_m` | 默认 `0.01` m/文件名单位；有限正数；毫米填 `0.001`，米填 `1.0` |
-| `camera_baselink.cameras` | 必填；可为 `[cam0]` 或按顺序 `[cam0, cam1]` |
-| `camera_baselink.cameras[].translation_base_camera_m` | 必填、无默认值；三个有限数，单位米；相机原点在 BaseLink 中的位置，即 `T_base_camera` 的平移列，不参与求解 |
+| `stereo_baselink.base_link` | 可省略；内部默认 `frame_id: base_link`、`position_scale_m: 0.01`；使用其他坐标系或文件名单位时显式覆盖 |
+| `stereo_baselink.base_link.frame_id` | 默认 `base_link`；匹配 `[A-Za-z0-9][A-Za-z0-9_/-]*` 的非空坐标系 ID；标记结果的基准坐标系 |
+| `stereo_baselink.base_link.position_scale_m` | 默认 `0.01` m/文件名单位；有限正数；毫米填 `0.001`，米填 `1.0` |
+| `stereo_baselink.cameras` | 必填；可为 `[cam0]` 或按顺序 `[cam0, cam1]` |
+| `stereo_baselink.cameras[].translation_base_camera_m` | 必填、无默认值；三个有限数，单位米；相机原点在 BaseLink 中的位置，即 `T_base_camera` 的平移列，不参与求解 |
 
 上述配置用于双目模组，固定从本工单双目结果读取 K/D，只求配置中各目的 `R_base_camera`。
 采用全部有效无序帧对的直接差分，不提供 `alpha` 参数；写出前固定左乘绕 X 轴 180°
@@ -313,7 +315,7 @@ profile；单目 USB 仍使用独立的 `cameras`、`cameras-baselink` task。
 模型选择块。需要单目 BaseLink 时，再添加下列配置（平移为示意，必须换成实测值）：
 
 ```yaml
-mono_camera_baselink:
+mono_baselink:
   base_link:
     frame_id: base_link
     position_scale_m: 0.01
@@ -323,10 +325,10 @@ mono_camera_baselink:
 ```
 
 字段默认值、单位和范围与 §3.1 相同；`base_link` 也可整体省略，但 `cameras` 必须且只能为 `[cam0]`。
-位置比例、平移和结果单独记录，不继承双目 `camera_baselink` 配置。
+位置比例、平移和结果单独记录，不继承双目 `stereo_baselink` 配置。
 单目 BaseLink 结果写出前固定左乘绕 Y 轴 180° 的旋转矩阵，配置平移不变。
 两个模组若都相对同一机体坐标系，应使用相同 `frame_id`，且平移均在该坐标系内测量。
-`mono_camera_baselink` 只引用本次机器工作流中的单目标定结果，不搜索或回退到双目
+`mono_baselink` 只引用本次机器工作流中的单目标定结果，不搜索或回退到双目
 `cam0`。若发现单目 BaseLink 数据却缺少单目数据，该分支显示黄色等待；双目、双目
 Camera–IMU 和双目 BaseLink 等独立分支继续执行，命令不因此返回失败。
 
@@ -338,11 +340,11 @@ Camera–IMU 和双目 BaseLink 等独立分支继续执行，命令不因此返
 
 ```yaml
 reuse_calib_params:
-  camera: true
-  camera_imu: false
-  camera_baselink: false
-  mono_camera: true
-  mono_camera_baselink: false
+  stereo: true
+  stereo_imu: false
+  stereo_baselink: false
+  mono: true
+  mono_baselink: false
 ```
 
 每项默认 `false`，整个映射也可省略。只接受布尔值，不接受字符串或一个全局布尔值。
@@ -360,14 +362,14 @@ result/calib_params/mono_camera/usb_mono_calib.yaml
 
 | 开关 | 复用内容 |
 |---|---|
-| `camera` | 双目模型、K/D、分辨率、双目外参、RMS、校正参数及已发布行时间 |
-| `camera_imu` | Camera–IMU最终双目参数、IMU外参、时移、bias及行时间 |
-| `camera_baselink` | 双目cam0的 `T_base_cam/pitch` |
-| `mono_camera` | USB单目模型、K/D、分辨率及RMS |
-| `mono_camera_baselink` | USB的 `T_base_cam/pitch` |
+| `stereo` | 双目模型、K/D、分辨率、双目外参、RMS、校正参数及已发布行时间 |
+| `stereo_imu` | Camera–IMU最终双目参数、IMU外参、时移、bias及行时间 |
+| `stereo_baselink` | 双目cam0的 `T_base_cam/pitch` |
+| `mono` | USB单目模型、K/D、分辨率及RMS |
+| `mono_baselink` | USB的 `T_base_cam/pitch` |
 
-例如只有双目＋IMU数据时，`camera: true` 提供前置相机参数，`camera_imu: false`
-执行本机联合标定；只有USB BaseLink数据时，使用 `mono_camera: true`。前置任务必须
+例如只有双目＋IMU数据时，`stereo: true` 提供前置相机参数，`stereo_imu: false`
+执行本机联合标定；只有USB BaseLink数据时，使用 `mono: true`。前置任务必须
 由本机成功结果或其明确开启的复用参数提供，不隐式跨任务或跨模组取值。
 
 程序校验版本、机器型号和编号、模型维数及变换数值。开启任务所需文件或字段缺失时
@@ -391,21 +393,21 @@ Camera–IMU最终双目几何参数优先，允许该阶段重新优化相机�
 双目相机阶段可由开发者明确选择普通或 RS：
 
 ```yaml
-camera:
+stereo:
   mode: rolling_shutter
 ```
 
-省略 `camera` 时保持原有普通双目标定。Camera–IMU 模式必须明确选择：
+省略 `stereo` 时保持原有普通双目标定。Camera–IMU 模式必须明确选择：
 
 ```yaml
-camera_imu:
+stereo_imu:
   mode: standard
 ```
 
 或：
 
 ```yaml
-camera_imu:
+stereo_imu:
   mode: rolling_shutter
   recompute_extrinsics: true
 ```

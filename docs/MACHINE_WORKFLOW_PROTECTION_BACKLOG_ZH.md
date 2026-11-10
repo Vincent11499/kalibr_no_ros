@@ -17,9 +17,9 @@ _STRICT_PROVENANCE = False
 | 暂缓项 | 测试阶段行为 | 产线恢复目标 |
 |---|---|---|
 | 软件发布版本、commit、source/build fingerprint、构建类型和关键实现文件哈希必须一致 | 切换新旧版本后重跑所有当前存在的数据阶段 | 任一变化拒绝复用，要求新批次 |
-| `camera.mode` 必须一致 | 变化后重跑双目及其 Camera–IMU、BaseLink 下游 | 模式变化要求新批次 |
-| `camera_imu.mode` 必须一致 | 变化后重跑 Camera–IMU | 模式变化要求新批次 |
-| `camera_imu.recompute_extrinsics` 必须一致 | 变化后重跑 Camera–IMU | 活动参数变化要求新批次 |
+| `stereo.mode` 必须一致 | 变化后重跑双目及其 Camera–IMU、BaseLink 下游 | 模式变化要求新批次 |
+| `stereo_imu.mode` 必须一致 | 变化后重跑 Camera–IMU | 模式变化要求新批次 |
+| `stereo_imu.recompute_extrinsics` 必须一致 | 变化后重跑 Camera–IMU | 活动参数变化要求新批次 |
 | Camera/Mono BaseLink 配置必须一致 | 变化后重跑对应 BaseLink 阶段 | 配置变化要求新批次 |
 | workflow profile 版本必须一致 | 版本变化后预检并重跑当前阶段 | 版本变化要求新批次或显式迁移 |
 | 同名/同路径数据集不能原地变化 | 重新生成指纹并重跑该阶段及其下游 | 原地变化拒绝，要求新时间目录 |

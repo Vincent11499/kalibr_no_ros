@@ -129,6 +129,13 @@ IMU 残差分别以 rad/s 和 m/s² 汇总，不把白化残差当物理单位�
 `input_frames` 是源流总帧数，`selected_frames` 是经过 task 时间窗／频率选择后的帧数，
 `used_frames` 是最终用于求解的帧数；源总数未知时明确留空。
 
+普通相机任务另在 `cameras.<camera_id>.line_straightness` 记录去畸变直线度。每个最终
+使用帧按标定板坐标的相同 x／y 组成纵线／横线，每条至少三个角点；测量先反投影到
+zero-skew 的去畸变像素平面，再以总最小二乘拟合单位法向量
+$a_lx+b_ly+c_l=0$。全部有效行列的正交距离共同组成统计总体，`rms_px` 为 Line，
+`p95` 使用 `np.percentile(..., 95)`；行列交点分别计入所在两条直线。证据不足时标记
+`unavailable` 或 `incomplete`，不补零。
+
 IMU bias 位于 `metrics.json` 的 `imus.<imu_id>.<gyro|accel>.bias_spline`。这些值来自
 优化后的真实随时间变化的 bias spline，在保留的 IMU 残差时刻求值；gyro bias 单位为
 rad/s，accel bias 单位为 m/s²。`axes.x/y/z` 给出采样值的均值、标准差、最小／最大值
@@ -140,6 +147,8 @@ rad/s，accel bias 单位为 m/s²。`axes.x/y/z` 给出采样值的均值、标
 三轴随时间变化的曲线。`archive_observations: false` 时仍输出这些 bias 统计和时间序列，
 不会因此保存逐角点或逐 IMU 残差的大表。无法读取某个 spline 值时保留 `value: null`
 和原因；统计注明缺失数量，部分数据为 `incomplete`，不会补成零值或常数曲线。
+Camera–IMU metrics 还保存最终优化重力向量及其模长；报告按 IMU 分别显示 gyro／accel
+bias spline 的三轴均值和标准差，并单独显示重力向量与模长。
 
 双目极线指标只使用最终图对的共同全局角点 ID，基于模型一致的 OpenCV 校正计算。
 `pinhole-equi` 使用 fisheye 校正，不能对带畸变原像素直接套普通 pinhole F 矩阵。
@@ -215,7 +224,7 @@ OpenCV 导出放在 `opencv/`。观测归档包含 `observations/manifest.json` 
 统一坐标约定为 `p_target = T_target_source * p_source`。`T_cam_imu` 为
 ${}^{C}_{I}\mathbf T$，`T_imu_cam` 为 ${}^{I}_{C}\mathbf T=({}^{C}_{I}\mathbf T)^{-1}$，
 `T_cn_cnm1` 为 ${}^{C_n}_{C_{n-1}}\mathbf T$；平移单位米。普通与滚动快门
-Camera–IMU 结果均同时输出两个方向，报告也分别列出两张矩阵表。
+Camera–IMU 结果 YAML 仍同时输出两个方向；报告只列 `T_imu_cam`，避免重复展示互逆矩阵。
 结果 YAML 保持块映射、行内一维数组、矩阵逐行数组与 17 位有效数字，不用排版截断精度。
 
 ```bash

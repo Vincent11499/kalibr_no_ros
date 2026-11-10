@@ -65,13 +65,13 @@ kalibr-cedarobot machine
 
 当前批次目录只有 `stereo_*` 时先完成双目标定并正常等待；以后加入 `stereo_imu_*` 后重复
 同一命令，程序复用双目结果并继续 Camera–IMU。新增可选 Camera–BaseLink 阶段：配置
-`camera_baselink` 并提供 `stereo_base_link_*` 后复用双目 K/D 求旋转，不需要 IMU 数据。
+`stereo_baselink` 并提供 `stereo_base_link_*` 后复用双目 K/D 求旋转，不需要 IMU 数据。
 同一机器的独立单目模组使用 `usb_*` 标定内参，使用 `usb_base_link_*` 和
-`mono_camera_baselink` 配置复用单目结果求旋转；不会混用双目 `cam0`。两模组共用当前
+`mono_baselink` 配置复用单目结果求旋转；不会混用双目 `cam0`。两模组共用当前
 AprilGrid，均使用 `pinhole-equi`。
 `user.yaml` 必须用 `template: EVT320` 选择 `config/mechine/EVT320/`，可用
-`camera.mode: rolling_shutter` 选择 RS 双目，用
-`camera_imu.recompute_extrinsics: true` 控制 Camera–IMU 联合阶段重新优化相机链外参；
+`stereo.mode: rolling_shutter` 选择 RS 双目，用
+`stereo_imu.recompute_extrinsics: true` 控制 Camera–IMU 联合阶段重新优化相机链外参；
 `targets` 可按 `stereo`、`stereo_imu`、`stereo_baselink`、`mono` 和
 `mono_baselink` 分别选择安装在当前模板目录下的标定板文件名 stem；
 未指定的任务使用自身 task 模板中的 `target.path`。

@@ -11,7 +11,10 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "python"))
 
-from kalibr_no_ros.report_plots import camera_frames, camera_observations, observation_rays, render_reports, report_figures, stereo_comparison_page
+from kalibr_no_ros.report_plots import (
+    _summary_sections, camera_frames, camera_observations, observation_rays,
+    render_reports, report_figures, stereo_comparison_page,
+)
 
 
 class ReportPlotsTest(unittest.TestCase):
@@ -92,6 +95,82 @@ class ReportPlotsTest(unittest.TestCase):
         np.testing.assert_allclose(offsets[:, 1], [10., 12.], atol=1e-9)
         self.assertIn("interval", caption)
         figure.clear()
+
+    def test_summary_tables_match_each_calibration_kind(self):
+        observability = {
+            "rank": 10, "columns": 10, "operational_rank": 9,
+            "status": "full_rank", "quality": "weakly_observable",
+        }
+        camera = {
+            "model": "pinhole-equi", "resolution": [640, 480],
+            "used_frames": 8, "selected_frames": 9,
+            "intrinsics": [220., 225., 320., 240.],
+            "distortion_coeffs": [0., 0., 0., 0.],
+            "reprojection": {"count": 100, "rms_px": .2, "p95": .4},
+            "line_straightness": {"rms_px": .03, "p95": .06},
+        }
+        stereo = {
+            "calibration_type": "cameras", "cameras": {"cam0": camera},
+            "stereo_pairs": {"cam0_cam1": {
+                "baseline_m": .3, "status": "available",
+                "alignment": {"count": 80, "mean_abs_px": .1, "rms_px": .15},
+                "rs_compensated_pair_residual": {"rms_px": .12},
+            }},
+            "observability": observability, "imus": {},
+        }
+        sections = list(_summary_sections(stereo, {}, {"cameras": []}))
+        self.assertEqual([section[0] for section in sections[:3]], [
+            "Calibration overview", "Stereo optical alignment",
+            "Local observability",
+        ])
+        self.assertEqual(sections[0][1], [
+            "Camera", "Used", "Selected", "Corners", "RMS [px]", "P95 [px]",
+            "Line [px]", "Line P95 [px]",
+        ])
+        self.assertEqual(sections[0][2][0][-2:], [.03, .06])
+        self.assertNotIn(
+            "Rolling-shutter stereo metric definitions",
+            [section[0] for section in sections])
+        self.assertEqual(sections[2][2], [
+            ["Native numerical rank", "10 / 10"],
+            ["Operational rank", "9 / 10"],
+        ])
+
+        bias = {
+            "unit": "rad/s", "axes": {
+                "x": {"mean": 1., "std": .1},
+                "y": {"mean": 2., "std": .2},
+                "z": {"mean": 3., "std": .3},
+            },
+        }
+        imu_metrics = {
+            "calibration_type": "camera_imu", "cameras": {"cam0": camera},
+            "stereo_pairs": {}, "observability": observability,
+            "imus": {"imu0": {"gyro": {
+                "count": 4, "rms": .01, "unit": "rad/s",
+                "bias_spline": bias,
+            }}},
+            "gravity": {
+                "status": "available", "vector_m_s2": [0., 0., -9.80655],
+                "magnitude_m_s2": 9.80655, "unit": "m/s^2",
+            },
+        }
+        calibration = {"cameras": [{
+            "id": "cam0", "T_cam_imu": np.eye(4).tolist(),
+            "T_imu_cam": np.eye(4).tolist(),
+        }]}
+        imu_sections = list(_summary_sections(imu_metrics, {}, calibration))
+        self.assertEqual(imu_sections[0][1], [
+            "Camera", "Used", "Selected", "Corners", "RMS [px]", "P95 [px]",
+        ])
+        titles = [section[0] for section in imu_sections]
+        self.assertNotIn("IMU → cam0 · T_cam_imu (translation in m)", titles)
+        self.assertIn("cam0 → IMU · T_imu_cam (translation in m)", titles)
+        self.assertIn("imu0 · IMU bias summary", titles)
+        self.assertIn("Gravity vector", titles)
+        gravity = next(section for section in imu_sections
+                       if section[0] == "Gravity vector")
+        self.assertEqual(gravity[2], [[0., 0., -9.80655, 9.80655, "m/s^2"]])
 
     def test_summary_only_report_does_not_invent_missing_plots(self):
         metrics = {"calibration_type": "cameras", "cameras": {

@@ -55,6 +55,12 @@ class CameraBaselinkTest(unittest.TestCase):
             "resolution": [64, 48], "frames": [],
             "source_frame_count": 0, "selected_frame_count": 0,
             "movement_residual_mm": 0.2, "effective_pairs": 2,
+            "platform_second_first_ratio": 0.5,
+            "camera_second_first_ratio": 0.4,
+            "relative_rotation_pairs": [
+                {"theta_deg": 1.0}, {"theta_deg": 2.0},
+                {"theta_deg": 3.0},
+            ],
             "pitch": 90.0,
             "rotation_left_correction": [
                 [1.0, 0.0, 0.0],
@@ -93,13 +99,14 @@ class CameraBaselinkTest(unittest.TestCase):
                 metrics, assessment, {"cameras": [result_camera]})
         }
         headers, rows = sections["base_link direct-difference solve"]
-        self.assertEqual(headers[1], "Pitch [deg]")
-        self.assertEqual(rows[0][1], 90.0)
-        self.assertEqual(rows[0][2], [
-            [1.0, 0.0, 0.0],
-            [0.0, -1.0, 0.0],
-            [0.0, 0.0, -1.0],
+        self.assertEqual(headers, [
+            "Camera", "Pitch [deg]", "Movement RMS [mm]",
+            "Platform rank ratio", "Camera rank ratio", "theta min [deg]",
+            "theta median [deg]", "theta mean [deg]", "theta P95 [deg]",
+            "theta max [deg]",
         ])
+        self.assertEqual(rows[0][:5], ["cam0", 90.0, 0.2, 0.5, 0.4])
+        np.testing.assert_allclose(rows[0][5:], [1.0, 2.0, 2.0, 2.9, 3.0])
 
     def test_pitch_is_unsigned_optical_axis_angle_above_horizontal(self):
         self.assertAlmostEqual(optical_axis_pitch_deg(np.eye(3)), 90.0)

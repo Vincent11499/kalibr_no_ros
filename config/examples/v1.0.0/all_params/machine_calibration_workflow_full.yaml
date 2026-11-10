@@ -3,11 +3,11 @@ kind: machine_calibration_workflow
 template: EVT320 # 必填；选择config/mechine/EVT320；必须是安全直接子目录，任务及辅助YAML不能跨模板引用。
 machine_dir: /path/to/EVT312-02/1029 # 必填；单次标定批次目录；父目录必须为<机型>-<编号>，批次名为安全文件名；相对路径以本YAML所在目录为基准。
 reuse_calib_params: # 可选映射；每项默认false；true从当前result/calib_params复用该任务参数并跳过数据集搜索和求解；无需原始数据或metrics。
-  camera: false # 双目模型/K/D/分辨率、双目外参、校正参数及行时间；true可作为本机Camera–IMU/BaseLink的前置输入。
-  camera_imu: false # Camera–IMU最终参数、时移、bias及行时间；仍需本机双目成功结果或camera: true。
-  camera_baselink: false # 双目cam0的T_base_cam/pitch；不重复执行旋转左乘修正。
-  mono_camera: false # USB单目模型/K/D/分辨率及RMS；true可作为本机USB BaseLink的前置输入。
-  mono_camera_baselink: false # USB单目的T_base_cam/pitch。
+  stereo: false # 双目模型/K/D/分辨率、双目外参、校正参数及行时间；true可作为本机Camera–IMU/BaseLink的前置输入。
+  stereo_imu: false # Camera–IMU最终参数、时移、bias及行时间；仍需本机双目成功结果或stereo: true。
+  stereo_baselink: false # 双目cam0的T_base_cam/pitch；不重复执行旋转左乘修正。
+  mono: false # USB单目模型/K/D/分辨率及RMS；true可作为本机USB BaseLink的前置输入。
+  mono_baselink: false # USB单目的T_base_cam/pitch。
 targets: # 可选；按任务覆盖标定板；未列出的任务使用对应task模板的target.path。
   stereo: 测试场_aprilgrid_8x8 # 安全文件名stem；读取所选模板目录中的同名YAML。
   stereo_imu: 实验室_aprilgrid_8x10
@@ -20,12 +20,12 @@ datasets: # 可省略或部分填写；填写的角色强制使用指定目录�
   stereo_baselink: stereo_base_link_261021_1630 # 只接受严格的 stereo_base_link_YYMMDD_HHMM。
   mono: usb_261021_1510 # 独立单目模组；清单只能包含局部 cam0，无 IMU。
   mono_baselink: usb_base_link_261021_1640 # 目录固定 usb_base_link_YYMMDD_HHMM；只引用上面单目结果。
-camera:
+stereo:
   mode: standard # 默认standard；standard|rolling_shutter；控制双目相机阶段，不影响独立单目阶段。
-camera_imu:
+stereo_imu:
   mode: standard # 必填；standard|rolling_shutter；无自动切换或隐式默认。
   recompute_extrinsics: false # 默认false；true让Camera–IMU联合阶段重新优化相机链相邻外参。
-camera_baselink: # 可选；省略且没有对应数据时禁用，有数据但无此配置则阻塞并提示。
+stereo_baselink: # 可选；省略且没有对应数据时禁用，有数据但无此配置则阻塞并提示。
   base_link: # 可省略；省略时使用内部frame_id=base_link、position_scale_m=0.01；输出旋转固定左乘Rx(180°)。
     frame_id: base_link # 默认base_link；安全非空坐标系ID，标记结果参考系。
     position_scale_m: 0.01 # 默认0.01 m/文件名单位；需要其他单位时显式覆盖。
@@ -34,7 +34,8 @@ camera_baselink: # 可选；省略且没有对应数据时禁用，有数据但�
       translation_base_camera_m: [0.0, 0.0, 0.0] # 必填；三个有限米值，相机原点在 BaseLink 中的位置；零为占位，须换实测值；不参与求解。
     - id: cam1
       translation_base_camera_m: [0.0, 0.0, 0.0] # 必填；同上；不从双目 baseline 推算，也不默认零。
-mono_camera_baselink: # 可选；独立单目 BaseLink；省略且无对应数据时禁用；不会继承双目 BaseLink 配置。
+mono: {} # 可选空映射；独立USB单目标定当前没有额外工作流参数。
+mono_baselink: # 可选；独立单目 BaseLink；省略且无对应数据时禁用；不会继承双目 BaseLink 配置。
   base_link: # 可省略；省略时同样默认frame_id=base_link、position_scale_m=0.01；输出旋转固定左乘Ry(180°)。
     frame_id: base_link # 默认 base_link；范围与双目相同；同一机体坐标系时保持同名。
     position_scale_m: 0.01 # 默认0.01；有限正数；显式值独立于双目设置。

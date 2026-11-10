@@ -43,12 +43,12 @@ flowchart TD
 若机器还有独立单目模组，另外采集 `usb_YYMMDD_HHMM`，清单只含其局部 `cam0`；
 仍使用相同 AprilGrid，在同一标定批次目录运行同一个 `machine` 命令即可标定其 K/D。
 其 BaseLink 数据放入 `usb_base_link_YYMMDD_HHMM`，维护人员
-配置 `mono_camera_baselink`，程序仅复用独立单目结果，不借用双目左相机参数。
+配置 `mono_baselink`，程序仅复用独立单目结果，不借用双目左相机参数。
 
 工单若另需 Camera–BaseLink：先完成双目 K/D 标定，再保持平台姿态不变、标定板固定在
 环境中，仅平移相机平台并采集至少两个独立方向的运动。按位置命名图像
 `<x>_<y>_<z>.<ext>`，整理为 `stereo_base_link_YYMMDD_HHMM`
-目录数据集，放在同一标定批次目录；开发者在 `user.yaml` 增加 `camera_baselink` 的
+目录数据集，放在同一标定批次目录；开发者在 `user.yaml` 增加 `stereo_baselink` 的
 位置比例和每目实测平移。仍运行同一 `machine` 命令，无需 IMU 数据；它只估计旋转，
 不估计平移。此处不新增板端采集命令，也不改现有采集硬件配置；详细目录、配置和输出见
 [机器级一键标定](MACHINE_CALIBRATION_WORKFLOW_ZH.md)。
@@ -533,14 +533,14 @@ Windows 中打开：`Q:\File\machine_data\kalibr_no_ros\mechine-00\result`。
 
 | 报告内容 | 检查方法 |
 |---|---|
-| Calibration overview／Reprojection errors | 看每目 RMS、P95、最大值、有效帧数及逐帧曲线；不能只看总 RMS |
+| Calibration overview／Reprojection errors | 看每目 RMS、P95、有效帧数及逐帧曲线；普通相机任务同时检查去畸变 Line RMS/P95 |
 | Camera system | 核对左右空间关系、基线数量级和方向，发现左右交换或尺度错误先排查输入 |
 | Estimated poses | 检查姿态是否多样、覆盖是否集中；它是估计结果，需结合原图判断 |
 | Polar error／Azimuthal error | 看边缘视角或特定方向是否集中出现大误差 |
 | 五组原图／极线图 | 按帧顺序显示，上方双目原图、下方同一对极线图；看共同角点是否沿同一极线，水平双目不是要求左右 x 相同 |
 | 角点图 | 在 `visualizations/camN_det` 看标签角点是否贴合，检查模糊、反光、边缘点和异常帧 |
-| IMU 残差 | gyro 为 rad/s，accel 为 m/s²；核对单位、峰值、时间段及工单限值 |
-| Local observability（若有） | `weakly_observable` 表示仍有弱约束方向，数值满秩不代表所有外参可靠 |
+| IMU 残差、bias 与重力 | gyro 为 rad/s，accel 为 m/s²；检查 bias 三轴均值／标准差及重力向量模长 |
+| Local observability（若有） | 对照 Native numerical rank 与 Operational rank；满秩不等同硬件精度合格 |
 
 HTML/PDF 不内嵌角点检测图作为五组样本；角点图另在子目录查看。
 极线辅助线为绿色、3 个源图像像素宽。最多五组抽样只是人工辅助，若不足五组，需检查实际

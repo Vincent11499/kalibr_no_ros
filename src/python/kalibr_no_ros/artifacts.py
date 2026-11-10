@@ -520,6 +520,13 @@ class RunContext:
         self.artifacts["state"] = "completed"
 
     def publish_imu_camera(self, calibrator):
+        if hasattr(calibrator, "gravityDv"):
+            gravity = np.asarray(
+                calibrator.gravityDv.toEuclidean(), dtype=float).reshape(-1)
+            if gravity.size != 3 or not np.all(np.isfinite(gravity)):
+                raise RuntimeError(
+                    "final gravity vector must contain three finite values")
+            self.artifacts["gravity_vector_m_s2"] = _vector(gravity)
         chain = calibrator.CameraChain
         for camera_id, native in enumerate(chain.camList):
             camera = self._datasets[id(native.dataset)][1]

@@ -108,7 +108,7 @@ Kalibr 的目录读取、`validate` 和标定前输入校验只读取公共 `dat
 | `stereo_imu_YYMMDD_hhmm` | 双目＋IMU 标定候选 |
 | `stereo_base_link_YYMMDD_HHMM` | 可选 Camera–BaseLink；需在 `user.yaml` 明确配置位置比例与每目平移 |
 | `usb_YYMMDD_HHMM` | 独立单目模组内参候选，仅局部 `cam0`，无 IMU |
-| `usb_base_link_YYMMDD_HHMM` | 单目 BaseLink；需 `mono_camera_baselink` 配置，仅引用本模组单目结果 |
+| `usb_base_link_YYMMDD_HHMM` | 单目 BaseLink；需 `mono_baselink` 配置，仅引用本模组单目结果 |
 | `stereo_test_YYMMDD_hhmm` | 独立验证数据，不参与自动标定 |
 
 独立单目 `cam0` 与双目左相机 `cam0` 不表示同一传感器；两模组有独立数据、task、结果
@@ -259,7 +259,7 @@ RMS、相邻外参、alignment 和双目校正矩阵，双目 BaseLink 更新
 |---|---|
 | <名称>.yaml | 最终数值参数；双目包含内参、畸变和相机间变换，Camera–IMU 另含互逆的 T_cam_imu/T_imu_cam、时间偏移和 IMU 参数；机器入口中实际路径为 `<名称>/<名称>.yaml` |
 | <名称>.results.txt | 人可读的标定结果和误差摘要 |
-| <名称>/metrics.json | 可量化的重投影、双目校正、IMU 残差、bias 及可用优化状态；包含总体和逐帧统计 |
+| <名称>/metrics.json | 可量化的重投影、去畸变直线度、双目校正、IMU 残差、bias、重力及 BaseLink 帧间旋转统计；包含总体和逐帧统计 |
 | <名称>/assessment.json | 根据显式规则判定 pass/fail/not_evaluated；参考评级独立保存，不能等同生产验收 |
 | <名称>.report.html | 浏览器查看的汇总、指标及图像链接；机器入口中位于 `result/` 根目录，链接同名任务目录中的 YAML 和证据 |
 | <名称>.report.pdf | 可分享的 PDF 结果报告；机器入口中位于 `result/` 根目录 |
