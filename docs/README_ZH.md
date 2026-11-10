@@ -6,6 +6,7 @@
 |---|---|
 | [机器级一键标定](MACHINE_CALIBRATION_WORKFLOW_ZH.md) | 产线主入口、标定批次目录、分阶段续跑、数据发现与结果复用规则 |
 | [机器工作流防护暂缓清单](MACHINE_WORKFLOW_PROTECTION_BACKLOG_ZH.md) | 测试阶段关闭的 provenance 防护、仍保留的硬安全规则及收敛后恢复条件 |
+| [长期 Docker 容器简明操作](PERSISTENT_DOCKER_CONTAINER_ZH.md) | 运行镜像与外挂程序边界、长期容器日常使用、保护性创建及禁止删除命令 |
 | [产线标定 SOP](CALIBRATION_SOP_ZH.md) | 采集、机器入口、结果检查、评估、放行与封存 |
 | [使用指南](USER_GUIDE_ZH.md) | 任务配置、目录数据集、运行与转换 |
 | [输入与输出说明](DATASET_WORKFLOW_ZH.md) | 相机 ID、四份配置依赖、输出各文件含义 |

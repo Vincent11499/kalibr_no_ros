@@ -1,0 +1,9 @@
+FROM kalibr-cedarobot-runtime:ubuntu22.04
+
+RUN groupadd --gid 1000 gs \
+    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash gs
+
+USER gs
+ENV HOME=/home/gs
+ENV MPLCONFIGDIR=/tmp/matplotlib
+WORKDIR /opt/cedarobot
