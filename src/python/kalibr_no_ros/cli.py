@@ -3,6 +3,7 @@
 from pathlib import Path
 import argparse
 import json
+import subprocess
 import sys
 
 from .version import VERSION
@@ -156,6 +157,9 @@ def build_parser():
     job.add_argument("--recover-covariance", action="store_true")
     job.add_argument("--recompute-camera-chain-extrinsics", action="store_true")
     job.add_argument("--force", action="store_true")
+
+    from kalibr_tools.cli import add_tools_parser
+    add_tools_parser(commands)
 
     return parser
 
@@ -362,6 +366,10 @@ def main(argv=None, prefix=None):
             if arguments.converter_help:
                 converter_arguments.insert(0, "--help")
             return converter(converter_arguments, full_fisheye=arguments.full_fisheye)
-    except (TaskError, ValueError, RuntimeError, OSError, StopIteration) as error:
+        if arguments.group == "tools":
+            from kalibr_tools.cli import run_tool
+            return run_tool(arguments, prefix)
+    except (TaskError, ValueError, RuntimeError, OSError, StopIteration,
+            subprocess.CalledProcessError) as error:
         print("kalibr-noros: error: {}".format(error), file=sys.stderr)
         return 2

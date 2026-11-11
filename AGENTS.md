@@ -15,6 +15,7 @@
 | `src/python/kalibr_no_ros` | CLI、输入契约、初始化、输出与评价 |
 | `src/python/kalibr_bag_io` | 无 ROS bag/目录读取 |
 | `src/python/kalibr_runtime` | 运行线程预算与可选 profiling |
+| `src/python/kalibr_tools` | 随安装包交付的诊断与实验工作流 |
 | `src/camera_models` | radtan5/radtan8 和九参数 OpenCV fisheye |
 | `config/examples` | 可移植的简洁模板与完整注释示例 |
 | `docs` | 当前使用、参数、模型和源码说明 |

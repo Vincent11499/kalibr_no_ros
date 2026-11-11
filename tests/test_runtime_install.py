@@ -9,7 +9,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
-    "install_runtime", ROOT / "tools" / "install_runtime.py")
+    "install_runtime", ROOT / "tools" / "release" / "install_runtime.py")
 install_runtime = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(install_runtime)
 

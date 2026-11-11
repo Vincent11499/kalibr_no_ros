@@ -5,7 +5,7 @@ description: Run or report this repository's pinhole-equi stereo aging/vibration
 
 # 双目老化／振动验证
 
-使用正式工具 `tools/kalibr_stereo_aging_validation.py`。不要在 skill、临时脚本或测试目录复制实验编排和报告计算。
+使用正式入口 `kalibr-noros tools stereo-aging-validation`。不要在 skill、临时脚本或测试目录复制实验编排和报告计算。
 
 ## 数据目录
 
@@ -25,7 +25,7 @@ description: Run or report this repository's pinhole-equi stereo aging/vibration
 
 ## 固定方法
 
-- 只使用 `install/release/bin/kalibr-noros`。
+- 只使用当前入口所属安装前缀的 `bin/kalibr-noros`。
 - 标定使用显式 pinhole-equi 初值和 `solver_mode: full_batch`。
 - `detector_processes: 8`、`optimizer_threads: 4`，所有标定与验证逐项串行。
 - 保存诊断、指标以及最多 30 帧／30 对的检测、去畸变和极线对齐图；去畸变不裁剪。
@@ -38,26 +38,26 @@ description: Run or report this repository's pinhole-equi stereo aging/vibration
 ## 命令
 
 ```bash
-python3 tools/kalibr_stereo_aging_validation.py init \
+kalibr-noros tools stereo-aging-validation init \
   --machine-root <machine>
 
-python3 tools/kalibr_stereo_aging_validation.py inspect \
+kalibr-noros tools stereo-aging-validation inspect \
   --manifest <machine>/study_manifest.yaml
 
-python3 tools/kalibr_stereo_aging_validation.py run \
+kalibr-noros tools stereo-aging-validation run \
   --manifest <machine>/study_manifest.yaml \
   --phase before
 
 # 老化后目录完整时
-python3 tools/kalibr_stereo_aging_validation.py refresh \
+kalibr-noros tools stereo-aging-validation refresh \
   --manifest <machine>/study_manifest.yaml
 
-python3 tools/kalibr_stereo_aging_validation.py run \
+kalibr-noros tools stereo-aging-validation run \
   --manifest <machine>/study_manifest.yaml \
   --phase after
 
 # before/after 已完成后，在三组 after 测试集上诊断 K/D、R 与物理基线分量
-python3 tools/kalibr_stereo_aging_validation.py diagnose-extrinsics \
+kalibr-noros tools stereo-aging-validation diagnose-extrinsics \
   --manifest <machine>/study_manifest.yaml
 ```
 

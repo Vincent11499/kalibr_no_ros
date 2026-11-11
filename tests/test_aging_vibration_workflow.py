@@ -9,9 +9,9 @@ from unittest import mock
 import numpy as np
 import yaml
 
-from tools.aging_vibration.diagnosis import VARIANT_ORDER, build_extrinsic_variants, generate_diagnosis_report
-from tools.aging_vibration.reporting import build_parameter_comparison, collect_calibrations, collect_verifications, generate_report
-from tools.aging_vibration.workflow import (
+from kalibr_tools.aging_vibration.diagnosis import VARIANT_ORDER, build_extrinsic_variants, generate_diagnosis_report
+from kalibr_tools.aging_vibration.reporting import build_parameter_comparison, collect_calibrations, collect_verifications, generate_report
+from kalibr_tools.aging_vibration.workflow import (
     KIND,
     VERIFY_OPTIONS,
     build_verify_command,
@@ -26,6 +26,7 @@ from tools.aging_vibration.workflow import (
 )
 
 
+ROOT = Path(__file__).resolve().parents[1]
 CALIBRATIONS = ("stereo_260929_1617", "stereo_260929_1620", "stereo_260929_1622")
 TESTS = ("stereo_260929_1627", "stereo_260929_1629", "stereo_260929_1630")
 
@@ -89,12 +90,22 @@ class AgingVibrationWorkflowTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name) / "mechine-fixture"
+        self.prefix = Path(self.temporary.name) / "install-prefix"
+        binary = self.prefix / "bin" / "kalibr-noros"
+        binary.parent.mkdir(parents=True)
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        binary.chmod(0o755)
+        profile = self.prefix / "config" / "mechine" / "EVT320"
+        profile.mkdir(parents=True)
+        template = ROOT / "config" / "mechine" / "EVT320" / "stereo_camera_calibration_task.yaml"
+        (profile / template.name).write_text(
+            template.read_text(encoding="utf-8"), encoding="utf-8")
         dataset_manifest = {"schema_version": "1.0.0", "cameras": [{"id": "cam0", "resolution": [3840, 2160]}, {"id": "cam1", "resolution": [3840, 2160]}]}
         for dataset in (*CALIBRATIONS, *TESTS):
             group = "calibration" if dataset in CALIBRATIONS else "test"
             _yaml(self.root / "before" / group / dataset / "dataset.yaml", dataset_manifest)
         self.manifest_path = create_manifest(self.root)
-        self.manifest = load_manifest(self.manifest_path)
+        self.manifest = load_manifest(self.manifest_path, self.prefix)
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -119,7 +130,7 @@ class AgingVibrationWorkflowTest(unittest.TestCase):
         value["phases"]["before"] = {"calibration_dataset": "old", "validation_runs": []}
         _yaml(self.manifest_path, value)
         with self.assertRaisesRegex(ValueError, "calibration_runs"):
-            load_manifest(self.manifest_path)
+            load_manifest(self.manifest_path, self.prefix)
 
     def test_refresh_registers_new_after_phase(self):
         dataset_manifest = {"schema_version": "1.0.0", "cameras": [{"id": "cam0", "resolution": [3840, 2160]}, {"id": "cam1", "resolution": [3840, 2160]}]}
@@ -127,7 +138,7 @@ class AgingVibrationWorkflowTest(unittest.TestCase):
             group = "calibration" if dataset in CALIBRATIONS else "test"
             _yaml(self.root / "after" / group / (dataset + "_after") / "dataset.yaml", dataset_manifest)
         refresh_manifest(self.manifest)
-        refreshed = load_manifest(self.manifest_path)
+        refreshed = load_manifest(self.manifest_path, self.prefix)
         self.assertEqual(set(refreshed["phases"]), {"before", "after"})
         self.assertEqual(len(refreshed["phases"]["after"]["calibration_runs"]), 3)
 
@@ -150,7 +161,19 @@ class AgingVibrationWorkflowTest(unittest.TestCase):
             self.assertEqual(command[command.index(option) + 1], expected)
         self.assertEqual(self.manifest["kalibr"]["verify_options"], VERIFY_OPTIONS)
 
-    @mock.patch("tools.aging_vibration.workflow._run_logged")
+    def test_legacy_manifest_binary_resolves_inside_current_prefix(self):
+        self.manifest["kalibr"]["binary"] = (
+            "install/release/bin/kalibr-noros")
+        command = build_verify_command(
+            self.manifest,
+            Path("/tmp/a.yaml"),
+            Path("/tmp/data"),
+            Path("/tmp/out"),
+        )
+        self.assertEqual(
+            Path(command[0]), self.prefix / "bin" / "kalibr-noros")
+
+    @mock.patch("kalibr_tools.aging_vibration.workflow._run_logged")
     def test_calibration_runs_are_serial_and_completed_runs_resume(self, runner):
         run_calibrations(self.manifest, "before", dry_run=True)
         self.assertEqual(runner.call_count, 3)
@@ -161,8 +184,8 @@ class AgingVibrationWorkflowTest(unittest.TestCase):
         run_calibrations(self.manifest, "before", dry_run=True)
         self.assertEqual(runner.call_count, 2)
 
-    @mock.patch("tools.aging_vibration.workflow._windows_free_virtual_gib", return_value=8.0)
-    @mock.patch("tools.aging_vibration.workflow._linux_available_gib", return_value=20.0)
+    @mock.patch("kalibr_tools.aging_vibration.workflow._windows_free_virtual_gib", return_value=8.0)
+    @mock.patch("kalibr_tools.aging_vibration.workflow._linux_available_gib", return_value=20.0)
     def test_memory_status_blocks_low_windows_virtual_memory(self, _linux, _windows):
         self.assertEqual(len(memory_status(self.manifest)["errors"]), 1)
 
@@ -187,7 +210,7 @@ class AgingVibrationWorkflowTest(unittest.TestCase):
             group = "calibration" if dataset in CALIBRATIONS else "test"
             _yaml(self.root / "after" / group / (dataset + "_after") / "dataset.yaml", dataset_manifest)
         refresh_manifest(self.manifest)
-        self.manifest = load_manifest(self.manifest_path)
+        self.manifest = load_manifest(self.manifest_path, self.prefix)
         for index, run in enumerate(self.manifest["phases"]["after"]["calibration_runs"]):
             _calibration({"result": self.root / run["result"], "artifacts": self.root / run["artifacts"]}, 2.0 + index)
         for index, run in enumerate(self.manifest["phases"]["after"]["test_runs"]):
@@ -288,7 +311,7 @@ class AgingVibrationWorkflowTest(unittest.TestCase):
             group = "calibration" if dataset in CALIBRATIONS else "test"
             _yaml(self.root / "after" / group / (dataset + "_after") / "dataset.yaml", dataset_manifest)
         refresh_manifest(self.manifest)
-        self.manifest = load_manifest(self.manifest_path)
+        self.manifest = load_manifest(self.manifest_path, self.prefix)
         for phase, offset in (("before", 0.0), ("after", 2.0)):
             for index, run in enumerate(self.manifest["phases"][phase]["calibration_runs"]):
                 _calibration({"result": self.root / run["result"], "artifacts": self.root / run["artifacts"]}, offset + index)

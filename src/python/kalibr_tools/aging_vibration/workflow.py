@@ -32,11 +32,6 @@ MEMORY_LIMITS = {
     "windows_free_virtual_gib": 16.0,
 }
 
-
-def repository_root() -> Path:
-    return Path(__file__).resolve().parents[2]
-
-
 def _utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
@@ -71,9 +66,13 @@ def machine_path(manifest: dict[str, Any], value: str | Path) -> Path:
     return path if path.is_absolute() else Path(manifest["_machine_root"]) / path
 
 
-def repository_path(value: str | Path) -> Path:
-    path = Path(value)
-    return path if path.is_absolute() else repository_root() / path
+def installation_path(manifest: dict[str, Any], value: str | Path) -> Path:
+    path = Path(value).expanduser()
+    if path.as_posix() == "install/release/bin/kalibr-noros":
+        path = Path("bin/kalibr-noros")
+    if not path.is_absolute():
+        path = Path(manifest["_install_prefix"]) / path
+    return path.resolve()
 
 
 def _relative(root: Path, path: Path) -> str:
@@ -149,7 +148,7 @@ def create_manifest(machine_root: Path | str) -> Path:
         "machine_root": ".",
         "created_at": _utc_now(),
         "kalibr": {
-            "binary": "install/release/bin/kalibr-noros",
+            "binary": "bin/kalibr-noros",
             "task_template": "config/mechine/EVT320/stereo_camera_calibration_task.yaml",
             "target": "config/mechine/EVT320/测试场_aprilgrid_8x8.yaml",
             "calibration_label": "pinhole_equi",
@@ -182,7 +181,9 @@ def refresh_manifest(manifest: dict[str, Any]) -> Path:
     return Path(manifest["_manifest_path"])
 
 
-def load_manifest(path: Path | str) -> dict[str, Any]:
+def load_manifest(
+    path: Path | str, install_prefix: Path | str
+) -> dict[str, Any]:
     manifest_path = Path(path).resolve()
     value = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
@@ -192,6 +193,7 @@ def load_manifest(path: Path | str) -> dict[str, Any]:
     root = Path(value.get("machine_root", "."))
     value["_manifest_path"] = manifest_path
     value["_machine_root"] = root if root.is_absolute() else (manifest_path.parent / root).resolve()
+    value["_install_prefix"] = Path(install_prefix).expanduser().resolve()
     validate_manifest(value)
     return value
 
@@ -256,14 +258,15 @@ def inspect_study(manifest: dict[str, Any]) -> dict[str, Any]:
 
 
 def _release_binary(manifest: dict[str, Any]) -> Path:
-    binary = repository_path(manifest["kalibr"]["binary"])
+    binary = installation_path(manifest, manifest["kalibr"]["binary"])
     if not os.access(binary, os.X_OK):
         raise FileNotFoundError(f"release binary is missing or not executable: {binary}")
     return binary
 
 
 def prepare_runtime_task(manifest: dict[str, Any], phase_name: str, run: dict[str, Any], write: bool = True) -> Path:
-    template_path = repository_path(manifest["kalibr"]["task_template"])
+    template_path = installation_path(
+        manifest, manifest["kalibr"]["task_template"])
     task = yaml.safe_load(template_path.read_text(encoding="utf-8"))
     task["dataset"]["path"] = str(machine_path(manifest, run["dataset"]))
     task["target"]["path"] = str((template_path.parent / task["target"]["path"]).resolve())
@@ -315,7 +318,7 @@ def build_verify_command(manifest: dict[str, Any], calibration: Path, dataset: P
     command = [
         str(_release_binary(manifest)), "verify", "cameras",
         "--calibration", f"{manifest['kalibr']['calibration_label']}={calibration}",
-        "--dataset", str(dataset), "--target", str(repository_path(manifest["kalibr"]["target"])),
+        "--dataset", str(dataset), "--target", str(installation_path(manifest, manifest["kalibr"]["target"])),
         "--output-dir", str(output),
         "--window-half-size-px", str(options["window_half_size_px"]),
         "--max-displacement-px", str(options["max_displacement_px"]),
@@ -384,7 +387,14 @@ def _run_logged(manifest: dict[str, Any], command: list[str], log_path: Path, dr
     started = time.monotonic()
     with log_path.open("a", encoding="utf-8", buffering=1) as log:
         log.write("\n" + "\n".join(prefix) + "\n")
-        process = subprocess.Popen(command, cwd=repository_root(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        process = subprocess.Popen(
+            command,
+            cwd=Path(manifest["_machine_root"]),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
         assert process.stdout is not None
         for line in process.stdout:
             print(line, end="", flush=True)

@@ -27,7 +27,7 @@
 | [相机到 base_link 旋转标定](CAMERA_BASELINK_CALIBRATION_ZH.md) | XY平台文件名位置、固定K/D PnP、全部帧对直接差分旋转与配置平移 |
 
 三组重复标定与三组固定参数测试的双目老化／振动实验使用
-`python3 tools/kalibr_stereo_aging_validation.py`。机器目录组织、串行运行和断点复用规则见
+`kalibr-noros tools stereo-aging-validation`。机器目录组织、串行运行和断点复用规则见
 仓库技能 `.agents/skills/kalibr-stereo-aging-validation/SKILL.md`。
 before/after 完成后可用同一工具的 `diagnose-extrinsics` 在三组 after 测试集上固定参数
 验证 K/D、相对旋转与 cam0 坐标系物理基线分量的贡献；该诊断不重新优化标定参数。

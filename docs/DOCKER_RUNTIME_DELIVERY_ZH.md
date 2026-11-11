@@ -37,9 +37,10 @@ kalibr-cedarobot-docker/
 ├── install/
 │   └── kalibr_cedarobo_v1.0.0/
 └── tools/
-    ├── kalibr_docker.sh
-    └── docker/
-        └── Dockerfile.runtime
+    └── release/
+        ├── kalibr_docker.sh
+        └── docker/
+            └── Dockerfile.runtime
 ```
 
 完整包内已经包含展开后的 `install/kalibr_cedarobo_v1.0.0`。使用 tar 包是为了保留 `install/lib` 中 Linux 动态库的权限和符号链接；不要使用 Windows 资源管理器单独解压、复制或修改 `install`。
@@ -95,7 +96,7 @@ tar -xzf \
   /mnt/d/WSL/kalibr-cedarobot-docker/kalibr-cedarobot-docker_bundle.tar.gz \
   -C "$HOME/kalibr-cedarobot-docker"
 cd "$HOME/kalibr-cedarobot-docker"
-chmod +x tools/kalibr_docker.sh
+chmod +x tools/release/kalibr_docker.sh
 ```
 
 如果交付包通过 U 盘或网络传输，请把 tar 包路径替换成实际路径。不要把 tar 包解压到 Windows NTFS 目录后再复制 `install`。
@@ -129,7 +130,7 @@ docker image inspect kalibr-cedarobot-runtime:ubuntu22.04 \
 kalibr-cedarobot-runtime:ubuntu22.04
 ```
 
-不需要执行 `docker build`。`tools/docker/Dockerfile.runtime` 仅用于以后确实需要更新系统依赖时重新构建镜像。
+不需要执行 `docker build`。`tools/release/docker/Dockerfile.runtime` 仅用于以后确实需要更新系统依赖时重新构建镜像。
 
 ## 6. 检查外挂安装包
 
@@ -140,7 +141,7 @@ cd "$HOME/kalibr-cedarobot-docker"
 
 INSTALL_DIR="$PWD/install/kalibr_cedarobo_v1.0.0"
 
-tools/kalibr_docker.sh check "$INSTALL_DIR"
+tools/release/kalibr_docker.sh check "$INSTALL_DIR"
 ```
 
 成功时最后会输出：
@@ -239,7 +240,7 @@ find "$BATCH_DIR" -maxdepth 1 -mindepth 1 -type d -printf '%f\n'
 开始运行：
 
 ```bash
-tools/kalibr_docker.sh machine \
+tools/release/kalibr_docker.sh machine \
   "$INSTALL_DIR" \
   "$USER_CONFIG" \
   "$BATCH_DIR"
@@ -283,7 +284,7 @@ Docker 镜像只包含运行依赖，Kalibr 程序始终来自主机外挂的 `i
 4. 重新执行：
 
 ```bash
-tools/kalibr_docker.sh check \
+tools/release/kalibr_docker.sh check \
   "$HOME/kalibr-cedarobot-docker/install/kalibr_cedarobo_v1.0.0"
 ```
 
@@ -300,12 +301,12 @@ docker load -i \
   docker-image/kalibr-cedarobot-runtime_ubuntu22.04_amd64.tar.gz
 ```
 
-### 12.2 `permission denied: tools/kalibr_docker.sh`
+### 12.2 `permission denied: tools/release/kalibr_docker.sh`
 
 执行：
 
 ```bash
-chmod +x tools/kalibr_docker.sh
+chmod +x tools/release/kalibr_docker.sh
 ```
 
 ### 12.3 `Cannot connect to the Docker daemon`
@@ -314,7 +315,7 @@ chmod +x tools/kalibr_docker.sh
 
 ### 12.4 出现 NumPy 2.x 或 `_ARRAY_API not found`
 
-这通常表示误用了主机 Python。不要在主机上直接运行 `install/.../bin/kalibr-*`，应先确认镜像已加载，再通过 `tools/kalibr_docker.sh` 运行。
+这通常表示误用了主机 Python。不要在主机上直接运行 `install/.../bin/kalibr-*`，应先确认镜像已加载，再通过 `tools/release/kalibr_docker.sh` 运行。
 
 ### 12.5 `dataset changed during calibration`
 
@@ -340,8 +341,8 @@ tar -xzf kalibr-cedarobot-docker_bundle.tar.gz \
 cd "$HOME/kalibr-cedarobot-docker"
 sha256sum -c SHA256SUMS
 docker load -i docker-image/kalibr-cedarobot-runtime_ubuntu22.04_amd64.tar.gz
-tools/kalibr_docker.sh check "$PWD/install/kalibr_cedarobo_v1.0.0"
-tools/kalibr_docker.sh machine \
+tools/release/kalibr_docker.sh check "$PWD/install/kalibr_cedarobo_v1.0.0"
+tools/release/kalibr_docker.sh machine \
   "$PWD/install/kalibr_cedarobo_v1.0.0" \
   "$PWD/config/user.yaml" \
   "/绝对路径/机器型号-编号/新批次"

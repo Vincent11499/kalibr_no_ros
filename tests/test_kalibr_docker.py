@@ -6,8 +6,8 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "tools" / "kalibr_docker.sh"
-DOCKERFILE = ROOT / "tools" / "docker" / "Dockerfile.runtime"
+SCRIPT = ROOT / "tools" / "release" / "kalibr_docker.sh"
+DOCKERFILE = ROOT / "tools" / "release" / "docker" / "Dockerfile.runtime"
 
 
 class KalibrDockerAssetTest(unittest.TestCase):
@@ -21,6 +21,8 @@ class KalibrDockerAssetTest(unittest.TestCase):
         )
         self.assertIn("build [BASE_IMAGE]", completed.stdout)
         self.assertIn("machine INSTALL_DIR", completed.stdout)
+        self.assertIn(
+            "kalibr-noros tools --help", SCRIPT.read_text(encoding="utf-8"))
 
     def test_runtime_image_keeps_program_and_data_external(self):
         content = DOCKERFILE.read_text(encoding="utf-8")

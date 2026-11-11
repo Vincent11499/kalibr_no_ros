@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 import sys
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +21,45 @@ from kalibr_no_ros.task import (
 
 
 class TaskCliTest(unittest.TestCase):
+    def test_installed_tools_cli_accepts_diagnostic_and_study_commands(self):
+        diagnosis = build_parser().parse_args([
+            "tools", "rolling-shutter-diagnosis",
+            "--config", "/data/diagnosis.yaml",
+            "--output-dir", "/data/output",
+            "--dry-run",
+        ])
+        self.assertEqual(diagnosis.group, "tools")
+        self.assertEqual(diagnosis.tool, "rolling-shutter-diagnosis")
+        self.assertEqual(diagnosis.config, "/data/diagnosis.yaml")
+        self.assertTrue(diagnosis.dry_run)
+
+        aging = build_parser().parse_args([
+            "tools", "stereo-aging-validation", "run",
+            "--manifest", "/data/study_manifest.yaml",
+            "--phase", "after",
+        ])
+        self.assertEqual(aging.group, "tools")
+        self.assertEqual(aging.tool, "stereo-aging-validation")
+        self.assertEqual(aging.tool_command, "run")
+        self.assertEqual(aging.phase, "after")
+
+    @mock.patch(
+        "kalibr_tools.rolling_shutter_diagnosis.workflow.run_diagnosis",
+        return_value={"status": "dry_run"},
+    )
+    def test_installed_tool_uses_current_installation_binary(self, run_diagnosis):
+        result = main([
+            "tools", "rolling-shutter-diagnosis",
+            "--config", "/data/diagnosis.yaml",
+            "--output-dir", "/data/output",
+            "--dry-run",
+        ], prefix="/opt/kalibr")
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            Path(run_diagnosis.call_args.kwargs["binary"]),
+            Path("/opt/kalibr/bin/kalibr-noros"),
+        )
+
     def test_fixed_camera_validation_cli_accepts_repeated_calibrations(self):
         arguments = build_parser().parse_args([
             "verify", "cameras",

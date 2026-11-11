@@ -13,6 +13,7 @@
 src/python/kalibr_no_ros     任务、输入验证、初始化、结果与评价
 src/python/kalibr_bag_io     ROS-free bag/目录 I/O
 src/python/kalibr_runtime    执行预算和可选运行诊断
+src/python/kalibr_tools      随安装包交付的诊断与实验工作流
 src/kalibr/foundation        Eigen/NumPy、坐标、日志等基础库
 src/kalibr/camera            原生投影、标定板和相机误差项
 src/kalibr/optimization      原生优化器、表达式和稀疏矩阵

@@ -10,9 +10,9 @@ readonly ubuntu_mirror="${KALIBR_UBUNTU_MIRROR:-https://mirrors.aliyun.com/ubunt
 usage() {
   cat <<'EOF'
 Usage:
-  tools/kalibr_docker.sh build [BASE_IMAGE]
-  tools/kalibr_docker.sh check INSTALL_DIR
-  tools/kalibr_docker.sh machine INSTALL_DIR USER_CONFIG MACHINE_BATCH_DIR
+  tools/release/kalibr_docker.sh build [BASE_IMAGE]
+  tools/release/kalibr_docker.sh check INSTALL_DIR
+  tools/release/kalibr_docker.sh machine INSTALL_DIR USER_CONFIG MACHINE_BATCH_DIR
 
 Commands:
   build    Build the fixed Ubuntu 22.04 runtime dependency image.
@@ -51,7 +51,7 @@ absolute_file() {
 
 require_runtime_image() {
   docker image inspect "$runtime_image" >/dev/null 2>&1 \
-    || fail "runtime image not found; run: tools/kalibr_docker.sh build"
+    || fail "runtime image not found; run: tools/release/kalibr_docker.sh build"
 }
 
 build_image() {
@@ -95,6 +95,7 @@ check_install() {
       [[ "$missing" -eq 0 ]]
       python3 -c "import cv2, matplotlib, numpy, scipy, yaml; print(\"NumPy\", numpy.__version__, \"OpenCV\", cv2.__version__)"
       /opt/kalibr/bin/kalibr-noros --help >/dev/null
+      /opt/kalibr/bin/kalibr-noros tools --help >/dev/null
       /opt/kalibr/bin/kalibr-cedarobot --help >/dev/null
       echo "Kalibr Docker runtime check passed."
     '

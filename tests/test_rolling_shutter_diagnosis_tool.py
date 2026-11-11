@@ -7,8 +7,8 @@ import cv2
 import numpy as np
 import yaml
 
-from tools.rolling_shutter_diagnosis import analysis, reporting
-from tools.rolling_shutter_diagnosis.workflow import (
+from kalibr_tools.rolling_shutter_diagnosis import analysis, reporting
+from kalibr_tools.rolling_shutter_diagnosis.workflow import (
     _camera_model_from_result,
     _execute_task,
     _formal_evidence,
@@ -251,8 +251,8 @@ class RollingShutterDiagnosisToolTest(unittest.TestCase):
         self.assertEqual(base["fixed_zero_rms_px"], 1.2)
         self.assertTrue(base["passed"])
 
-    @mock.patch("tools.rolling_shutter_diagnosis.workflow.load_run_summary")
-    @mock.patch("tools.rolling_shutter_diagnosis.workflow._completed")
+    @mock.patch("kalibr_tools.rolling_shutter_diagnosis.workflow.load_run_summary")
+    @mock.patch("kalibr_tools.rolling_shutter_diagnosis.workflow._completed")
     def test_incomplete_formal_evidence_retains_completed_run_metrics(
         self, completed, load_summary
     ):
@@ -306,8 +306,8 @@ class RollingShutterDiagnosisToolTest(unittest.TestCase):
         self.assertTrue(completed)
         self.assertIn("--force", commands[1])
 
-    @mock.patch("tools.rolling_shutter_diagnosis.workflow.compare_archived_residuals")
-    @mock.patch("tools.rolling_shutter_diagnosis.workflow.load_run_summary")
+    @mock.patch("kalibr_tools.rolling_shutter_diagnosis.workflow.compare_archived_residuals")
+    @mock.patch("kalibr_tools.rolling_shutter_diagnosis.workflow.load_run_summary")
     def test_formal_classification_requires_all_registered_controls(self, load_summary, compare):
         names = [
             "free_seed0", "fixed_zero", "fixed_candidate", "fixed_opposite",

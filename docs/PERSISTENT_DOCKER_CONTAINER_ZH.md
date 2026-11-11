@@ -19,10 +19,10 @@
   出现在容器的 `/opt/cedarobot/kalibr_cedarobo_v1.0.0`。
 - `docker-image/` 是离线镜像归档。执行 `docker load` 后，正在运行的容器不再读取
   该目录；保留它可以在 Docker 镜像丢失时离线恢复。
-- `tools/kalibr_docker.sh` 用于构建依赖镜像、检查安装包，以及启动用完即删的临时
+- `tools/release/kalibr_docker.sh` 用于构建依赖镜像、检查安装包，以及启动用完即删的临时
   标定容器。当前长期容器运行时不依赖该脚本。
-- `tools/docker/Dockerfile.runtime` 用于重建依赖镜像；
-  `tools/docker/Dockerfile.persistent-user` 用于生成带 `gs` 用户的镜像。
+- `tools/release/docker/Dockerfile.runtime` 用于重建依赖镜像；
+  `tools/release/docker/Dockerfile.persistent-user` 用于生成带 `gs` 用户的镜像。
 
 ## 2. 当前长期容器配置
 
@@ -116,9 +116,9 @@ cd /home/sti/kalibr_cedarobo
 
 docker image inspect kalibr-cedarobot-runtime:ubuntu22.04-gs >/dev/null 2>&1 || \
 docker build --pull=false \
-  --file tools/docker/Dockerfile.persistent-user \
+  --file tools/release/docker/Dockerfile.persistent-user \
   --tag kalibr-cedarobot-runtime:ubuntu22.04-gs \
-  tools/docker
+  tools/release/docker
 ```
 
 下面的命令会保护现有容器：存在时只启动，不会删除或重建；只有不存在时才创建。

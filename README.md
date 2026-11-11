@@ -7,13 +7,14 @@
 
 主机需要编译器、CMake 3.21 及以上、Ninja、Eigen、OpenCV、Boost、TBB，以及
 Python 3 开发环境、NumPy、SciPy、PyYAML 和 Matplotlib。依赖脚本在仓库
-`.deps/` 中准备 bag、igraph 和 SuiteSparse 依赖，不修改系统 Python：
+`.deps/` 中准备 bag、igraph 和 SuiteSparse 依赖，不修改系统 Python。构建与交付脚本
+集中在 [`tools/release/`](tools/release/README_ZH.md)：
 
 ```bash
-./tools/bootstrap_deps.sh
+./tools/release/bootstrap_deps.sh
 cmake --preset release
 cmake --build --preset release --parallel 4
-python3 tools/install_runtime.py \
+python3 tools/release/install_runtime.py \
   --build-dir build/release \
   --prefix /opt/kalibr_cedarobo_v1.0.0
 ```
@@ -142,6 +143,8 @@ kalibr-noros evaluate
 kalibr-noros verify cameras
 kalibr-noros convert camera
 kalibr-noros convert job
+kalibr-noros tools rolling-shutter-diagnosis
+kalibr-noros tools stereo-aging-validation
 ```
 
 `convert camera` 提供 OpenCV/Kalibr 参数转换；`evaluate` 只利用已有观测证据重算
@@ -173,7 +176,7 @@ Alignment RMS 时，使用 `kalibr-noros verify cameras`。该命令会重新检
 [滚动快门相机标定](docs/ROLLING_SHUTTER_CAMERA_CALIBRATION_ZH.md)。
 
 不确定一组动态数据是否足以支持行时间模型时，先使用
-`python3 tools/kalibr_rolling_shutter_diagnosis.py`。它从普通标定观测做严格分块筛查，
+`kalibr-noros tools rolling-shutter-diagnosis`。它从普通标定观测做严格分块筛查，
 只有证据通过才运行正式 RS 正反值、多初值及轨迹带宽对照；配置、门槛与输出见
 [滚动快门行时间诊断工具](docs/ROLLING_SHUTTER_DIAGNOSIS_TOOL_ZH.md)。
 
@@ -202,6 +205,7 @@ Alignment RMS 时，使用 `kalibr-noros verify cameras`。该命令会重新检
 | `src/python/kalibr_no_ros` | 输入契约、CLI、初始化、正式输出与评价 |
 | `src/python/kalibr_bag_io` | 无 ROS bag 和目录 I/O |
 | `src/python/kalibr_runtime` | 执行预算与可选运行诊断 |
+| `src/python/kalibr_tools` | `kalibr-noros tools` 的诊断与实验工作流 |
 | `src/camera_models` | radtan5/radtan8 和九参数 OpenCV fisheye 扩展 |
 | `config/examples` | 可移植任务与辅助配置 |
 | `tests` | 精简的输入、模型、初始化和输出正确性检查 |

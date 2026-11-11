@@ -37,9 +37,9 @@ docker load -i \
 ## 3. 检查 Kalibr
 
 ```bash
-chmod +x tools/kalibr_docker.sh
+chmod +x tools/release/kalibr_docker.sh
 
-tools/kalibr_docker.sh check \
+tools/release/kalibr_docker.sh check \
   "$PWD/install/kalibr_cedarobo_v1.0.0"
 ```
 
@@ -76,7 +76,7 @@ INSTALL_DIR="$PWD/install/kalibr_cedarobo_v1.0.0"
 USER_CONFIG="$PWD/config/user.yaml"
 BATCH_DIR="/data/machine_data/EVT312-02/1104-docker"
 
-tools/kalibr_docker.sh machine \
+tools/release/kalibr_docker.sh machine \
   "$INSTALL_DIR" \
   "$USER_CONFIG" \
   "$BATCH_DIR"

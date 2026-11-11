@@ -756,7 +756,7 @@ config/mechine/
 产线精简包通过下列命令发布：
 
 ```bash
-python3 tools/install_runtime.py \
+python3 tools/release/install_runtime.py \
   --build-dir build/release \
   --prefix /opt/kalibr_cedarobo_v1.0.0 \
   --user-config /path/to/user.yaml

@@ -1,6 +1,6 @@
 # 滚动快门行时间诊断工具
 
-`tools/kalibr_rolling_shutter_diagnosis.py` 用一个普通相机或普通 Camera–IMU 标定任务检查：
+`kalibr-noros tools rolling-shutter-diagnosis` 用一个普通相机或普通 Camera–IMU 标定任务检查：
 当前动态数据中的较大重投影误差，是否稳定地支持“角点时刻随图像行坐标变化”的解释。
 它把 `mechine-00/result/verification` 中一次性的分析方法固化为可复用工具，同时补上严格
 分块、列方向负对照、按帧 bootstrap、多初值、正反方向和轨迹带宽敏感性检查。
@@ -59,15 +59,15 @@ rolling_shutter:
 ## 2. 运行
 
 ```bash
-python3 tools/kalibr_rolling_shutter_diagnosis.py \
+kalibr-noros tools rolling-shutter-diagnosis \
   --config /path/to/rolling_shutter_diagnosis.yaml \
   --output-dir /path/to/result/rolling_shutter_diagnosis
 ```
 
-默认使用 `install/release/bin/kalibr-noros`。可显式指定其他已安装入口：
+默认使用当前 `kalibr-noros` 安装前缀下的同一入口。可显式指定其他已安装入口：
 
 ```bash
-python3 tools/kalibr_rolling_shutter_diagnosis.py \
+kalibr-noros tools rolling-shutter-diagnosis \
   --config diagnosis.yaml \
   --output-dir diagnosis_output \
   --kalibr-noros install/project-profile/bin/kalibr-noros

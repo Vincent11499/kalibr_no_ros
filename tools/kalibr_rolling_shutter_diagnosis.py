@@ -1,43 +1,41 @@
 #!/usr/bin/env python3
-"""Diagnose whether a calibration dataset supports a rolling-shutter row-time model."""
+"""Compatibility entry point for the installed rolling-shutter tool."""
 
 from __future__ import annotations
 
-import argparse
-import json
+import os
 from pathlib import Path
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from rolling_shutter_diagnosis.workflow import run_diagnosis
-
-
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", required=True, help="rolling_shutter_diagnosis YAML")
-    parser.add_argument("--output-dir", required=True, help="new or tool-owned output directory")
-    parser.add_argument("--kalibr-noros", help="installed kalibr-noros executable; defaults to install/release/bin")
-    parser.add_argument("--dry-run", action="store_true", help="validate and print the ordinary source command only")
-    parser.add_argument("--force", action="store_true", help="replace this tool's managed outputs and rerun")
-    return parser
-
-
-def main(argv: list[str] | None = None) -> int:
-    arguments = _parser().parse_args(argv)
-    try:
-        result = run_diagnosis(
-            arguments.config,
-            arguments.output_dir,
-            binary=arguments.kalibr_noros,
-            dry_run=arguments.dry_run,
-            force=arguments.force,
+def main() -> int:
+    project_root = Path(__file__).resolve().parents[1]
+    candidates = (
+        project_root / "build" / "release" / "bin" / "kalibr-noros",
+        project_root / "install" / "release" / "bin" / "kalibr-noros",
+    )
+    binary = next(
+        (path for path in candidates
+         if path.is_file() and os.access(path, os.X_OK)),
+        None,
+    )
+    replacement = "kalibr-noros tools rolling-shutter-diagnosis"
+    print(
+        "deprecated: use '{}' instead".format(replacement),
+        file=sys.stderr,
+        flush=True,
+    )
+    if binary is None:
+        print(
+            "compatibility entry point requires a configured release build",
+            file=sys.stderr,
         )
-    except (OSError, ValueError, RuntimeError) as error:
-        print(f"rolling-shutter-diagnosis: error: {error}", file=sys.stderr)
         return 2
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0
+    os.execv(
+        str(binary),
+        [str(binary), "tools", "rolling-shutter-diagnosis", *sys.argv[1:]],
+    )
+    raise AssertionError("unreachable")
 
 
 if __name__ == "__main__":

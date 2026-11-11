@@ -160,6 +160,7 @@ copy_python_package("${KALIBR_APP_ROOT}/python" kalibr_rs_camera_calibration)
 copy_python_package("${KALIBR_APP_ROOT}/python" kalibr_imu_camera_calibration)
 copy_python_package("${CMAKE_CURRENT_SOURCE_DIR}/src/python" kalibr_bag_io)
 copy_python_package("${CMAKE_CURRENT_SOURCE_DIR}/src/python" kalibr_no_ros)
+copy_python_package("${CMAKE_CURRENT_SOURCE_DIR}/src/python" kalibr_tools)
 copy_python_package("${CMAKE_CURRENT_SOURCE_DIR}/src/camera_models/radtan5/python" kalibr_radtan5)
 copy_python_package("${CMAKE_CURRENT_SOURCE_DIR}/src/camera_models/radtan8/python" kalibr_radtan8)
 copy_python_package(

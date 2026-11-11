@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly project_root="$(cd "${script_dir}/.." && pwd)"
+readonly project_root="$(cd "${script_dir}/../.." && pwd)"
 readonly deps_root="${project_root}/.deps"
 
 install_python_runtime() {

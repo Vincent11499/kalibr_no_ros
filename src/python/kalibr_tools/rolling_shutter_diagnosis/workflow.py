@@ -55,11 +55,6 @@ MANAGED_FILES = (
     "suggested_rolling_shutter_task.yaml",
 )
 
-
-def repository_root() -> Path:
-    return Path(__file__).resolve().parents[2]
-
-
 def _atomic_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
@@ -575,7 +570,9 @@ def _completed(run_dir: Path, output_name: str) -> bool:
         return False
 
 
-def _run_command(command: list[str], log_path: Path, dry_run: bool) -> int:
+def _run_command(
+    command: list[str], log_path: Path, dry_run: bool, cwd: Path
+) -> int:
     print("$ " + shlex.join(command), flush=True)
     if dry_run:
         return 0
@@ -583,7 +580,7 @@ def _run_command(command: list[str], log_path: Path, dry_run: bool) -> int:
     with log_path.open("w", encoding="utf-8", newline="") as log:
         process = subprocess.Popen(
             command,
-            cwd=repository_root(),
+            cwd=cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -618,7 +615,12 @@ def _execute_task(
     if force or (run_dir / output_name).exists() or (run_dir / f"{output_name}.yaml").exists():
         commands[1].append("--force")
     for index, values in enumerate(commands):
-        code = _run_command(values, output / "logs" / f"{output_name}_{index}.log", dry_run)
+        code = _run_command(
+            values,
+            output / "logs" / f"{output_name}_{index}.log",
+            dry_run,
+            output,
+        )
         if code:
             return commands, False
     return commands, dry_run or _completed(run_dir, output_name)
@@ -800,14 +802,14 @@ def run_diagnosis(
     config_path: Path | str,
     output_dir: Path | str,
     *,
-    binary: Path | str | None = None,
+    binary: Path | str,
     dry_run: bool = False,
     force: bool = False,
 ) -> dict[str, Any]:
     config = load_config(config_path)
     output = Path(output_dir).expanduser().resolve()
     manifest = prepare_output(config, output, force)
-    executable = Path(binary).expanduser().resolve() if binary else repository_root() / "install/release/bin/kalibr-noros"
+    executable = Path(binary).expanduser().resolve()
     if not executable.is_file() or not os.access(executable, os.X_OK):
         raise FileNotFoundError(f"kalibr-noros is not executable: {executable}")
 
