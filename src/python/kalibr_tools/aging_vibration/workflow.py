@@ -15,8 +15,15 @@ from typing import Any, Iterable
 
 import yaml
 
+from kalibr_no_ros.version import (
+    CONFIG_SCHEMA_VERSION,
+    SUPPORTED_CONFIG_SCHEMA_VERSIONS,
+    SUPPORTED_DATASET_SCHEMA_VERSIONS,
+    supports_schema_version,
+)
 
-SCHEMA_VERSION = "1.0.0"
+
+SCHEMA_VERSION = CONFIG_SCHEMA_VERSION
 KIND = "stereo_aging_vibration_study"
 VERIFY_OPTIONS = {
     "window_half_size_px": 7,
@@ -188,7 +195,9 @@ def load_manifest(
     value = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise ValueError("study manifest must be a YAML mapping")
-    if value.get("schema_version") != SCHEMA_VERSION or value.get("kind") != KIND:
+    if (not supports_schema_version(
+            value.get("schema_version"), SUPPORTED_CONFIG_SCHEMA_VERSIONS)
+            or value.get("kind") != KIND):
         raise ValueError("unsupported study manifest; regenerate it with the current init command")
     root = Path(value.get("machine_root", "."))
     value["_manifest_path"] = manifest_path
@@ -240,7 +249,9 @@ def inspect_study(manifest: dict[str, Any]) -> dict[str, Any]:
                     metadata = metadata if isinstance(metadata, dict) else {}
                     cameras = metadata.get("cameras", [])
                     signature = tuple((camera.get("id"), tuple(camera.get("resolution", []))) for camera in cameras)
-                    if metadata.get("schema_version") != SCHEMA_VERSION:
+                    if not supports_schema_version(
+                            metadata.get("schema_version"),
+                            SUPPORTED_DATASET_SCHEMA_VERSIONS):
                         errors.append(f"unsupported dataset schema: {dataset}")
                     if tuple(camera[0] for camera in signature) != ("cam0", "cam1"):
                         errors.append(f"dataset camera IDs must be cam0, cam1: {dataset}")
@@ -316,7 +327,7 @@ def representative_calibration(manifest: dict[str, Any], phase_name: str) -> dic
 def build_verify_command(manifest: dict[str, Any], calibration: Path, dataset: Path, output: Path, force: bool = False) -> list[str]:
     options = manifest["kalibr"]["verify_options"]
     command = [
-        str(_release_binary(manifest)), "verify", "cameras",
+        str(_release_binary(manifest)), "tools", "fixed-stereo-validation",
         "--calibration", f"{manifest['kalibr']['calibration_label']}={calibration}",
         "--dataset", str(dataset), "--target", str(installation_path(manifest, manifest["kalibr"]["target"])),
         "--output-dir", str(output),

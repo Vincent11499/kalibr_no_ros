@@ -10,7 +10,7 @@ import numpy as np
 import yaml
 
 from kalibr_tools.aging_vibration.diagnosis import VARIANT_ORDER, build_extrinsic_variants, generate_diagnosis_report
-from kalibr_tools.aging_vibration.reporting import build_parameter_comparison, collect_calibrations, collect_verifications, generate_report
+from kalibr_tools.aging_vibration.reporting import build_parameter_comparison, collect_calibrations, collect_verifications, collect_quality_tables, generate_report
 from kalibr_tools.aging_vibration.workflow import (
     KIND,
     VERIFY_OPTIONS,
@@ -155,6 +155,7 @@ class AgingVibrationWorkflowTest(unittest.TestCase):
 
     def test_verify_command_has_fixed_method(self):
         command = build_verify_command(self.manifest, Path("/tmp/a.yaml"), Path("/tmp/data"), Path("/tmp/out"))
+        self.assertEqual(command[1:3], ["tools", "fixed-stereo-validation"])
         self.assertIn("pinhole_equi=/tmp/a.yaml", command)
         self.assertIn("--visualizations", command)
         for option, expected in (("--window-half-size-px", "7"), ("--max-displacement-px", "2.0"), ("--max-pairs", "30")):
@@ -202,6 +203,29 @@ class AgingVibrationWorkflowTest(unittest.TestCase):
         self.assertEqual(len(list((output / "charts").glob("*.png"))), 4)
         self.assertTrue((output / "parameter_repeatability.csv").is_file())
         self.assertIn("三组标定", Path(result["html"]).read_text(encoding="utf-8"))
+
+    def test_saved_quality_distributions_and_axis_angle(self):
+        self._evidence()
+        run = self.manifest["phases"]["before"]["calibration_runs"][0]
+        metrics_path = self.root / run["artifacts"] / "metrics.json"
+        metrics = json.loads(metrics_path.read_text())
+        metrics["cameras"]["cam0"]["reprojection"]["p95"] = 0.45
+        metrics["cameras"]["cam0"]["line_straightness"] = {"rms_px": 0.08, "p95": 0.16}
+        metrics["stereo_pairs"]["cam0_cam1"]["alignment"]["p95"] = 0.35
+        _json(metrics_path, metrics)
+        result_path = self.root / run["result"]
+        document = yaml.safe_load(result_path.read_text())
+        document["cameras"][1]["T_cn_cnm1"] = [[0, -1, 0, -0.38], [1, 0, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
+        _yaml(result_path, document)
+        cameras, optical, extrinsics = collect_quality_tables(self.manifest, ("before",), (("before", "before"),))
+        self.assertEqual(cameras[0]["p95_px"], 0.45)
+        self.assertEqual(cameras[0]["line_rms_px"], 0.08)
+        self.assertEqual(cameras[0]["line_p95_px"], 0.16)
+        self.assertEqual(optical[0]["p95_px"], 0.35)
+        self.assertIsNone(cameras[-1]["p95_px"])
+        self.assertAlmostEqual(extrinsics[0]["angle_deg"], 90)
+        self.assertEqual(extrinsics[0]["axis"], "[0. 0. 1.]")
+        self.assertEqual(extrinsics[1]["angle_deg"], 0)
 
     def test_full_report_accepts_new_after_phase(self):
         self._evidence()

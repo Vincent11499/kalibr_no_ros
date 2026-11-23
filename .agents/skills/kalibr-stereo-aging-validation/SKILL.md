@@ -5,7 +5,9 @@ description: Run or report this repository's pinhole-equi stereo aging/vibration
 
 # 双目老化／振动验证
 
-使用正式入口 `kalibr-noros tools stereo-aging-validation`。不要在 skill、临时脚本或测试目录复制实验编排和报告计算。
+使用正式入口 `kalibr-noros tools stereo-aging-validation`。实现保留在
+`src/python/kalibr_tools/aging_vibration/`；不要恢复废弃的
+`tools/kalibr_stereo_aging_validation.py`，也不要在 skill、临时脚本或测试目录复制实验编排和报告计算。
 
 ## 数据目录
 
@@ -26,6 +28,7 @@ description: Run or report this repository's pinhole-equi stereo aging/vibration
 ## 固定方法
 
 - 只使用当前入口所属安装前缀的 `bin/kalibr-noros`。
+- 固定参数双目验证由正式 `kalibr-noros tools fixed-stereo-validation` 执行，不复制检测或误差计算实现。
 - 标定使用显式 pinhole-equi 初值和 `solver_mode: full_batch`。
 - `detector_processes: 8`、`optimizer_threads: 4`，所有标定与验证逐项串行。
 - 保存诊断、指标以及最多 30 帧／30 对的检测、去畸变和极线对齐图；去畸变不裁剪。
@@ -34,6 +37,22 @@ description: Run or report this repository's pinhole-equi stereo aging/vibration
 - after 阶段先用 before 代表参数验证三组 after 测试集，再完成三组 after 标定，并用 after 第 1 组结果验证同一批 after 测试集。
 - 对比 before标定参数与after标定参数。
 - 没有用户验收阈值时只输出数值与趋势，不使用内建参考等级宣称生产合格。
+
+## 汇总报告指标
+
+before 基线及 before/after 对比的 HTML、PDF 和 CSV 均需列出每组每目的
+`RMS [px]`、`P95 [px]`、`Line [px]`、`Line P95 [px]`，以及每组双目的
+`Optical RMS [px]`、`Optical RMS P95 [px]`。重投影按二维角点距离统计；
+Line 为去畸变后行列角点到 TLS 直线的距离 RMS；Optical 为极线对齐残差，
+其 P95 指同一残差绝对值的第95百分位，不是逐帧 RMS 的百分位。
+只读取已有结果；缺少汇总分布时注明未保存，不用逐帧百分位平均值代替，也不自动重跑标定或检测。
+新执行的固定参数 test 必须保存逐目总体 P95 和直线度分布（RMS、P95）；
+历史 test 缺少这些统计且用户明确授权重跑时，仅重跑固定参数验证，复用原标定参数并重建汇总报告。
+
+`cam0_cam1` 外参保留完整 `T_cn_cnm1` 矩阵，同时增加单位旋转轴和角度（deg）。
+方向为 cam0 → cam1，平移单位 m；零旋转的轴约定为 `[1,0,0]`。
+仅更新报告时使用 `stereo-aging-validation report --manifest ... --force`，
+替换前检查受管输出清单，不触发 `run` 或重新标定。
 
 ## 命令
 

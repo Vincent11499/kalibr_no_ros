@@ -22,6 +22,9 @@ import yaml
 from matplotlib import font_manager
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.font_manager import FontProperties
+from scipy.spatial.transform import Rotation
+
+from kalibr_no_ros.version import RESULT_SCHEMA_VERSION
 
 from .workflow import _write_json, machine_path
 
@@ -32,6 +35,63 @@ METRICS = (
     ("stereo_rms_px", "双目综合 RMS [px]"),
     ("alignment_rms_px", "Alignment RMS [px]"),
 )
+
+CAMERA_QUALITY_COLUMNS = [
+    ("group", "数据组"), ("dataset_id", "数据集"), ("camera", "相机"),
+    ("rms_px", "RMS [px]"), ("p95_px", "P95 [px]"),
+    ("line_rms_px", "Line [px]"), ("line_p95_px", "Line P95 [px]"),
+]
+OPTICAL_COLUMNS = [
+    ("group", "数据组"), ("dataset_id", "数据集"),
+    ("rms_px", "Optical RMS [px]"), ("p95_px", "Optical RMS P95 [px]"),
+]
+EXTRINSIC_COLUMNS = [
+    ("group", "阶段"), ("dataset_id", "数据集"),
+    ("matrix", "T_cam1_cam0 [m]"), ("axis", "单位旋转轴"), ("angle_deg", "角度 [deg]"),
+]
+
+
+def collect_quality_tables(manifest, phases, groups):
+    """Read saved distributions; absent pooled statistics remain unavailable."""
+    cameras, optical, extrinsics = [], [], []
+
+    def add(group, dataset, camera_metrics, alignment, validation=False):
+        for camera_id in ("cam0", "cam1"):
+            camera = camera_metrics[camera_id]
+            error = camera if validation else camera.get("reprojection", {})
+            line = camera.get("line_straightness", {})
+            cameras.append({
+                "group": group, "dataset_id": dataset, "camera": camera_id,
+                "rms_px": error.get("rms_px"),
+                "p95_px": error.get("p95_px", error.get("p95")),
+                "line_rms_px": line.get("rms_px"),
+                "line_p95_px": line.get("p95_px", line.get("p95")),
+            })
+        optical.append({"group": group, "dataset_id": dataset,
+                        "rms_px": alignment.get("rms_px"),
+                        "p95_px": alignment.get("p95_px", alignment.get("p95"))})
+
+    for phase in phases:
+        for run in manifest["phases"][phase]["calibration_runs"]:
+            metrics = _load_json(machine_path(manifest, run["artifacts"]) / "metrics.json")
+            add(phase + " calibration", run["dataset_id"], metrics["cameras"],
+                metrics.get("stereo_pairs", {}).get("cam0_cam1", {}).get("alignment", {}))
+            result = yaml.safe_load(machine_path(manifest, run["result"]).read_text(encoding="utf-8"))
+            transform = np.asarray(_camera(result, "cam1")["T_cn_cnm1"], dtype=float)
+            vector = Rotation.from_matrix(transform[:3, :3]).as_rotvec()
+            angle = float(np.linalg.norm(vector))
+            axis = vector / angle if angle > 1e-12 else np.array([1., 0., 0.])
+            extrinsics.append({"group": phase, "dataset_id": run["dataset_id"],
+                               "matrix": np.array2string(transform, precision=9),
+                               "axis": np.array2string(axis, precision=9),
+                               "angle_deg": math.degrees(angle)})
+    for test_phase, calibration_phase in groups:
+        for run in manifest["phases"][test_phase]["test_runs"]:
+            document = _load_json(machine_path(manifest, run["results"][calibration_phase]) / "fixed_camera_validation.json")
+            result = _result_for_label(document, manifest["kalibr"]["calibration_label"])
+            add(f"{test_phase} test / {calibration_phase}", run["dataset_id"],
+                result["cameras"], result["stereo"]["alignment"], validation=True)
+    return cameras, optical, extrinsics
 
 
 def _font() -> FontProperties:
@@ -179,9 +239,12 @@ def _html_table(rows: list[dict[str, Any]], columns: list[tuple[str, str]]) -> s
         cells = []
         for key, _ in columns:
             value = row.get(key, "")
+            if value is None:
+                value = "未保存"
             if isinstance(value, float):
                 value = f"{value:.9f}"
-            cells.append(f"<td>{html.escape(str(value))}</td>")
+            style = ' style="white-space:pre"' if "\n" in str(value) else ""
+            cells.append(f"<td{style}>{html.escape(str(value))}</td>")
         body.append("<tr>" + "".join(cells) + "</tr>")
     return f"<table><thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table>"
 
@@ -384,6 +447,12 @@ def generate_report(manifest: dict[str, Any], full: bool = False, force: bool = 
     groups = (("before", "before"), ("after", "before"), ("after", "after")) if full else (("before", "before"),)
     calibrations, parameters = collect_calibrations(manifest, phases)
     verifications, details = collect_verifications(manifest, groups)
+    camera_quality, optical_quality, extrinsics = collect_quality_tables(manifest, phases, groups)
+    quality_sections = [
+        ("相机重投影与直线度", camera_quality, CAMERA_QUALITY_COLUMNS, "camera_quality.csv"),
+        ("双目光学对齐", optical_quality, OPTICAL_COLUMNS, "optical_quality.csv"),
+        ("双目外参矩阵与轴角", extrinsics, EXTRINSIC_COLUMNS, "stereo_extrinsics.csv"),
+    ]
     parameter_comparison = build_parameter_comparison(calibrations, parameters) if full else []
     destination = machine_path(manifest, manifest["reports"]["comparison" if full else "before"])
     existing_manifest = destination / "report_manifest.json"
@@ -411,6 +480,8 @@ def generate_report(manifest: dict[str, Any], full: bool = False, force: bool = 
         _write_csv(stage / "calibration_parameters.csv", parameters)
         _write_csv(stage / "verification_summary.csv", verifications)
         _write_csv(stage / "verification_details.csv", details)
+        for _, rows, _, filename in quality_sections:
+            _write_csv(stage / filename, rows)
         if full:
             _write_csv(stage / "parameter_before_after_comparison.csv", parameter_comparison)
         calibration_stats = []
@@ -448,6 +519,8 @@ def generate_report(manifest: dict[str, Any], full: bool = False, force: bool = 
         document = f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>{html.escape(title)}</title>
 <style>body{{font-family:"Microsoft YaHei","Noto Sans CJK SC",sans-serif;max-width:1500px;margin:30px auto;padding:0 24px;color:#1a202c}}h1,h2{{color:#16324f}}.note{{background:#edf2f7;border-left:5px solid #2b6cb0;padding:12px 16px}}table{{border-collapse:collapse;width:100%;font-size:12px;margin:14px 0 24px}}th,td{{border:1px solid #cbd5e0;padding:6px 8px;text-align:right}}th:first-child,td:first-child{{text-align:left}}th{{background:#e2e8f0}}img{{max-width:100%}}</style></head><body>
 <h1>{html.escape(title)}</h1><p class="note">三组标定用于估计参数重复性；按时间排序的第 1 组标定参数用于三组固定参数测试。报告只给出测量结果和离散程度，不自动作生产合格判定。</p>
+<p>RMS/P95 为角点二维重投影距离统计；Line/Line P95 为去畸变后行列角点到 TLS 直线的垂直距离统计。Optical RMS 为极线对齐残差 RMS，Optical RMS P95 为同一残差绝对值的第95百分位，并非逐帧 RMS 的百分位。未保存的汇总统计不以逐帧百分位平均值替代。T_cam1_cam0 将 cam0 坐标变换到 cam1，矩阵平移单位 m；轴角表示同一旋转，角度单位 deg，零旋转的轴约定为 [1,0,0]。</p>
+{''.join('<h2>' + heading + '</h2>' + _html_table(rows, columns) for heading, rows, columns, _ in quality_sections)}
 <h2>标定指标</h2>{_html_table(calibrations, [('phase','阶段'),('repeat','重复'),('dataset_id','数据集'),('cam0_rms_px','cam0 RMS'),('cam1_rms_px','cam1 RMS'),('stereo_rms_px','双目综合 RMS'),('alignment_rms_px','Alignment RMS'),('baseline_mm','基线 [mm]'),('cam0_used_frames','cam0 使用帧'),('cam1_used_frames','cam1 使用帧'),('observability_status','可观性状态'),('observability_quality','可观性质量')])}
 <h2>标定重复性统计</h2>{_html_table(calibration_stats, [('phase','阶段'),('metric','指标'),('mean','均值'),('sample_std','样本标准差'),('range','极差')])}
 <h2>参数重复性统计</h2>{_html_table(parameter_stats, [('phase','阶段'),('camera','参数块'),('parameter','参数'),('mean','均值'),('sample_std','样本标准差'),('range','极差')])}
@@ -459,6 +532,27 @@ def generate_report(manifest: dict[str, Any], full: bool = False, force: bool = 
         html_name, pdf_name = stem + ".html", stem + ".pdf"
         (stage / html_name).write_text(document, encoding="utf-8")
         with PdfPages(stage / pdf_name) as pdf:
+            for heading, rows, columns, _ in quality_sections:
+                for start in range(0, len(rows), 12):
+                    page, ax = plt.subplots(figsize=(16.54, 8.27))
+                    ax.axis("off")
+                    ax.set_title(heading, fontproperties=font, fontsize=16, pad=22)
+                    cell_rows = []
+                    for row in rows[start:start + 12]:
+                        cell_rows.append(["未保存" if row.get(key) is None else
+                                          f"{row[key]:.9f}" if isinstance(row[key], float) else str(row[key])
+                                          for key, _ in columns])
+                    table = ax.table(cellText=cell_rows, colLabels=[label for _, label in columns], loc="center", cellLoc="center")
+                    table.auto_set_font_size(False)
+                    table.set_fontsize(7)
+                    table.scale(1, 5 if columns is EXTRINSIC_COLUMNS else 2)
+                    for cell in table.get_celld().values():
+                        cell.get_text().set_fontproperties(font)
+                        cell.get_text().set_fontsize(7)
+                    table.auto_set_column_width(list(range(len(columns))))
+                    page.text(0.05, 0.04, "Optical RMS P95：极线对齐残差绝对值的P95；未保存项不推算。T_cam1_cam0：cam0 → cam1，平移 m，角度 deg。", fontproperties=font, fontsize=9)
+                    pdf.savefig(page)
+                    plt.close(page)
             page = plt.figure(figsize=(11.69, 8.27))
             page.text(0.06, 0.92, title, fontsize=20, fontproperties=font)
             lines = ["三次标定与三次固定参数验证；无生产合格判定。", ""]
@@ -491,10 +585,11 @@ def generate_report(manifest: dict[str, Any], full: bool = False, force: bool = 
             for _, figure in figures:
                 pdf.savefig(figure)
         files = [html_name, pdf_name, "calibration_repeatability.csv", "calibration_parameters.csv", "parameter_repeatability.csv", "verification_summary.csv", "verification_details.csv"]
+        files.extend(filename for _, _, _, filename in quality_sections)
         if full:
             files.append("parameter_before_after_comparison.csv")
         files.extend([*("charts/" + name for name, _ in figures), "report_manifest.json", ".inventory.json"])
-        report_manifest = {"schema_version": "1.0.0", "kind": "stereo_aging_vibration_report", "machine_id": manifest["machine_id"], "full_before_after": full, "html": html_name, "pdf": pdf_name, "files": files[:-2]}
+        report_manifest = {"schema_version": RESULT_SCHEMA_VERSION, "kind": "stereo_aging_vibration_report", "machine_id": manifest["machine_id"], "full_before_after": full, "html": html_name, "pdf": pdf_name, "files": files[:-2]}
         _write_json(stage / "report_manifest.json", report_manifest)
         _write_json(stage / ".inventory.json", sorted(files))
         _managed_replace(destination, stage, force)

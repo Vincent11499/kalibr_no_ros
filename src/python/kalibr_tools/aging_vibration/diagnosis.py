@@ -20,6 +20,8 @@ import numpy as np
 import yaml
 from matplotlib.backends.backend_pdf import PdfPages
 
+from kalibr_no_ros.version import RESULT_SCHEMA_VERSION
+
 from .reporting import _font, _html_table, _managed_replace, _result_for_label, _write_csv
 from .workflow import (
     _completed_run,
@@ -161,7 +163,7 @@ def build_extrinsic_variants(
         before_document, before_rotation, after_baseline / np.linalg.norm(after_baseline) * np.linalg.norm(before_baseline)
     )
     metadata = {
-        "schema_version": "1.0.0",
+        "schema_version": RESULT_SCHEMA_VERSION,
         "kind": "stereo_extrinsic_diagnosis_variants",
         "coordinate_system": "physical baseline b is expressed in cam0; b=-R^T*t and t=-R*b",
         "delta_rotation_vector_cam0_deg": np.degrees(delta_rotation).tolist(),
@@ -445,7 +447,7 @@ def generate_diagnosis_report(
             "charts/alignment_sensitivity.png", "charts/extrinsic_change.png", "report_manifest.json", ".inventory.json",
         ]
         report_manifest = {
-            "schema_version": "1.0.0", "kind": "stereo_extrinsic_diagnosis_report", "machine_id": manifest["machine_id"],
+            "schema_version": RESULT_SCHEMA_VERSION, "kind": "stereo_extrinsic_diagnosis_report", "machine_id": manifest["machine_id"],
             "html": html_name, "pdf": pdf_name, "markdown": markdown_name, "files": files[:-2],
         }
         _write_json(stage / "report_manifest.json", report_manifest)
