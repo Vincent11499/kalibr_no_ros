@@ -15,6 +15,8 @@ import numpy as np
 from scipy.optimize import least_squares
 import yaml
 
+from kalibr_no_ros.version import RESULT_SCHEMA_VERSION
+
 
 cv2.setNumThreads(1)
 
@@ -376,7 +378,7 @@ def screen_observations(
         classification = "inconclusive"
         run_formal = False
     return ({
-        "schema_version": "1.0.0",
+        "schema_version": RESULT_SCHEMA_VERSION,
         "kind": "rolling_shutter_offline_screen",
         "classification": classification,
         "run_formal_controls": run_formal,

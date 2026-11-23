@@ -2,14 +2,81 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
+
+
+def _positive_integer(value):
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
 
 
 def add_tools_parser(commands):
     tools = commands.add_parser(
         "tools", help="run installed diagnostics and calibration studies")
     tool_commands = tools.add_subparsers(dest="tool", required=True)
+
+    allan = tool_commands.add_parser(
+        "imu-allan", help="estimate IMU noise from static CSV and generate HTML/PDF reports")
+    allan.add_argument("--dataset", required=True, help="session directory or IMU CSV (rad/s, m/s^2)")
+    allan.add_argument("--output-dir", required=True, help="new result directory outside the source dataset")
+    allan.add_argument("--topic", default="/imu/data", help="rostopic in imu_noise.yaml (default: /imu/data)")
+    from .imu_allan.input_format import add_time_arguments
+
+    add_time_arguments(allan)
+
+    fixed = tool_commands.add_parser(
+        "fixed-stereo-validation",
+        help="validate fixed stereo K/D/T on a directory dataset")
+    fixed.add_argument(
+        "--calibration", action="append", required=True,
+        help="repeatable LABEL=calibration-result.yaml (LABEL= may be omitted)")
+    fixed.add_argument("--dataset", required=True)
+    fixed.add_argument("--target", required=True)
+    fixed.add_argument("--output-dir", required=True)
+    fixed.add_argument("--window-half-size-px", type=int, default=2)
+    fixed.add_argument(
+        "--max-displacement-px", type=float, default=1.5 ** 0.5)
+    fixed.add_argument(
+        "--synchronization-tolerance-s", type=float, default=0.0002)
+    fixed.add_argument("--rectification-balance", type=float, default=0.0)
+    fixed.add_argument("--rectification-fov-scale", type=float, default=1.0)
+    fixed.add_argument(
+        "--detector-opencv-threads", type=_positive_integer, default=1)
+    fixed.add_argument(
+        "--visualizations", action="store_true",
+        help="save detected corners, undistorted images, and rectified stereo pairs")
+    fixed.add_argument(
+        "--max-frames-per-camera", type=_positive_integer, default=20)
+    fixed.add_argument("--max-pairs", type=_positive_integer, default=20)
+    fixed.add_argument(
+        "--undistortion-crop", action="store_true",
+        help="crop invalid borders in per-camera undistorted images")
+    fixed.add_argument("--force", action="store_true")
+
+    distance = tool_commands.add_parser(
+        "stereo-tag-distance",
+        help="measure the 3-D center distance between two AprilTags",
+    )
+    distance.add_argument("--dataset", required=True)
+    distance.add_argument(
+        "--calibration", required=True,
+        help="camera calibration result or stereo_imu_calib.yaml")
+    distance.add_argument("--tag0", type=int, default=0)
+    distance.add_argument("--tag1", type=int, default=1)
+    distance.add_argument(
+        "--border", choices=("auto", "1", "2"), default="auto")
+    distance.add_argument("--max-pair-delta-ms", type=float, default=10.0)
+    distance.add_argument(
+        "--output-csv",
+        help=("per-pair CSV; defaults to the dataset sibling "
+              "result/distance_YYMMDD_HHMM/"))
+    distance.add_argument("--summary-csv")
+    distance.add_argument("--detection-dir")
+    distance.add_argument("--overwrite", action="store_true")
 
     rolling = tool_commands.add_parser(
         "rolling-shutter-diagnosis",
@@ -81,6 +148,48 @@ def _print_commands(commands, shell_join):
 
 def run_tool(arguments, prefix):
     prefix = Path(prefix).resolve()
+    if arguments.tool == "imu-allan":
+        from .imu_allan.input_format import time_bounds
+        from .imu_allan.workflow import run_analysis
+
+        start_ns, end_ns = time_bounds(arguments)
+        result = run_analysis(
+            arguments.dataset, arguments.output_dir, topic=arguments.topic,
+            start_ns=start_ns, end_ns=end_ns,
+            progress=lambda message: print(message, flush=True),
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
+    if arguments.tool == "fixed-stereo-validation":
+        from .fixed_stereo_validation import verify_fixed_cameras
+
+        output = Path(arguments.output_dir).expanduser().resolve()
+        verify_fixed_cameras(
+            arguments.calibration,
+            arguments.dataset,
+            arguments.target,
+            output,
+            window_half_size_px=arguments.window_half_size_px,
+            max_displacement_px=arguments.max_displacement_px,
+            synchronization_tolerance_s=arguments.synchronization_tolerance_s,
+            rectification_balance=arguments.rectification_balance,
+            rectification_fov_scale=arguments.rectification_fov_scale,
+            detector_opencv_threads=arguments.detector_opencv_threads,
+            visualizations=arguments.visualizations,
+            max_frames_per_camera=arguments.max_frames_per_camera,
+            max_pairs=arguments.max_pairs,
+            undistortion_crop=arguments.undistortion_crop,
+            force=arguments.force,
+        )
+        print(output)
+        return 0
+
+    if arguments.tool == "stereo-tag-distance":
+        from .stereo_tag_distance import run_distance
+
+        return run_distance(arguments, prefix)
+
     if arguments.tool == "rolling-shutter-diagnosis":
         from .rolling_shutter_diagnosis.workflow import run_diagnosis
 

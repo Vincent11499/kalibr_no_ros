@@ -19,6 +19,11 @@ import numpy as np
 import yaml
 
 from . import KIND, SCHEMA_VERSION
+from kalibr_no_ros.version import (
+    RESULT_SCHEMA_VERSION,
+    SUPPORTED_CONFIG_SCHEMA_VERSIONS,
+    supports_schema_version,
+)
 from .analysis import (
     compare_archived_residuals,
     load_run_summary,
@@ -130,8 +135,10 @@ def load_config(path: Path | str) -> dict[str, Any]:
     unknown = set(config) - allowed
     if unknown:
         raise ValueError("unknown diagnosis fields: " + ", ".join(sorted(unknown)))
-    if config.get("schema_version") != SCHEMA_VERSION or config.get("kind") != KIND:
-        raise ValueError('diagnosis requires schema_version: "1.0.0" and kind: rolling_shutter_diagnosis')
+    if (not supports_schema_version(
+            config.get("schema_version"), SUPPORTED_CONFIG_SCHEMA_VERSIONS)
+            or config.get("kind") != KIND):
+        raise ValueError('diagnosis requires a supported config schema and kind: rolling_shutter_diagnosis')
     source = config.get("source_task")
     if not isinstance(source, dict) or set(source) != {"path"} or not isinstance(source.get("path"), str):
         raise ValueError("source_task must contain exactly one string field: path")
@@ -139,8 +146,10 @@ def load_config(path: Path | str) -> dict[str, Any]:
     if not task_path.is_file():
         raise FileNotFoundError(task_path)
     task = _resolve_task_paths(_load_yaml(task_path), task_path)
-    if task.get("schema_version") != SCHEMA_VERSION or task.get("kind") != "calibration_task":
-        raise ValueError("source_task.path must reference a v1.0.0 calibration task")
+    if (not supports_schema_version(
+            task.get("schema_version"), SUPPORTED_CONFIG_SCHEMA_VERSIONS)
+            or task.get("kind") != "calibration_task"):
+        raise ValueError("source_task.path must reference a supported calibration task")
     if task.get("job") not in SUPPORTED_SOURCE_JOBS:
         raise ValueError("source task job must be camera_calibration or camera_imu_calibration")
 
@@ -329,7 +338,7 @@ def prepare_output(config: dict[str, Any], output: Path, force: bool) -> dict[st
     if manifest_path.is_file():
         return json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": RESULT_SCHEMA_VERSION,
         "kind": KIND,
         "status": "prepared",
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -736,7 +745,7 @@ def _formal_evidence(output: Path, config: dict[str, Any], tasks: list[dict[str,
 
     classification = "important" if camera_gates and all(value["passed"] for value in camera_gates.values()) else "inconclusive"
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": RESULT_SCHEMA_VERSION,
         "kind": "rolling_shutter_formal_comparison",
         "classification": classification,
         "completed_run_count": len(summaries),
@@ -762,7 +771,7 @@ def _incomplete_formal_evidence(
     }
     missing = [task["name"] for task in tasks if task["name"] not in summaries]
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": RESULT_SCHEMA_VERSION,
         "kind": "rolling_shutter_formal_comparison",
         "classification": "inconclusive",
         "reason": "one or more mandatory formal controls failed",
@@ -886,7 +895,7 @@ def run_diagnosis(
         "unsupported" if screen["classification"] == "unsupported" else "inconclusive"
     )
     result = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": RESULT_SCHEMA_VERSION,
         "kind": "rolling_shutter_diagnosis_result",
         "classification": classification,
         "screening": screen,

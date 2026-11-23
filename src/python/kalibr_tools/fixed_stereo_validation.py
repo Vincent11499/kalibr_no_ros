@@ -21,7 +21,8 @@ import time
 
 import numpy as np
 
-from .evaluation import (
+from kalibr_no_ros.results.evaluation import (
+    _line_straightness,
     assess_metrics,
     distribution,
     rectification_maps,
@@ -29,13 +30,13 @@ from .evaluation import (
     stereo_geometry,
     undistortion_maps,
 )
-from .task import load_yaml, require_document_version
-from .validation import load_cameras, load_target
-from .version import SCHEMA_VERSION, VERSION
-from .visualization import draw_image_label, uniform_sample
+from kalibr_no_ros.task.document import load_yaml, require_document_version
+from kalibr_no_ros.task.validation import load_cameras, load_target
+from kalibr_no_ros.version import RESULT_SCHEMA_VERSION, VERSION
+from kalibr_no_ros.results.visualization import draw_image_label, uniform_sample
 
 try:
-    from ._build_info import GIT_COMMIT, SOURCE_VARIANT
+    from kalibr_no_ros._build_info import GIT_COMMIT, SOURCE_VARIANT
 except ImportError:
     GIT_COMMIT = None
     SOURCE_VARIANT = "project"
@@ -105,81 +106,30 @@ def _distribution(values):
     }
 
 
-def _native_model(camera):
-    """Construct the native model class used by the original detector."""
-    import aslam_cv_backend as acvb
-
-    from .evaluation import camera_geometry
-
-    model = camera_geometry(camera)["model"]
-    models = {
-        "pinhole-radtan": acvb.DistortedPinhole,
-        "pinhole-equi": acvb.EquidistantPinhole,
-        "pinhole-equidistant": acvb.EquidistantPinhole,
-        "pinhole-fov": acvb.FovPinhole,
-        "omni-none": acvb.Omni,
-        "omni-radtan": acvb.DistortedOmni,
-        "eucm-none": acvb.ExtendedUnified,
-        "ds-none": acvb.DoubleSphere,
-    }
-    if model == "pinhole-radtan5":
-        import kalibr_radtan5 as extension
-        extension.install()
-        return extension.PinholeRadtan5
-    if model == "pinhole-radtan8":
-        import kalibr_radtan8 as extension
-        extension.install()
-        return extension.PinholeRadtan8
-    if model == "pinhole-opencv-fisheye":
-        import kalibr_opencv_fisheye as extension
-        extension.install()
-        return extension.PinholeOpenCvFisheye
-    try:
-        return models[model]
-    except KeyError as error:
-        raise FixedCameraValidationError(
-            "fixed-camera validation does not support model {}".format(
-                model)) from error
-
-
-def _native_geometry(camera):
-    model = _native_model(camera)
-    distortion = model.distortionType()
-    distortion.setParameters(np.asarray(
-        camera["distortion_coeffs"], dtype=float))
-    projection = model.projectionType(*(
-        list(map(float, camera["intrinsics"]))
-        + list(map(int, camera["resolution"]))
-        + [distortion]))
-    return model.geometry(projection)
-
-
-def _detector(target_path, camera, window_half_size_px,
-              max_displacement_px, show_extraction=False,
-              extraction_stepping=False):
-    from kalibr_common.ConfigReader import CalibrationTargetParameters
-    from kalibr_camera_calibration.CameraCalibrator import TargetDetector
-
-    target = CalibrationTargetParameters(str(target_path))
-    geometry = _native_geometry(camera)
-    detector = TargetDetector(
-        target,
-        geometry,
-        showCorners=show_extraction,
-        showOneStep=extraction_stepping,
-        windowHalfSizePx=window_half_size_px,
-        maxDisplacementPx=max_displacement_px,
-    ).detector
-    return geometry, detector
+def _camera_quality(camera, frames):
+    detected = [frame for frame in frames if frame["detected"]]
+    errors = _distribution(np.concatenate([
+        frame["_residual_norms_px"] for frame in detected
+    ]) if detected else [])
+    straightness = _line_straightness({
+        **camera,
+        "frames": [{"used": True, "corners": frame["_line_corners"]}
+                   for frame in detected],
+    })
+    return {"p95_px": errors["p95_px"], "max_px": errors["max_px"],
+            "line_straightness": straightness}
 
 
 def _detect_camera(dataset_path, target_path, camera, window_half_size_px,
                    max_displacement_px):
-    from .datasets import BagImageDatasetReader
+    from kalibr_no_ros.native_bridge.camera_geometry import create_camera_geometry
+    from kalibr_no_ros.native_bridge.datasets import BagImageDatasetReader
+    from kalibr_no_ros.native_bridge.target_detector import create_target_detector
 
     camera_id = camera["id"]
-    geometry, detector = _detector(
-        target_path, camera, window_half_size_px, max_displacement_px)
+    geometry = create_camera_geometry(camera)
+    detector = create_target_detector(
+        target_path, geometry, window_half_size_px, max_displacement_px)
     reader = BagImageDatasetReader(str(dataset_path), camera_id)
     frames = []
     total_squared = 0.0
@@ -225,6 +175,11 @@ def _detect_camera(dataset_path, target_path, camera, window_half_size_px,
                 )
                 frame["_squared_error_px2"] = squared
                 frame["_residual_norms_px"] = residual_norms
+                frame["_line_corners"] = [
+                    {"measurement_px": point.tolist(),
+                     "target_xyz_m": np.asarray(observation.target().point(int(identifier)), dtype=float).reshape(3).tolist()}
+                    for identifier, point in zip(corner_ids, measured)
+                ]
                 frame["_points"] = {
                     int(identifier): point
                     for identifier, point in zip(corner_ids, measured)
@@ -243,6 +198,7 @@ def _detect_camera(dataset_path, target_path, camera, window_half_size_px,
             math.sqrt(total_squared / total_corners)
             if total_corners else None),
         "frames": frames,
+        **_camera_quality(camera, frames),
     }
 
 
@@ -382,7 +338,7 @@ def _assessment_metrics(cameras, stereo):
 def _load_calibration(path, dataset_path):
     document = load_yaml(path)
     require_document_version(
-        document, "camera calibration", "calibration_result")
+        document, "camera calibration", "calibration_result", result=True)
     if document.get("calibration_type") != "cameras":
         raise FixedCameraValidationError(
             "fixed-camera validation requires calibration_type: cameras")
@@ -395,7 +351,7 @@ def _load_calibration(path, dataset_path):
     cameras = load_cameras(task)
     if len(cameras) != 2:
         raise FixedCameraValidationError(
-            "verify cameras currently requires exactly two cameras")
+            "tools fixed-stereo-validation currently requires exactly two cameras")
     return document, cameras
 
 
@@ -605,7 +561,7 @@ def _create_visualizations(dataset_path, cameras, detected, stereo, stage,
                            synchronization_tolerance_s):
     """Save deterministic validation evidence without changing any metric."""
     import cv2
-    from .datasets import BagImageDatasetReader
+    from kalibr_no_ros.native_bridge.datasets import BagImageDatasetReader
 
     files = []
     readers = {
@@ -773,7 +729,7 @@ def verify_fixed_cameras(calibrations, dataset, target, output_dir, *,
     cv2.setNumThreads(detector_opencv_threads)
     started = time.monotonic()
     report = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": RESULT_SCHEMA_VERSION,
         "software_version": VERSION,
         "kind": "fixed_camera_validation",
         "dataset": str(dataset_path),
@@ -783,6 +739,8 @@ def verify_fixed_cameras(calibrations, dataset, target, output_dir, *,
             "optimizer_run": False,
             "camera_pose": "independent per-frame target pose using fixed K/D",
             "reprojection_rms": "sqrt(sum(dx^2+dy^2)/number_of_corners)",
+            "reprojection_p95": "95th percentile of pooled per-corner 2D residual norms, not frame percentiles",
+            "line_straightness": "pooled TLS row/column perpendicular distances after undistortion at original K pixel scale; minimum 3 points per line",
             "stereo_combined_rms": "sqrt((sum_cam0_squared_error+sum_cam1_squared_error)/(cam0_corners+cam1_corners))",
             "alignment": "fixed K/D/T rectification; RMS of the non-disparity coordinate",
             "window_half_size_px": window_half_size_px,
@@ -884,7 +842,7 @@ def verify_fixed_cameras(calibrations, dataset, target, output_dir, *,
         (stage / "README_ZH.md").write_text(
             _readme(report), encoding="utf-8")
         manifest = {
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": RESULT_SCHEMA_VERSION,
             "kind": "fixed_camera_validation_run",
             "software": {
                 "name": "kalibr-noros",

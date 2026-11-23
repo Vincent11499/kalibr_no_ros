@@ -9,15 +9,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src" / "python"))
 
 from kalibr_no_ros.cli import build_parser, main
-from kalibr_no_ros.task import (
-    STANDARD_EXECUTION,
-    TaskError,
-    dump_yaml,
-    load_yaml,
-    load_task,
-    prepare_output_directory,
-    resolve_execution,
-)
+from kalibr_no_ros.task.execution import STANDARD_EXECUTION
+from kalibr_no_ros.task.document import TaskError
+from kalibr_no_ros.task.document import dump_yaml
+from kalibr_no_ros.task.document import load_yaml
+from kalibr_no_ros.task.validation import load_task
+from kalibr_no_ros.task.runner import prepare_output_directory
+from kalibr_no_ros.task.execution import resolve_execution
 
 
 class TaskCliTest(unittest.TestCase):
@@ -43,6 +41,30 @@ class TaskCliTest(unittest.TestCase):
         self.assertEqual(aging.tool_command, "run")
         self.assertEqual(aging.phase, "after")
 
+        distance = build_parser().parse_args([
+            "tools", "stereo-tag-distance",
+            "--dataset", "/data/stereo_261118_1429",
+            "--calibration", "/data/cameras.yaml",
+            "--tag0", "10", "--tag1", "11",
+        ])
+        self.assertEqual(distance.group, "tools")
+        self.assertEqual(distance.tool, "stereo-tag-distance")
+        self.assertEqual(distance.tag0, 10)
+        self.assertEqual(distance.tag1, 11)
+
+    @mock.patch("kalibr_tools.stereo_tag_distance.run_distance", return_value=0)
+    def test_stereo_tag_distance_dispatches_through_installed_tool(
+            self, run_distance):
+        result = main([
+            "tools", "stereo-tag-distance",
+            "--dataset", "/data/stereo_261118_1429",
+            "--calibration", "/data/cameras.yaml",
+        ], prefix="/opt/kalibr")
+        self.assertEqual(result, 0)
+        arguments, prefix = run_distance.call_args.args
+        self.assertEqual(arguments.dataset, "/data/stereo_261118_1429")
+        self.assertEqual(prefix, Path("/opt/kalibr"))
+
     @mock.patch(
         "kalibr_tools.rolling_shutter_diagnosis.workflow.run_diagnosis",
         return_value={"status": "dry_run"},
@@ -62,7 +84,7 @@ class TaskCliTest(unittest.TestCase):
 
     def test_fixed_camera_validation_cli_accepts_repeated_calibrations(self):
         arguments = build_parser().parse_args([
-            "verify", "cameras",
+            "tools", "fixed-stereo-validation",
             "--calibration", "first=/data/first.yaml",
             "--calibration", "second=/data/second.yaml",
             "--dataset", "/data/test",
@@ -75,8 +97,8 @@ class TaskCliTest(unittest.TestCase):
             "--max-pairs", "8",
             "--undistortion-crop",
         ])
-        self.assertEqual(arguments.group, "verify")
-        self.assertEqual(arguments.verification, "cameras")
+        self.assertEqual(arguments.group, "tools")
+        self.assertEqual(arguments.tool, "fixed-stereo-validation")
         self.assertEqual(arguments.calibration, [
             "first=/data/first.yaml", "second=/data/second.yaml"])
         self.assertEqual(arguments.window_half_size_px, 7)
@@ -86,12 +108,43 @@ class TaskCliTest(unittest.TestCase):
         self.assertEqual(arguments.max_pairs, 8)
         self.assertTrue(arguments.undistortion_crop)
         defaults = build_parser().parse_args([
-            "verify", "cameras", "--calibration", "/data/camera.yaml",
+            "tools", "fixed-stereo-validation", "--calibration", "/data/camera.yaml",
             "--dataset", "/data/test", "--target", "/data/aprilgrid.yaml",
             "--output-dir", "/data/verification",
         ])
         self.assertEqual(defaults.max_frames_per_camera, 20)
         self.assertEqual(defaults.max_pairs, 20)
+        self.assertEqual(defaults.window_half_size_px, 2)
+        self.assertEqual(defaults.max_displacement_px, 1.5 ** 0.5)
+        self.assertEqual(defaults.synchronization_tolerance_s, 0.0002)
+        self.assertEqual(defaults.rectification_balance, 0.0)
+        self.assertEqual(defaults.rectification_fov_scale, 1.0)
+        self.assertEqual(defaults.detector_opencv_threads, 1)
+        self.assertFalse(defaults.visualizations)
+        self.assertFalse(defaults.undistortion_crop)
+        self.assertFalse(defaults.force)
+
+    @mock.patch("kalibr_tools.fixed_stereo_validation.verify_fixed_cameras")
+    def test_fixed_stereo_tool_dispatches_existing_validation_parameters(self, verify):
+        result = main([
+            "tools", "fixed-stereo-validation",
+            "--calibration", "/data/camera.yaml",
+            "--dataset", "/data/test",
+            "--target", "/data/aprilgrid.yaml",
+            "--output-dir", "/data/verification",
+        ], prefix="/opt/kalibr")
+        self.assertEqual(result, 0)
+        self.assertEqual(verify.call_args.args, (
+            ["/data/camera.yaml"], "/data/test", "/data/aprilgrid.yaml",
+            Path("/data/verification"),
+        ))
+        self.assertEqual(verify.call_args.kwargs["max_displacement_px"], 1.5 ** 0.5)
+        self.assertEqual(verify.call_args.kwargs["synchronization_tolerance_s"], 0.0002)
+
+    def test_previous_verify_command_is_not_a_second_public_entrypoint(self):
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit) as failure:
+            build_parser().parse_args(["verify", "cameras"])
+        self.assertEqual(failure.exception.code, 2)
 
     def test_result_yaml_renders_matrix_rows_inline(self):
         document = {
