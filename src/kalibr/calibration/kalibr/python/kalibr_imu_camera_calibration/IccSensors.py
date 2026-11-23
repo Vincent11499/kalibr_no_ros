@@ -18,7 +18,7 @@ import math
 import numbers
 import re
 import numpy as np
-from kalibr_no_ros import artifacts as run_artifacts
+from kalibr_no_ros.native_bridge import evidence as run_artifacts
 from kalibr_no_ros.version import SCHEMA_VERSION
 import pylab as pl
 import scipy.optimize

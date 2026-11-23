@@ -24,7 +24,7 @@ except ImportError:
     # generates _build_config.py in build/install trees.
     _BUILD_PROFILING_ENABLED = False
 
-from kalibr_no_ros.version import SCHEMA_VERSION as _SCHEMA_VERSION
+from kalibr_no_ros.version import RESULT_SCHEMA_VERSION as _SCHEMA_VERSION
 _profiling_enabled = bool(_BUILD_PROFILING_ENABLED)
 _parallelism = {
     "parallelism": None,
@@ -103,7 +103,7 @@ def add_parallelism_arguments(argument_container):
             "--timing-json",
             default=None,
             metavar="PATH",
-            help=("Write v1.0.0 I/O, extraction, initialization, "
+            help=("Write versioned I/O, extraction, initialization, "
                   "problem-build, optimization and output timings to PATH."),
         )
 

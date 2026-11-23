@@ -11,7 +11,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src" / "python"))
 
-from kalibr_no_ros import observability
+from kalibr_no_ros.native_bridge import observability
 
 
 class _Dv:

@@ -12,7 +12,7 @@ from bisect import bisect_left, bisect_right
 
 import numpy as np
 
-from .version import SCHEMA_VERSION, VERSION
+from ..version import RESULT_SCHEMA_VERSION, VERSION
 
 
 class ReportingError(ValueError):
@@ -923,7 +923,7 @@ def compute_metrics(artifacts, calibration, options=None):
     calibration_type = artifacts.get(
         "calibration_type", calibration.get("calibration_type"))
     metrics = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": RESULT_SCHEMA_VERSION,
         "software_version": VERSION,
         "kind": "calibration_metrics",
         "calibration_type": calibration_type,
@@ -1004,7 +1004,7 @@ def assess_metrics(metrics, options=None):
         status = "incomplete"
     else:
         status = "pass"
-    assessment = {"schema_version": SCHEMA_VERSION, "software_version": VERSION,
+    assessment = {"schema_version": RESULT_SCHEMA_VERSION, "software_version": VERSION,
                   "kind": "calibration_assessment", "status": status, "rules": results,
                   "reference_grading": {"enabled": options["assessment"]["reference_grading"],
                                         "scope": "camera_reprojection_and_stereo_alignment_only",

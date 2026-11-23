@@ -248,7 +248,7 @@ def install():
             return original_save(calibrator, result_file, graph)
         _write_camchain(calibrator, result_file, graph, fisheye_model)
 
-        from kalibr_no_ros.opencv_fisheye_io import export_kalibr_camchain
+        from kalibr_no_ros.conversion.opencv_fisheye_io import export_kalibr_camchain
 
         result_path = Path(result_file)
         suffix = "-camchain.yaml"

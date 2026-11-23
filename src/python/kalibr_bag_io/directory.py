@@ -12,7 +12,10 @@ import cv2
 import numpy as np
 import yaml
 
-from kalibr_no_ros.version import SCHEMA_VERSION
+from kalibr_no_ros.version import (
+    SUPPORTED_DATASET_SCHEMA_VERSIONS,
+    supports_schema_version,
+)
 
 from .model import (
     FileImageIndex,
@@ -217,7 +220,7 @@ class DeferredFileImagePayload:
 class IndexedDirectoryImageDataset:
     """Lazy random-access view over one camera stream in a directory dataset."""
 
-    def __init__(self, root, stream, grayscale=True):
+    def __init__(self, root, stream, grayscale=True, known_files=None):
         self.root = Path(root)
         self.topic = stream["topic"]
         self.grayscale = grayscale
@@ -234,9 +237,25 @@ class IndexedDirectoryImageDataset:
                 raise DirectoryDatasetError("timestamps must be strictly increasing in {} at line {}".format(table, line))
             previous_timestamp = timestamp
             filename = row["filename"]
-            image_path = _resolve_child(
-                images, filename,
-                "{} line {} filename".format(table, line), expected="file")
+            label = "{} line {} filename".format(table, line)
+            if known_files is None:
+                image_path = _resolve_child(
+                    images, filename, label, expected="file")
+            else:
+                if not isinstance(filename, str) or not filename.strip():
+                    raise DirectoryDatasetError(
+                        "{} must be a non-empty relative path".format(label))
+                relative = Path(filename)
+                if relative.is_absolute() or ".." in relative.parts:
+                    raise DirectoryDatasetError(
+                        "{} escapes the dataset root: {}".format(
+                            label, filename))
+                image_path = known_files.get(relative.as_posix())
+                if image_path is None:
+                    raise DirectoryDatasetError(
+                        "{} is not a file: {}".format(
+                            label, images / relative))
+                image_path = Path(image_path)
             normalized = str(image_path)
             if normalized in seen_paths:
                 raise DirectoryDatasetError(
@@ -351,9 +370,12 @@ class DirectoryReader:
         if unknown:
             raise DirectoryDatasetError(
                 "dataset manifest has unknown field(s): {}".format(", ".join(unknown)))
-        if manifest.get("schema_version") != SCHEMA_VERSION:
+        if not supports_schema_version(
+                manifest.get("schema_version"),
+                SUPPORTED_DATASET_SCHEMA_VERSIONS):
             raise DirectoryDatasetError(
-                "dataset schema_version must be {}".format(SCHEMA_VERSION))
+                "dataset schema_version must be one of {}".format(
+                    ", ".join(sorted(SUPPORTED_DATASET_SCHEMA_VERSIONS))))
         if manifest.get("type") != MANIFEST_TYPE:
             raise DirectoryDatasetError("dataset type must be {}".format(MANIFEST_TYPE))
         if not isinstance(manifest.get("dataset_id"), str) or not manifest["dataset_id"].strip():
@@ -444,13 +466,16 @@ class DirectoryReader:
     _crop = staticmethod(crop_records)
     _decimate = staticmethod(decimate_records)
 
-    def index_images(self, topic: str, *, grayscale: bool = True):
+    def index_images(
+            self, topic: str, *, grayscale: bool = True,
+            _known_files=None):
         stream = self._cameras.get(topic)
         if stream is None:
             if topic in self._imus:
                 raise RuntimeError("Topic {} is not an image stream".format(topic))
             raise RuntimeError("Could not find topic {} in {}.".format(topic, self.path))
-        return IndexedDirectoryImageDataset(self.path, stream, grayscale)
+        return IndexedDirectoryImageDataset(
+            self.path, stream, grayscale, known_files=_known_files)
 
     def read_images(self, topic, from_to=None, frequency=None, *, grayscale=True):
         with self.index_images(topic, grayscale=grayscale) as dataset:

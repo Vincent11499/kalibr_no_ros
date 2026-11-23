@@ -14,8 +14,13 @@ import tempfile
 
 import numpy as np
 
-from .version import SCHEMA_VERSION, VERSION
-from .filesystem import atomic_write_bytes, file_sha256
+from ..version import (
+    RESULT_SCHEMA_VERSION,
+    SUPPORTED_RESULT_SCHEMA_VERSIONS,
+    VERSION,
+    supports_schema_version,
+)
+from ..filesystem import atomic_write_bytes, contained_path, file_sha256
 from .visualization import draw_image_label, uniform_sample
 from .evaluation import (
     ReportingError, assess_metrics, camera_geometry, compute_metrics,
@@ -27,18 +32,10 @@ from .evaluation import (
 
 def _child(root, relative):
     """Prevent artifact names and archive members from escaping their root."""
-    root = Path(root).resolve()
-    relative = Path(relative)
-    if relative.is_absolute() or ".." in relative.parts:
-        raise ReportingError("artifact path must be relative and contained: {}".format(relative))
-    path = root / relative
-    if path.is_symlink():
-        raise ReportingError("artifact path must not be a symlink: {}".format(relative))
     try:
-        path.resolve().relative_to(root)
+        return contained_path(root, relative)
     except ValueError as error:
-        raise ReportingError("artifact path escapes its root: {}".format(relative)) from error
-    return path
+        raise ReportingError(str(error)) from error
 
 
 def _json_default(value):
@@ -149,7 +146,7 @@ def write_archive(artifacts, output_dir):
     files = []
     manifest = {key: value for key, value in artifacts.items()
                 if key not in ("cameras", "views", "events", "imu_residuals", "imu_biases")}
-    manifest.update({"schema_version": SCHEMA_VERSION, "software_version": VERSION,
+    manifest.update({"schema_version": RESULT_SCHEMA_VERSION, "software_version": VERSION,
                      "kind": "run_artifacts_archive", "cameras": cameras,
                      "csv_cell_encoding": "json", "tables": {}})
     if biases:
@@ -175,7 +172,9 @@ def load_archive(input_dir):
         archive = _child(root, "observations")
     with _child(archive, "manifest.json").open(encoding="utf-8") as stream:
         manifest = json.load(stream)
-    if manifest.get("schema_version") != SCHEMA_VERSION or manifest.get("kind") != "run_artifacts_archive":
+    if (not supports_schema_version(
+            manifest.get("schema_version"), SUPPORTED_RESULT_SCHEMA_VERSIONS)
+            or manifest.get("kind") != "run_artifacts_archive"):
         raise ReportingError("unsupported observation archive version or kind")
     tables = {}
     names = ["frames.csv.gz", "corners.csv.gz", "views.csv.gz", "pairs.csv.gz", "imu_residuals.csv.gz"]
@@ -251,7 +250,7 @@ def export_opencv(artifacts, calibration, output_dir, options=None):
             try:
                 if not storage.isOpened():
                     raise ReportingError("cannot open OpenCV export")
-                storage.write("schema_version", SCHEMA_VERSION)
+                storage.write("schema_version", RESULT_SCHEMA_VERSION)
                 storage.write("software_version", VERSION)
                 for name, value in metadata.items():
                     storage.write(name, value)
@@ -618,7 +617,7 @@ def _summary(metrics, assessment):
 
 def _write_reports(metrics, assessment, output_dir, files, native_text=None, *,
                    artifacts=None, calibration=None, report_pairs=None):
-    from .report_plots import render_reports
+    from .plots import render_reports
 
     summary = _summary(metrics, assessment)
     text = summary + ("\nNative solver results\n" + native_text if native_text else "")
@@ -678,7 +677,7 @@ def evaluate_run(input_dir, output_dir, options=None, dataset=None, force=False)
     import tempfile
     import shutil
     from .delivery import locate_result, publish, published_paths
-    from .task import load_yaml, require_document_version
+    from ..task.document import load_yaml, require_document_version
     if Path(input_dir).is_dir() and (Path(input_dir) / 'metrics.json').is_file() and not list(Path(input_dir).glob('*.yaml')):
         source = Path(input_dir).resolve()
         destination = Path(output_dir).resolve()
@@ -693,7 +692,9 @@ def evaluate_run(input_dir, output_dir, options=None, dataset=None, force=False)
             result['files'] = published_paths(target, destination, name, options)
             return result
     source_result = locate_result(input_dir)
-    require_document_version(load_yaml(source_result), 'calibration', 'calibration_result')
+    require_document_version(
+        load_yaml(source_result), 'calibration', 'calibration_result',
+        result=True)
     options = validate_output_options(options)
     source_root = source_result.parent
     contained = ((source_root / '.inventory.json').is_file()
@@ -745,7 +746,9 @@ def _evaluate_staged(input_dir, output_dir, options=None, dataset=None):
         return result
     with _child(source, "metrics.json").open(encoding="utf-8") as stream:
         metrics = json.load(stream)
-    if metrics.get("schema_version") != SCHEMA_VERSION or metrics.get("kind") != "calibration_metrics":
+    if (not supports_schema_version(
+            metrics.get("schema_version"), SUPPORTED_RESULT_SCHEMA_VERSIONS)
+            or metrics.get("kind") != "calibration_metrics"):
         raise ReportingError("unsupported metrics version or kind")
     if options["archive_observations"] or options["archive_selection_history"] or options["copy_used_images"] or options["visualizations"]["enabled"]:
         raise ReportingError("image/evidence export requires an observation archive")

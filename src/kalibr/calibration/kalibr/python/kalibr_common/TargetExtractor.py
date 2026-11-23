@@ -12,7 +12,7 @@ import traceback
 import cv2
 import numpy as np
 import sm
-from kalibr_no_ros import artifacts as run_artifacts
+from kalibr_no_ros.native_bridge import evidence as run_artifacts
 
 try:
     import queue

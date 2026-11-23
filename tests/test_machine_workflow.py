@@ -11,15 +11,13 @@ import tempfile
 import unittest
 from unittest import mock
 
-from kalibr_no_ros import machine_workflow
-from kalibr_no_ros import machine_cli
-from kalibr_no_ros.machine_workflow import (
-    build_task,
-    discover_dataset,
-    load_workflow_config,
-    run_machine_workflow,
-)
-from kalibr_no_ros.task import TaskError, dump_yaml, load_yaml
+from kalibr_no_ros.machine import cli as machine_cli
+from kalibr_no_ros.machine import config as machine_config, datasets as machine_datasets, runner as machine_runner, state as machine_state, task_templates as machine_task_templates
+from kalibr_no_ros.machine.task_templates import build_task
+from kalibr_no_ros.machine.datasets import discover_dataset
+from kalibr_no_ros.machine.config import load_workflow_config
+from kalibr_no_ros.machine.runner import run_machine_workflow
+from kalibr_no_ros.task.document import TaskError, dump_yaml, load_yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -163,6 +161,51 @@ class MachineWorkflowTest(unittest.TestCase):
         return (self.prefix / "config" / "mechine"
                 / "EVT320" / name)
 
+    def downgrade_dataset_cache(self, role, *, content_hashes):
+        control = (self.machine / "result" / ".kalibr-cedarobot")
+        state_path = control / "state.json"
+        cache_path = control / machine_datasets.INPUT_HASH_CACHE
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        current = state["binding"]["datasets"][role]
+        key = str(Path(current["path"]).resolve())
+        current_entry = cache["datasets"][key]
+        files = {}
+        for relative, value in current_entry["files"].items():
+            legacy = {
+                field: value[field]
+                for field in (
+                    "size", "mtime_ns", "ctime_ns", "inode", "device")
+            }
+            if content_hashes and value.get("kind") == "structured":
+                legacy["sha256"] = value["sha256"]
+            files[relative] = legacy
+        if content_hashes:
+            legacy_record = dict(
+                current, fingerprint_type="content", sha256="a" * 64)
+        else:
+            legacy_record = machine_datasets._metadata_fingerprint(
+                Path(current["path"]), role, current["dataset_id"], files)
+        state["binding"]["datasets"][role] = legacy_record
+        cache["datasets"][key] = {
+            "role": role,
+            "dataset_id": current["dataset_id"],
+            "record": legacy_record,
+            "files": files,
+        }
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        cache_path.write_text(json.dumps(cache), encoding="utf-8")
+        return current, legacy_record
+
+    def formal_output_snapshot(self):
+        output = self.machine / "result"
+        return {
+            path.relative_to(output).as_posix(): path.read_bytes()
+            for path in output.rglob("*")
+            if path.is_file()
+            and not path.relative_to(output).parts[0] == ".kalibr-cedarobot"
+        }
+
     def test_workflow_yaml_is_strict_and_resolves_machine_relative_to_config(self):
         relative_machine = self.root / "EVT312-03" / "run_01"
         relative_machine.mkdir(parents=True)
@@ -264,6 +307,14 @@ class MachineWorkflowTest(unittest.TestCase):
             load_workflow_config(self.write_config(extra={
                 "machine_dir": str(invalid_batch),
             }))
+
+    def test_transitional_v1_1_workflow_schema_is_read_compatibly(self):
+        path = self.write_config()
+        document = load_yaml(path)
+        document["schema_version"] = "1.1.0"
+        dump_yaml(document, path)
+        loaded = load_workflow_config(path)
+        self.assertEqual(loaded["template"], "EVT320")
 
     def test_public_stage_names_map_to_stable_internal_stages(self):
         reuse = {name: True for name in PUBLIC_WORKFLOW_KEYS.values()}
@@ -433,7 +484,7 @@ class MachineWorkflowTest(unittest.TestCase):
                 runner=self._mock_runner(calls))
         self.assertEqual(calls, [])
 
-    def test_dataset_metadata_cache_avoids_cold_hash_and_hashes_after_change(self):
+    def test_dataset_inventory_hashes_only_structured_files_and_ignores_time(self):
         dataset = self.write_dataset("stereo_260916_2136")
         images = []
         for index, camera in enumerate(("cam0", "cam1")):
@@ -444,50 +495,91 @@ class MachineWorkflowTest(unittest.TestCase):
             images.append(image)
 
         hashed = []
-        original_hash = machine_workflow._sha256
+        original_hash = machine_datasets._sha256
 
         def tracked(path):
             hashed.append(Path(path))
             return original_hash(path)
 
         with mock.patch.object(
-                machine_workflow, "_sha256", side_effect=tracked):
-            first, cache, first_stats = machine_workflow._fingerprint_dataset(
+                machine_datasets, "_sha256", side_effect=tracked):
+            first, cache, first_stats = machine_datasets._fingerprint_dataset(
                 dataset, "stereo")
-        self.assertEqual(first["fingerprint_type"], "metadata")
-        self.assertEqual(first_stats["mode"], "metadata_snapshot")
-        self.assertEqual(first_stats["hashed_files"], 0)
-        self.assertEqual(hashed, [])
+        self.assertEqual(
+            first["fingerprint_type"],
+            machine_datasets.INVENTORY_FINGERPRINT_TYPE)
+        self.assertEqual(
+            first_stats["mode"], "structured_hash_image_inventory")
+        self.assertEqual(first_stats["image_hashed_files"], 0)
+        self.assertEqual(first_stats["image_hashed_bytes"], 0)
+        self.assertEqual(first["image_counts"], {"cam0": 1, "cam1": 1})
+        self.assertEqual(
+            set(hashed),
+            {dataset / "dataset.yaml", dataset / "cam0.csv",
+             dataset / "cam1.csv"})
+        self.assertFalse(any(path in images for path in hashed))
 
+        previous_times = {
+            image: image.stat().st_mtime_ns for image in images}
+        for image in images:
+            os.utime(image, ns=(image.stat().st_atime_ns,
+                                previous_times[image] + 1_000_000))
         hashed.clear()
         with mock.patch.object(
-                machine_workflow, "_sha256", side_effect=tracked):
-            second, warm_cache, second_stats = (
-                machine_workflow._fingerprint_dataset(
+                machine_datasets, "_sha256", side_effect=tracked):
+            second, unused_cache, second_stats = (
+                machine_datasets._fingerprint_dataset(
                     dataset, "stereo", cached=cache))
         self.assertEqual(second, first)
-        self.assertEqual(second_stats["mode"], "cache")
-        self.assertEqual(second_stats["hashed_files"], 0)
-        self.assertEqual(hashed, [])
+        self.assertEqual(second_stats["image_hashed_files"], 0)
+        self.assertFalse(any(path in images for path in hashed))
 
         image = images[0]
-        previous = image.stat()
-        image.write_bytes(b"changed")
-        os.utime(image, ns=(previous.st_atime_ns, previous.st_mtime_ns))
-        self.assertNotEqual(
-            machine_workflow._file_metadata(image)["ctime_ns"],
-            cache["files"]["cam0/frame.png"]["ctime_ns"])
-        hashed.clear()
-        with mock.patch.object(
-                machine_workflow, "_sha256", side_effect=tracked):
-            changed, unused_cache, changed_stats = (
-                machine_workflow._fingerprint_dataset(
-                    dataset, "stereo", cached=warm_cache))
+        renamed = image.with_name("renamed.png")
+        image.rename(renamed)
+        (dataset / "cam0.csv").write_text(
+            "timestamp_ns,filename\n100,renamed.png\n", encoding="utf-8")
+        changed, unused_cache, changed_stats = (
+            machine_datasets._fingerprint_dataset(dataset, "stereo"))
         self.assertNotEqual(changed["sha256"], first["sha256"])
-        self.assertEqual(changed_stats["mode"], "content_hash")
-        self.assertEqual(changed_stats["hashed_files"], first["file_count"])
-        self.assertEqual(len(hashed), first["file_count"])
-        self.assertIn(image, hashed)
+        self.assertEqual(changed_stats["image_hashed_files"], 0)
+
+    def test_dataset_inventory_stats_each_image_once(self):
+        dataset = self.write_dataset("stereo_260916_2136")
+        images = []
+        for camera in ("cam0", "cam1"):
+            image = dataset / camera / "frame.png"
+            image.write_bytes(b"frame")
+            (dataset / (camera + ".csv")).write_text(
+                "timestamp_ns,filename\n100,frame.png\n", encoding="utf-8")
+            images.append(image)
+
+        image_inodes = {image.stat().st_ino for image in images}
+        stat_calls = []
+        original = machine_datasets._metadata_from_stat
+
+        def tracked(value):
+            if value.st_ino in image_inodes:
+                stat_calls.append(value.st_ino)
+            return original(value)
+
+        with mock.patch.object(
+                machine_datasets, "_metadata_from_stat", side_effect=tracked):
+            machine_datasets._fingerprint_dataset(dataset, "stereo")
+
+        self.assertCountEqual(stat_calls, image_inodes)
+
+    def test_dataset_inventory_rejects_image_symlink(self):
+        dataset = self.write_dataset("stereo_260916_2136")
+        external = self.root / "external.png"
+        external.write_bytes(b"frame")
+        image = dataset / "cam0" / "frame.png"
+        image.symlink_to(external)
+        (dataset / "cam0.csv").write_text(
+            "timestamp_ns,filename\n100,frame.png\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(TaskError, "symlink"):
+            machine_datasets._fingerprint_dataset(dataset, "stereo")
 
     def test_workflow_hash_cache_recovers_from_invalid_json_and_rejects_symlink(self):
         self.write_dataset("stereo_260916_2136")
@@ -496,7 +588,7 @@ class MachineWorkflowTest(unittest.TestCase):
         runner = self._mock_runner(calls)
         run_machine_workflow(self.prefix, config, runner=runner)
         cache = (self.machine / "result" / ".kalibr-cedarobot"
-                 / machine_workflow.INPUT_HASH_CACHE)
+                 / machine_datasets.INPUT_HASH_CACHE)
         self.assertTrue(cache.is_file())
 
         cache.write_text("not-json\n", encoding="utf-8")
@@ -505,7 +597,7 @@ class MachineWorkflowTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(
             json.loads(cache.read_text(encoding="utf-8"))["kind"],
-            machine_workflow.INPUT_HASH_CACHE_KIND)
+            machine_datasets.INPUT_HASH_CACHE_KIND)
 
         external = self.root / "external-cache.json"
         external.write_text("{}\n", encoding="utf-8")
@@ -517,57 +609,260 @@ class MachineWorkflowTest(unittest.TestCase):
 
     def test_legacy_content_cache_is_migrated_without_reading_images(self):
         dataset = self.write_dataset("stereo_260916_2136")
-        record, cache, unused = machine_workflow._fingerprint_dataset(
-            dataset, "stereo", force_content=True)
-        cache.pop("record")
-        with mock.patch.object(machine_workflow, "_sha256") as hashed:
-            current, migrated, statistics = (
-                machine_workflow._fingerprint_dataset(
-                    dataset, "stereo", cached=cache,
-                    expected_record=record))
-        self.assertEqual(current, record)
-        self.assertEqual(migrated["record"], record)
-        self.assertEqual(statistics["hashed_files"], 0)
-        hashed.assert_not_called()
+        for camera in ("cam0", "cam1"):
+            (dataset / camera / "frame.png").write_bytes(b"frame")
+            (dataset / (camera + ".csv")).write_text(
+                "timestamp_ns,filename\n100,frame.png\n", encoding="utf-8")
+        current, entry, unused = machine_datasets._fingerprint_dataset(
+            dataset, "stereo")
+        legacy_record = dict(
+            current, fingerprint_type="content", sha256="a" * 64)
+        legacy = deepcopy(entry)
+        legacy["record"] = legacy_record
+        legacy["files"]["meta/retired-diagnostic.json"] = {
+            "size": 10, "mtime_ns": 1, "ctime_ns": 1,
+            "inode": 1, "device": 1, "sha256": "b" * 64,
+        }
+        self.assertTrue(machine_datasets.cache_entry_can_migrate(
+            legacy, legacy_record, entry))
+        images = [
+            relative for relative, value in entry["files"].items()
+            if value["kind"] == "image"]
+        self.assertTrue(images)
+        self.assertTrue(all(
+            "sha256" not in legacy["files"][relative]
+            for relative in images))
 
-    def test_legacy_content_state_without_cache_is_rehashed_for_compatibility(self):
+    def test_legacy_metadata_cache_cannot_verify_structured_files(self):
         dataset = self.write_dataset("stereo_260916_2136")
-        record = machine_workflow.dataset_fingerprint(dataset, "stereo")
-        hashed = []
-        original_hash = machine_workflow._sha256
+        current, entry, unused = machine_datasets._fingerprint_dataset(
+            dataset, "stereo")
+        legacy_files = {
+            relative: {
+                key: value[key]
+                for key in ("size", "mtime_ns", "ctime_ns", "inode", "device")
+            }
+            for relative, value in entry["files"].items()
+        }
+        legacy_record = machine_datasets._metadata_fingerprint(
+            dataset, "stereo", current["dataset_id"], legacy_files)
+        legacy = {
+            "role": "stereo", "dataset_id": current["dataset_id"],
+            "record": legacy_record, "files": legacy_files}
+        self.assertFalse(machine_datasets.cache_entry_can_migrate(
+            legacy, legacy_record, entry))
 
-        def tracked(path):
-            hashed.append(Path(path))
-            return original_hash(path)
-
-        with mock.patch.object(
-                machine_workflow, "_sha256", side_effect=tracked):
-            current, unused_cache, statistics = (
-                machine_workflow._fingerprint_dataset(
-                    dataset, "stereo", expected_record=record))
-        self.assertEqual(current, record)
-        self.assertEqual(statistics["hashed_files"], record["file_count"])
-        self.assertEqual(len(hashed), record["file_count"])
-
-    def test_dataset_change_while_hashing_is_rejected(self):
+    def test_structured_change_while_hashing_is_rejected(self):
         dataset = self.write_dataset("stereo_260916_2136")
+        table = dataset / "cam0.csv"
         image = dataset / "cam0" / "frame.png"
-        image.write_bytes(b"before")
+        image.write_bytes(b"frame")
         (dataset / "cam0.csv").write_text(
             "timestamp_ns,filename\n100,frame.png\n", encoding="utf-8")
-        original_hash = machine_workflow._sha256
+        original_hash = machine_datasets._sha256
 
         def changing_hash(path):
             digest = original_hash(path)
-            if Path(path) == image:
-                image.write_bytes(b"during")
+            if Path(path) == table:
+                table.write_text(
+                    "timestamp_ns,filename\n100,frame.png\n\n",
+                    encoding="utf-8")
             return digest
 
         with mock.patch.object(
-                machine_workflow, "_sha256", side_effect=changing_hash):
+                machine_datasets, "_sha256", side_effect=changing_hash):
             with self.assertRaisesRegex(TaskError, "while it was being hashed"):
-                machine_workflow._fingerprint_dataset(
-                    dataset, "stereo", force_content=True)
+                machine_datasets._fingerprint_dataset(
+                    dataset, "stereo")
+
+    def test_capture_session_rejects_unreferenced_bmp(self):
+        dataset = self.write_dataset("stereo_260916_2136")
+        for camera in ("cam0", "cam1"):
+            (dataset / camera / "frame.bmp").write_bytes(b"frame")
+            (dataset / (camera + ".csv")).write_text(
+                "timestamp_ns,filename\n100,frame.bmp\n", encoding="utf-8")
+        (dataset / "cam0" / "orphan.bmp").write_bytes(b"orphan")
+        meta = dataset / "meta"
+        meta.mkdir()
+        (meta / "session.json").write_text(json.dumps({
+            "capture_status": "completed",
+            "validation_status": "pass",
+            "pair_count": 1,
+            "imu_count": 0,
+        }), encoding="utf-8")
+
+        with self.assertRaisesRegex(TaskError, "unreferenced cam0 images"):
+            machine_datasets._fingerprint_dataset(dataset, "stereo")
+
+    def test_legacy_content_cache_migrates_without_recalibration(self):
+        dataset = self.write_dataset("stereo_260916_2136")
+        for camera in ("cam0", "cam1"):
+            (dataset / camera / "frame.png").write_bytes(b"frame")
+            (dataset / (camera + ".csv")).write_text(
+                "timestamp_ns,filename\n100,frame.png\n", encoding="utf-8")
+        config = self.write_config()
+        calls = []
+        runner = self._mock_runner(calls)
+        run_machine_workflow(self.prefix, config, runner=runner)
+        current, unused_legacy = self.downgrade_dataset_cache(
+            "stereo", content_hashes=True)
+
+        resumed = run_machine_workflow(self.prefix, config, runner=runner)
+
+        self.assertEqual(resumed["camera"]["action"], "reused")
+        self.assertEqual(len(calls), 1)
+        control = self.machine / "result" / ".kalibr-cedarobot"
+        state = json.loads((control / "state.json").read_text(
+            encoding="utf-8"))
+        self.assertEqual(state["binding"]["datasets"]["stereo"], current)
+        cache = json.loads((control / machine_datasets.INPUT_HASH_CACHE).read_text(
+            encoding="utf-8"))
+        entry = cache["datasets"][str(dataset.resolve())]
+        self.assertEqual(entry["trust"], "bound")
+        self.assertEqual(entry["record"], current)
+
+    def test_legacy_metadata_cache_recalibrates_once(self):
+        dataset = self.write_dataset("stereo_260916_2136")
+        for camera in ("cam0", "cam1"):
+            (dataset / camera / "frame.png").write_bytes(b"frame")
+            (dataset / (camera + ".csv")).write_text(
+                "timestamp_ns,filename\n100,frame.png\n", encoding="utf-8")
+        config = self.write_config()
+        calls = []
+        runner = self._mock_runner(calls)
+        run_machine_workflow(self.prefix, config, runner=runner)
+        current, unused_legacy = self.downgrade_dataset_cache(
+            "stereo", content_hashes=False)
+
+        replaced = run_machine_workflow(self.prefix, config, runner=runner)
+        resumed = run_machine_workflow(self.prefix, config, runner=runner)
+
+        self.assertEqual(replaced["camera"]["action"], "executed")
+        self.assertTrue(calls[-1]["force"])
+        self.assertEqual(resumed["camera"]["action"], "reused")
+        self.assertEqual(len(calls), 2)
+        control = self.machine / "result" / ".kalibr-cedarobot"
+        state = json.loads((control / "state.json").read_text(
+            encoding="utf-8"))
+        self.assertEqual(state["binding"]["datasets"]["stereo"], current)
+        cache = json.loads((control / machine_datasets.INPUT_HASH_CACHE).read_text(
+            encoding="utf-8"))
+        self.assertEqual(
+            cache["datasets"][str(dataset.resolve())]["trust"], "bound")
+
+    def test_touching_images_only_reuses_formal_outputs(self):
+        dataset = self.write_dataset("stereo_260916_2136")
+        images = []
+        for camera in ("cam0", "cam1"):
+            image = dataset / camera / "frame.png"
+            image.write_bytes(b"frame")
+            images.append(image)
+            (dataset / (camera + ".csv")).write_text(
+                "timestamp_ns,filename\n100,frame.png\n", encoding="utf-8")
+        config = self.write_config()
+        calls = []
+        runner = self._mock_runner(calls)
+        run_machine_workflow(self.prefix, config, runner=runner)
+        before = self.formal_output_snapshot()
+        for image in images:
+            stat = image.stat()
+            os.utime(image, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+
+        resumed = run_machine_workflow(self.prefix, config, runner=runner)
+
+        self.assertEqual(resumed["camera"]["action"], "reused")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(self.formal_output_snapshot(), before)
+
+    def test_touch_during_recalibration_is_allowed(self):
+        dataset = self.write_dataset("stereo_260916_2136")
+        images = []
+        for camera in ("cam0", "cam1"):
+            image = dataset / camera / "frame.png"
+            image.write_bytes(b"frame")
+            images.append(image)
+            (dataset / (camera + ".csv")).write_text(
+                "timestamp_ns,filename\n100,frame.png\n", encoding="utf-8")
+        config = self.write_config()
+        calls = []
+        delegate = self._mock_runner(calls)
+        run_machine_workflow(self.prefix, config, runner=delegate)
+        images[0].write_bytes(b"replacement-with-new-size")
+
+        def touch_before_check(*args, **kwargs):
+            verify = kwargs["_before_publish"]
+
+            def touch_then_verify():
+                stat = images[1].stat()
+                os.utime(
+                    images[1],
+                    ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+                verify()
+
+            kwargs["_before_publish"] = touch_then_verify
+            return delegate(*args, **kwargs)
+
+        replaced = run_machine_workflow(
+            self.prefix, config, runner=touch_before_check)
+
+        self.assertEqual(replaced["camera"]["action"], "executed")
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(calls[-1]["force"])
+
+    def test_pre_publish_change_fails_and_preserves_previous_delivery(self):
+        dataset = self.write_dataset("stereo_260916_2136")
+        for camera in ("cam0", "cam1"):
+            (dataset / camera / "frame.png").write_bytes(b"frame")
+            (dataset / (camera + ".csv")).write_text(
+                "timestamp_ns,filename\n100,frame.png\n", encoding="utf-8")
+        config = self.write_config()
+        calls = []
+        delegate = self._mock_runner(calls)
+        run_machine_workflow(self.prefix, config, runner=delegate)
+        before = self.formal_output_snapshot()
+        control = self.machine / "result" / ".kalibr-cedarobot"
+        original_state = json.loads((control / "state.json").read_text(
+            encoding="utf-8"))
+        previous_delivery = deepcopy(
+            original_state["stages"]["camera"]["delivery"])
+        original_record = deepcopy(
+            original_state["binding"]["datasets"]["stereo"])
+
+        (dataset / "cam0" / "frame.png").write_bytes(
+            b"replacement-with-new-size")
+
+        def mutate_before_check(*args, **kwargs):
+            verify = kwargs["_before_publish"]
+
+            def mutate_then_verify():
+                table = dataset / "cam0.csv"
+                table.write_text(
+                    table.read_text(encoding="utf-8") + "\n",
+                    encoding="utf-8")
+                verify()
+
+            kwargs["_before_publish"] = mutate_then_verify
+            return delegate(*args, **kwargs)
+
+        with self.assertRaisesRegex(
+                (TaskError, ValueError), "changed during calibration"):
+            run_machine_workflow(
+                self.prefix, config, runner=mutate_before_check)
+
+        machine_runner._verify_previous_delivery(
+            self.machine / "result", previous_delivery)
+        self.assertEqual(self.formal_output_snapshot(), before)
+        self.assertFalse(any(
+            path.name.startswith("stereo_260916_2136_failed")
+            for path in (self.machine / "result").iterdir()))
+        state = json.loads((control / "state.json").read_text(
+            encoding="utf-8"))
+        self.assertEqual(state["stages"]["camera"]["status"], "failed")
+        cache = json.loads((control / machine_datasets.INPUT_HASH_CACHE).read_text(
+            encoding="utf-8"))
+        self.assertEqual(
+            cache["datasets"][str(dataset.resolve())]["record"],
+            original_record)
 
     def test_build_task_uses_absolute_inputs_and_exact_camera_dependency(self):
         stereo = self.write_dataset("stereo_260916_2136")
@@ -626,6 +921,39 @@ class MachineWorkflowTest(unittest.TestCase):
             self.assertNotIn("__DATASET_PATH__", json.dumps(task))
             self.assertTrue(task["output"]["save_diagnostics"])
             self.assertTrue(task["output"]["save_metrics"])
+
+    def test_build_task_canonicalizes_transitional_template_schema(self):
+        profile = self.profile_file("stereo_camera_calibration_task.yaml").parent
+        template = profile / "stereo_camera_calibration_task.yaml"
+        document = load_yaml(template)
+        document["schema_version"] = "1.1.0"
+        dump_yaml(document, template)
+        dataset = self.write_dataset("stereo_260916_2136")
+
+        task = build_task(profile, "camera", dataset, dataset.name)
+
+        self.assertEqual(task["schema_version"], "1.0.0")
+
+    def test_build_task_accepts_all_imu_models_for_standard_and_rs(self):
+        dataset = self.write_dataset("stereo_imu_260916_2200", imu=True)
+        profile = self.prefix / "config" / "mechine" / "EVT320"
+        camera_result = self.machine / "result" / "selected_camera.yaml"
+        for model in (
+                "calibrated", "scale-misalignment",
+                "scale-misalignment-size-effect"):
+            with self.subTest(model=model):
+                for mode, filename in (
+                        ("standard", "stereo_imu_calibration_task.yaml"),
+                        ("rolling_shutter", "stereo_imu_rs_calibration_task.yaml")):
+                    path = profile / filename
+                    document = load_yaml(path)
+                    document["imus"][0]["model"] = model
+                    dump_yaml(document, path)
+                    task = build_task(
+                        profile, "camera_imu", dataset,
+                        "{}-{}".format(mode, model),
+                        camera_result=camera_result, mode=mode)
+                    self.assertEqual(task["imus"][0]["model"], model)
 
     def test_build_task_accepts_machine_radtan5_and_radtan8_templates(self):
         stereo = self.write_dataset("stereo_260916_2136")
@@ -714,6 +1042,7 @@ class MachineWorkflowTest(unittest.TestCase):
 
     def _mock_runner(self, calls):
         def run(prefix, config, output_dir, expected_job, force=False, **overrides):
+            before_publish = overrides.pop("_before_publish", None)
             task = load_yaml(config)
             calls.append({
                 "prefix": Path(prefix),
@@ -726,6 +1055,8 @@ class MachineWorkflowTest(unittest.TestCase):
             })
             name = task["output"]["name"]
             output = Path(output_dir)
+            if before_publish is not None:
+                before_publish()
             output.mkdir(parents=True, exist_ok=True)
             if force:
                 side = output / name
@@ -786,7 +1117,32 @@ class MachineWorkflowTest(unittest.TestCase):
                     camera["timeshift_cam_imu"] = 0.01 + index * 0.001
                     if expected_job == "camera_imu_rolling_shutter_calibration":
                         camera["shutter"] = {"line_delay_s": 1e-5 + index * 1e-6}
-                result["imus"] = [{"id": "imu0", "update_rate": 100.0}]
+                model = task["imus"][0].get("model", "calibrated")
+                imu = {"id": "imu0", "model": model, "update_rate": 100.0}
+                if model != "calibrated":
+                    imu.update({
+                        "accelerometers": {"M": [
+                            [1.01, 0.0, 0.0],
+                            [0.01, 1.02, 0.0],
+                            [0.02, 0.03, 1.03],
+                        ]},
+                        "gyroscopes": {
+                            "M": [
+                                [0.99, 0.0, 0.0],
+                                [0.01, 0.98, 0.0],
+                                [0.02, 0.03, 0.97],
+                            ],
+                            "C_gyro_i": [row[:3] for row in identity[:3]],
+                            "A": [[0.0, 0.0, 0.0] for unused in range(3)],
+                        },
+                    })
+                    if model == "scale-misalignment-size-effect":
+                        imu["accelerometers"].update({
+                            "rx_i": [0.0, 0.0, 0.0],
+                            "ry_i": [0.01, 0.02, 0.03],
+                            "rz_i": [-0.01, -0.02, -0.03],
+                        })
+                result["imus"] = [imu]
             elif expected_job == "camera_rolling_shutter_calibration":
                 for index, camera in enumerate(result["cameras"]):
                     camera["shutter"] = {"line_delay_s": 1e-5 + index * 1e-6}
@@ -803,7 +1159,7 @@ class MachineWorkflowTest(unittest.TestCase):
             ]
             resolved_path = side / "task_resolved.yaml"
             dump_yaml(
-                machine_workflow._resolved_task(config, expected_job),
+                machine_task_templates._resolved_task(config, expected_job),
                 resolved_path)
             dataset_manifest = load_yaml(
                 Path(task["dataset"]["path"]) / "dataset.yaml")
@@ -824,7 +1180,7 @@ class MachineWorkflowTest(unittest.TestCase):
                 input_documents.append({
                     "role": role,
                     "path": source,
-                    "sha256": machine_workflow._sha256(source),
+                    "sha256": machine_datasets._sha256(source),
                     "document": load_yaml(source),
                 })
             if expected_job in {
@@ -866,24 +1222,24 @@ class MachineWorkflowTest(unittest.TestCase):
                     "path": task["dataset"]["path"],
                     "id": dataset_manifest["dataset_id"],
                 },
-                "task_sha256": machine_workflow._sha256(resolved_path),
+                "task_sha256": machine_datasets._sha256(resolved_path),
                 "input_documents": input_documents,
                 "files": [{
                     "path": "task_resolved.yaml",
                     "size_bytes": resolved_path.stat().st_size,
-                    "sha256": machine_workflow._sha256(resolved_path),
+                    "sha256": machine_datasets._sha256(resolved_path),
                     "schema_version": "1.0.0",
                 }] + ([{
                     "path": "metrics.json",
                     "size_bytes": (side / "metrics.json").stat().st_size,
-                    "sha256": machine_workflow._sha256(side / "metrics.json"),
+                    "sha256": machine_datasets._sha256(side / "metrics.json"),
                     "schema_version": "1.0.0",
                 }] if (side / "metrics.json").is_file() else []),
                 "directories": [],
                 "delivery_files": [{
                     "path": path.name,
                     "size_bytes": path.stat().st_size,
-                    "sha256": machine_workflow._sha256(path),
+                    "sha256": machine_datasets._sha256(path),
                     "schema_version": "1.0.0",
                 } for path in delivery_paths],
             }), encoding="utf-8")
@@ -1106,14 +1462,14 @@ class MachineWorkflowTest(unittest.TestCase):
         self.assertEqual(calls, [])
 
     def test_default_runner_dispatches_baselink_without_changing_solver_interface(self):
-        with mock.patch("kalibr_no_ros.camera_baselink.run_camera_baselink") as run:
-            machine_workflow._run_task(self.prefix, "task.yaml", "output",
+        with mock.patch("kalibr_no_ros.task.camera_baselink.run_camera_baselink") as run:
+            machine_runner._run_task(self.prefix, "task.yaml", "output",
                                        "camera_baselink_calibration", force=False)
             run.assert_called_once_with(
                 "task.yaml", "output", force=False,
                 _delivery_layout="machine")
-        with mock.patch("kalibr_no_ros.task.run_task") as run:
-            machine_workflow._run_task(self.prefix, "task.yaml", "output",
+        with mock.patch("kalibr_no_ros.task.runner.run_task") as run:
+            machine_runner._run_task(self.prefix, "task.yaml", "output",
                                        "camera_calibration", force=False)
             run.assert_called_once_with(
                 self.prefix, "task.yaml", "output", "camera_calibration",
@@ -1283,7 +1639,7 @@ class MachineWorkflowTest(unittest.TestCase):
         path.write_text("stereo\n", encoding="utf-8")
         record = {
             "path": str(path.resolve()),
-            "sha256": machine_workflow._sha256(path),
+            "sha256": machine_datasets._sha256(path),
         }
         state["calib_params"]["stereo"] = record
         state_path.write_text(json.dumps(state), encoding="utf-8")
@@ -1336,7 +1692,7 @@ class MachineWorkflowTest(unittest.TestCase):
                       / "state.json")
         state = json.loads(state_path.read_text(encoding="utf-8"))
         active = state["calib_params"]["vision"]
-        legacy_signature = machine_workflow._json_sha256({
+        legacy_signature = machine_config._json_sha256({
             "format_version": "1.0.0",
             "identity": {"machine_version": "EVT312", "machine_num": "02"},
             "revision": "__base__",
@@ -1348,14 +1704,15 @@ class MachineWorkflowTest(unittest.TestCase):
                 "camera_imu_mode": "standard",
             },
         })
-        active["sha256"] = machine_workflow._sha256(vision_path)
+        active["sha256"] = machine_datasets._sha256(vision_path)
         active["source_signature"] = legacy_signature
         state_path.write_text(json.dumps(state), encoding="utf-8")
 
         second = run_machine_workflow(self.prefix, config, runner=runner)
         self.assertEqual(second["calib_params"]["vision"]["action"], "updated")
         restored = load_yaml(vision_path)
-        self.assertEqual(restored["algorithm_version"], "1.0.0")
+        self.assertEqual(restored["algorithm_version"], "1.1.0")
+        self.assertEqual(restored["calibration_behavior_version"], "1.0.0")
         self.assertEqual(restored["calib_file_version"], "1.0.0")
         self.assertNotIn("calib_version", restored)
         self.assertEqual(len(calls), 1)
@@ -1377,7 +1734,7 @@ class MachineWorkflowTest(unittest.TestCase):
                       / "state.json")
         state = json.loads(state_path.read_text(encoding="utf-8"))
         active = state["calib_params"]["mono"]
-        legacy_signature = machine_workflow._json_sha256({
+        legacy_signature = machine_config._json_sha256({
             "format_version": "1.0.0",
             "identity": {"machine_version": "EVT312", "machine_num": "02"},
             "revision": "__base__",
@@ -1386,14 +1743,15 @@ class MachineWorkflowTest(unittest.TestCase):
             "defaulted_fields": active["defaulted_fields"],
             "context": None,
         })
-        active["sha256"] = machine_workflow._sha256(mono_path)
+        active["sha256"] = machine_datasets._sha256(mono_path)
         active["source_signature"] = legacy_signature
         state_path.write_text(json.dumps(state), encoding="utf-8")
 
         second = run_machine_workflow(self.prefix, config, runner=runner)
         self.assertEqual(second["calib_params"]["mono"]["action"], "updated")
         restored = load_yaml(mono_path)
-        self.assertEqual(restored["algorithm_version"], "1.0.0")
+        self.assertEqual(restored["algorithm_version"], "1.1.0")
+        self.assertEqual(restored["calibration_behavior_version"], "1.0.0")
         self.assertEqual(restored["calib_file_version"], "1.0.0")
         self.assertIn("T_base_cam", restored["camera"])
         self.assertNotIn("T_base_cam0", restored["camera"])
@@ -1417,6 +1775,8 @@ class MachineWorkflowTest(unittest.TestCase):
     def test_mono_can_run_without_stereo_and_resume_baselink_later(self):
         self.write_dataset("usb_261021_1510", cameras=("cam0",))
         config = self.write_config(extra={"mono_camera_baselink": MONO_BASELINK_CONFIG})
+        usb_defaults = load_yaml(
+            self.profile_file("mechine_base_param.yaml"))["usb_camera"]
         calls = []
         runner = self._mock_runner(calls)
         first = run_machine_workflow(self.prefix, config, runner=runner)
@@ -1426,8 +1786,9 @@ class MachineWorkflowTest(unittest.TestCase):
         self.assertEqual(set(first["calib_params"]), {"mono"})
         first_mono = load_yaml(first["calib_params"]["mono"]["result"])
         self.assertFalse(first_mono["mono_baselink_calibrated"])
-        self.assertEqual(first_mono["camera"]["T_base_cam"][0][3], -0.21306)
-        self.assertEqual(first_mono["camera"]["pitch"], 37.5)
+        self.assertEqual(
+            first_mono["camera"]["T_base_cam"], usb_defaults["T_base_cam"])
+        self.assertEqual(first_mono["camera"]["pitch"], usb_defaults["pitch"])
         self.write_dataset("usb_base_link_261021_1640", cameras=("cam0",))
         second = run_machine_workflow(self.prefix, config, runner=runner)
         self.assertEqual(len(calls), 2)
@@ -1633,19 +1994,20 @@ class MachineWorkflowTest(unittest.TestCase):
         self.assertIn("\033[32m", stream.getvalue())
         self.assertIn("\033[31m", stream.getvalue())
 
-    def test_machine_progress_reports_metadata_snapshot_without_hashing(self):
+    def test_machine_progress_reports_structured_hash_and_image_inventory(self):
         stream = StringIO()
         reporter = machine_cli._ConsoleProgress(stream)
         reporter("dataset_validation_complete", {
-            "mode": "metadata_snapshot", "file_count": 644,
-            "reused_files": 0, "hashed_files": 0, "hashed_bytes": 0,
+            "mode": "structured_hash_image_inventory",
+            "image_count": 640, "hashed_files": 4, "hashed_bytes": 8192,
             "elapsed_s": 0.5,
         })
         text = stream.getvalue()
-        self.assertIn("[快照]", text)
-        self.assertIn("644 个文件元数据", text)
+        self.assertIn("[完成]", text)
+        self.assertIn("640 张图像清单", text)
+        self.assertIn("SHA-256 校验 4 个结构文件", text)
         self.assertIn("未读取图像内容", text)
-        self.assertNotIn("重新哈希", text)
+        self.assertNotIn("图像哈希", text)
 
     def test_machine_progress_reports_missing_dataset_and_task_spacing(self):
         class TtyBuffer(StringIO):
@@ -1687,7 +2049,7 @@ class MachineWorkflowTest(unittest.TestCase):
         self.assertEqual(
             [details["stage"] for event, details in events
              if event in {"stage_start", "stage_skip"}],
-            list(machine_workflow._STAGE_ROLES))
+            list(machine_config._STAGE_ROLES))
         camera_start = next(
             details for event, details in events
             if event == "stage_start" and details["stage"] == "camera")
@@ -1711,7 +2073,7 @@ class MachineWorkflowTest(unittest.TestCase):
         config = self.write_config()
         attempts = []
 
-        def fail(prefix, task, output, expected_job, force=False):
+        def fail(prefix, task, output, expected_job, force=False, **overrides):
             attempts.append(expected_job)
             raise RuntimeError("solver sentinel")
 
@@ -1735,24 +2097,24 @@ class MachineWorkflowTest(unittest.TestCase):
 
     def test_recalibration_dependency_map_covers_all_dataset_roles(self):
         self.assertEqual(
-            machine_workflow._affected_stages({"stereo"}),
+            machine_state._affected_stages({"stereo"}),
             ["camera", "camera_imu", "camera_baselink"])
         self.assertEqual(
-            machine_workflow._affected_stages({"stereo_imu"}),
+            machine_state._affected_stages({"stereo_imu"}),
             ["camera_imu"])
         self.assertEqual(
-            machine_workflow._affected_stages({"stereo_baselink"}),
+            machine_state._affected_stages({"stereo_baselink"}),
             ["camera_baselink"])
         self.assertEqual(
-            machine_workflow._affected_stages({"mono"}),
+            machine_state._affected_stages({"mono"}),
             ["mono_camera", "mono_camera_baselink"])
         self.assertEqual(
-            machine_workflow._affected_stages({"mono_baselink"}),
+            machine_state._affected_stages({"mono_baselink"}),
             ["mono_camera_baselink"])
 
         files = {
             name: "old" for name in [
-                *machine_workflow._TEMPLATES.values(),
+                *machine_config._TEMPLATES.values(),
                 "initialization_stereo_camera.yaml",
                 "initialization_mono_camera.yaml", "imu_noise.yaml",
                 "mechine_base_param.yaml",
@@ -1791,27 +2153,27 @@ class MachineWorkflowTest(unittest.TestCase):
             changed["files"][name] = "new"
             with self.subTest(profile=name):
                 self.assertEqual(
-                    machine_workflow._profile_recalibration(
+                    machine_state._profile_recalibration(
                         profile, changed, binding)[1],
                     expected)
         changed_target = deepcopy(profile)
         changed_target["target"]["sha256"] = "new"
         self.assertEqual(
-            machine_workflow._profile_recalibration(
+            machine_state._profile_recalibration(
                 profile, changed_target, binding)[1],
-            list(machine_workflow._STAGE_ROLES))
+            list(machine_config._STAGE_ROLES))
 
         current = deepcopy(profile)
         current.pop("target")
         current["targets"] = {
             stage: {"path": "aprilgrid_1.yaml", "sha256": "target"}
-            for stage in machine_workflow._STAGE_ROLES
+            for stage in machine_config._STAGE_ROLES
         }
-        current["target_overrides"] = list(machine_workflow._STAGE_ROLES)
+        current["target_overrides"] = list(machine_config._STAGE_ROLES)
         self.assertEqual(
-            machine_workflow._profile_recalibration(
+            machine_state._profile_recalibration(
                 profile, current, binding)[1],
-            list(machine_workflow._STAGE_ROLES))
+            [])
         expected_by_stage = {
             "camera": ["camera", "camera_imu", "camera_baselink"],
             "camera_imu": ["camera_imu"],
@@ -1825,7 +2187,7 @@ class MachineWorkflowTest(unittest.TestCase):
                 "path": "aprilgrid_2.yaml", "sha256": "target-2"}
             with self.subTest(target_stage=stage):
                 self.assertEqual(
-                    machine_workflow._profile_recalibration(
+                    machine_state._profile_recalibration(
                         current, changed, binding)[1],
                     expected)
 
@@ -1998,7 +2360,7 @@ class MachineWorkflowTest(unittest.TestCase):
         dump_yaml(document, template)
         failed_calls = []
 
-        def fail(prefix, task, output, expected_job, force=False):
+        def fail(prefix, task, output, expected_job, force=False, **overrides):
             failed_calls.append((expected_job, force))
             raise RuntimeError("template recalibration sentinel")
 
@@ -2208,12 +2570,13 @@ class MachineWorkflowTest(unittest.TestCase):
         replacement_calls = []
         camera_runner = self._mock_runner(replacement_calls)
 
-        def fail_imu(prefix, task, output, expected_job, force=False):
+        def fail_imu(
+                prefix, task, output, expected_job, force=False, **overrides):
             if expected_job == "camera_imu_calibration":
                 replacement_calls.append({"job": expected_job, "force": force})
                 raise RuntimeError("replacement sentinel")
             return camera_runner(
-                prefix, task, output, expected_job, force=force)
+                prefix, task, output, expected_job, force=force, **overrides)
 
         with self.assertRaisesRegex(RuntimeError, "replacement sentinel"):
             run_machine_workflow(self.prefix, config, runner=fail_imu)
@@ -2256,11 +2619,13 @@ class MachineWorkflowTest(unittest.TestCase):
         replacement_calls = []
         delegate = self._mock_runner(replacement_calls)
 
-        def fail_imu(prefix, task, output, expected_job, force=False):
+        def fail_imu(
+                prefix, task, output, expected_job, force=False, **overrides):
             if expected_job == "camera_imu_calibration":
                 replacement_calls.append({"job": expected_job, "force": force})
                 raise RuntimeError("replacement sentinel")
-            return delegate(prefix, task, output, expected_job, force=force)
+            return delegate(
+                prefix, task, output, expected_job, force=force, **overrides)
 
         with self.assertRaisesRegex(RuntimeError, "replacement sentinel"):
             run_machine_workflow(self.prefix, config, runner=fail_imu)
@@ -2323,7 +2688,7 @@ class MachineWorkflowTest(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertTrue(calls[-1]["force"])
 
-    def test_software_provenance_change_recalculates_current_datasets(self):
+    def test_software_provenance_change_with_same_behavior_reuses_results(self):
         self.write_dataset("stereo_260916_2136")
         config = self.write_config()
         calls = []
@@ -2333,6 +2698,65 @@ class MachineWorkflowTest(unittest.TestCase):
                       / "state.json")
         state = json.loads(state_path.read_text(encoding="utf-8"))
         state["binding"]["software"]["implementation_sha256"] = "0" * 64
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        changed = run_machine_workflow(self.prefix, config, runner=runner)
+
+        self.assertEqual(changed["camera"]["action"], "reused")
+        self.assertEqual(len(calls), 1)
+
+    def test_v1_0_state_without_behavior_field_reuses_and_is_canonicalized(self):
+        self.write_dataset("stereo_260916_2136")
+        config = self.write_config()
+        calls = []
+        runner = self._mock_runner(calls)
+        run_machine_workflow(self.prefix, config, runner=runner)
+        state_path = (self.machine / "result" / ".kalibr-cedarobot"
+                      / "state.json")
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["schema_version"] = "1.1.0"
+        state["binding"]["software"].pop(
+            "calibration_behavior_version", None)
+        state["binding"]["software"]["version"] = "1.0.0"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        resumed = run_machine_workflow(self.prefix, config, runner=runner)
+
+        self.assertEqual(resumed["camera"]["action"], "reused")
+        self.assertEqual(len(calls), 1)
+        migrated = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual(migrated["schema_version"], "1.0.0")
+        self.assertEqual(
+            migrated["binding"]["software"][
+                "calibration_behavior_version"], "1.0.0")
+
+    def test_profile_yaml_formatting_change_does_not_recalculate(self):
+        self.write_dataset("stereo_260916_2136")
+        config = self.write_config()
+        calls = []
+        runner = self._mock_runner(calls)
+        run_machine_workflow(self.prefix, config, runner=runner)
+        template = self.profile_file("stereo_camera_calibration_task.yaml")
+        template.write_text(
+            template.read_text(encoding="utf-8") + "\n",
+            encoding="utf-8")
+
+        resumed = run_machine_workflow(self.prefix, config, runner=runner)
+
+        self.assertEqual(resumed["camera"]["action"], "reused")
+        self.assertEqual(len(calls), 1)
+
+    def test_calibration_behavior_change_recalculates_current_datasets(self):
+        self.write_dataset("stereo_260916_2136")
+        config = self.write_config()
+        calls = []
+        runner = self._mock_runner(calls)
+        run_machine_workflow(self.prefix, config, runner=runner)
+        state_path = (self.machine / "result" / ".kalibr-cedarobot"
+                      / "state.json")
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["binding"]["software"][
+            "calibration_behavior_version"] = "0.9.0"
         state_path.write_text(json.dumps(state), encoding="utf-8")
 
         changed = run_machine_workflow(self.prefix, config, runner=runner)
@@ -2532,9 +2956,14 @@ class MachineWorkflowTest(unittest.TestCase):
         delegate = self._mock_runner(calls)
 
         def mutate_after_solve(*args, **kwargs):
-            result = delegate(*args, **kwargs)
-            image.write_bytes(b"after")
-            return result
+            verify = kwargs["_before_publish"]
+
+            def mutate_then_verify():
+                image.write_bytes(b"after-longer")
+                verify()
+
+            kwargs["_before_publish"] = mutate_then_verify
+            return delegate(*args, **kwargs)
 
         with self.assertRaisesRegex(
                 (TaskError, ValueError), "changed during calibration"):

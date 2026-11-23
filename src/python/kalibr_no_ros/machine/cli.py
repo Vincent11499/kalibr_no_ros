@@ -6,9 +6,9 @@ import json
 import math
 import sys
 
-from .machine_workflow import run_machine_workflow
-from .task import TaskError, load_yaml
-from .version import VERSION
+from .runner import run_machine_workflow
+from ..task.document import TaskError, load_yaml
+from ..version import VERSION
 
 
 _STAGE_LABELS = {
@@ -287,9 +287,8 @@ class _ConsoleProgress:
                 self._write(self._paint(
                     "[未发现] 当前批次没有可执行的数据集", "yellow"))
         elif event == "dataset_validation_start":
-            self._write("  输入校验 [{}/{}] {}（{} 个文件，{}）".format(
-                details["index"], details["total"], details["dataset"],
-                details["file_count"], _byte_size(details["total_bytes"])))
+            self._write("  输入校验 [{}/{}] {}".format(
+                details["index"], details["total"], details["dataset"]))
         elif event == "dataset_validation_progress":
             self._write("    哈希进度 {}%（{} / {}）".format(
                 details["percent"],
@@ -299,7 +298,14 @@ class _ConsoleProgress:
             elapsed = float(details.get("elapsed_s", 0.0))
             reused = details.get("reused_files", 0)
             hashed = details.get("hashed_files", 0)
-            if details.get("mode") == "metadata_snapshot":
+            if details.get("mode") == "structured_hash_image_inventory":
+                label = self._paint("[完成]", "green")
+                text = (
+                    "已核对 {} 张图像清单，SHA-256 校验 {} 个结构文件"
+                    "（{}）；未读取图像内容".format(
+                        details.get("image_count", 0), hashed,
+                        _byte_size(details.get("hashed_bytes", 0))))
+            elif details.get("mode") == "metadata_snapshot":
                 label = self._paint("[快照]", "green")
                 text = "已记录 {} 个文件元数据，未读取图像内容".format(
                     details.get("file_count", 0))
@@ -392,7 +398,7 @@ class _ConsoleProgress:
 
 def main(argv=None, prefix=None):
     arguments = build_parser().parse_args(argv)
-    prefix = Path(prefix or Path(__file__).resolve().parents[3]).resolve()
+    prefix = Path(prefix or Path(__file__).resolve().parents[4]).resolve()
     config = (Path(arguments.config) if arguments.config is not None
               else prefix / "config" / "user.yaml")
     progress = _ConsoleProgress()

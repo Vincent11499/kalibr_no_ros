@@ -6,6 +6,22 @@ import os
 import tempfile
 
 
+def contained_path(root, relative):
+    """Resolve a relative artifact path without following external symlinks."""
+    root = Path(root).resolve()
+    relative = Path(relative)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("artifact path must be relative and contained: {}".format(relative))
+    path = root / relative
+    if path.is_symlink():
+        raise ValueError("artifact path must not be a symlink: {}".format(relative))
+    try:
+        path.resolve().relative_to(root)
+    except ValueError as error:
+        raise ValueError("artifact path escapes its root: {}".format(relative)) from error
+    return path
+
+
 def file_sha256(path):
     """Return the SHA-256 digest of a file without loading it into memory."""
     digest = hashlib.sha256()

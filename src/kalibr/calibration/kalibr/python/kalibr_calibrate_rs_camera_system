@@ -394,7 +394,7 @@ def main():
             sm.logWarn("Removed {} rolling-shutter corner outliers".format(
                 removed))
 
-    from kalibr_no_ros import observability
+    from kalibr_no_ros.native_bridge import observability
     observability_threads = native_runtime.optimizer_threads_or(
         max(1, multiprocessing.cpu_count() - 1))
     native_runtime.timed_call(

@@ -7,7 +7,7 @@ from kalibr_imu_camera_calibration import *
 import numpy as np
 import argparse
 import kalibr_runtime as native_runtime
-from kalibr_no_ros import artifacts as run_artifacts
+from kalibr_no_ros.native_bridge import evidence as run_artifacts
 # kalibr-native-runtime-overlay
 import signal
 import sys
@@ -304,7 +304,7 @@ def main():
     run_artifacts.publish_imu_camera(iCal)
 
     if initializationConfig is not None or parsed.rolling_shutter_config:
-        from kalibr_no_ros import observability as calibration_observability
+        from kalibr_no_ros.native_bridge import observability as calibration_observability
         observability_job = ('camera_imu_rolling_shutter_calibration'
                              if parsed.rolling_shutter_config else 'camera_imu_calibration')
         observability_threads = native_runtime.optimizer_threads_or(

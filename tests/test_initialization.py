@@ -13,24 +13,23 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src" / "python"))
 
 from kalibr_no_ros.cli import _runtime_overrides, build_parser
-from kalibr_no_ros.initialization import (
+from kalibr_no_ros.task.initialization import (
     InitializationError,
     build_initialization_report,
     canonical_initialization,
     initialization_stage_decisions,
     validate_initialization,
 )
-from kalibr_no_ros.task import (
-    TaskError,
-    _camera_arguments,
-    load_task,
-    resolve_initialization,
-    run_task,
-)
-import kalibr_no_ros.task as task_module
-from kalibr_no_ros import artifacts as artifact_module
-from kalibr_no_ros import delivery
-from kalibr_no_ros import reporting
+from kalibr_no_ros.task.document import TaskError
+from kalibr_no_ros.task.solver_adapter import _camera_arguments
+from kalibr_no_ros.task.validation import load_task
+from kalibr_no_ros.task.initialization import resolve_initialization
+from kalibr_no_ros.task.runner import run_task
+from kalibr_no_ros.task import runner as task_module
+from kalibr_no_ros.task import solver_adapter as adapter_module
+from kalibr_no_ros.native_bridge import evidence as artifact_module
+from kalibr_no_ros.results import delivery as delivery
+from kalibr_no_ros.results import reporting as reporting
 
 
 IDENTITY4 = [
@@ -215,7 +214,7 @@ class InitializationValidationTest(unittest.TestCase):
                     "cameras": {},
                 }
                 with self.assertRaisesRegex(
-                        InitializationError, "schema_version must be 1.0.0"):
+                        InitializationError, "schema_version must be one of"):
                     validate_initialization(
                         document, "camera_calibration", task)
 
@@ -729,13 +728,13 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
                     task_module, "write_run_manifest",
                     side_effect=manifest), \
                     mock.patch.object(
-                        task_module, "_dataset_alias",
+                        adapter_module, "_dataset_alias",
                         side_effect=lambda *unused: events.append("dataset") or "bag"), \
                     mock.patch.object(
-                        task_module, "_target_path",
+                        adapter_module, "_target_path",
                         side_effect=lambda *unused: events.append("target") or "target"), \
                     mock.patch.object(
-                        task_module, "_camera_arguments",
+                        adapter_module, "_camera_arguments",
                         side_effect=lambda *unused: events.append("arguments") or []), \
                     mock.patch.object(
                         task_module, "_run_legacy", side_effect=solve), \
@@ -754,7 +753,7 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
                         delivery, "enrich_result",
                         side_effect=lambda *unused: events.append("enrich")), \
                     mock.patch(
-                        "kalibr_no_ros.validation.validate_task",
+                        "kalibr_no_ros.task.validation.validate_task",
                         side_effect=validate):
                 task_module._run_task_staged(
                     ROOT, task_path, output, "camera_calibration", _task=task)
@@ -796,7 +795,8 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
                         encoding="utf-8",
                     )
                     with self.assertRaisesRegex(
-                            TaskError, "task schema_version must be 1.0.0"):
+                            TaskError,
+                            "task schema_version must be one of 1.0.0, 1.1.0"):
                         load_task(task_path)
 
     def test_task_initialization_path_is_optional(self):
@@ -928,13 +928,13 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
                 raise RuntimeError("rank deficient")
 
             with mock.patch.object(
-                    task_module, "_dataset_alias", return_value="bag"), \
+                    adapter_module, "_dataset_alias", return_value="bag"), \
                     mock.patch.object(
-                        task_module, "_target_path", return_value="target"), \
+                        adapter_module, "_target_path", return_value="target"), \
                     mock.patch.object(
                         task_module, "_run_legacy",
                         side_effect=fail_with_diagnostics), \
-                    mock.patch("kalibr_no_ros.validation.validate_task", return_value={"status": "passed"}):
+                    mock.patch("kalibr_no_ros.task.validation.validate_task", return_value={"status": "passed"}):
                 with self.assertRaisesRegex(RuntimeError, "rank deficient"):
                     run_task(
                         ROOT, task_path, output,
@@ -997,15 +997,15 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
                     encoding="utf-8")
 
             with mock.patch.object(
-                    task_module, "_dataset_alias", return_value="bag"), \
+                    adapter_module, "_dataset_alias", return_value="bag"), \
                     mock.patch.object(
-                        task_module, "_target_path", return_value="target"), \
+                        adapter_module, "_target_path", return_value="target"), \
                     mock.patch.object(
                         task_module, "_run_legacy", side_effect=finish_native), \
                     mock.patch.object(
                         reporting, "generate_report",
                         side_effect=RuntimeError("postprocessing failed")), \
-                    mock.patch("kalibr_no_ros.validation.validate_task", return_value={"status": "passed"}):
+                    mock.patch("kalibr_no_ros.task.validation.validate_task", return_value={"status": "passed"}):
                 with self.assertRaisesRegex(
                         RuntimeError, "postprocessing failed"):
                     run_task(
@@ -1049,16 +1049,16 @@ class InitializationTaskIntegrationTest(unittest.TestCase):
                     encoding="utf-8")
 
             with mock.patch.object(
-                    task_module, "_dataset_alias", return_value="bag"), \
+                    adapter_module, "_dataset_alias", return_value="bag"), \
                     mock.patch.object(
-                        task_module, "_target_path", return_value="target"), \
+                        adapter_module, "_target_path", return_value="target"), \
                     mock.patch.object(
                         task_module, "_run_legacy", side_effect=finish_native), \
                     mock.patch.object(
                         task_module, "_collect_outputs",
                         side_effect=RuntimeError("collection failed")), \
                     mock.patch(
-                        "kalibr_no_ros.validation.validate_task",
+                        "kalibr_no_ros.task.validation.validate_task",
                         return_value={"status": "passed"}):
                 with self.assertRaisesRegex(RuntimeError, "collection failed"):
                     run_task(

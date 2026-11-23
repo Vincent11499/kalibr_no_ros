@@ -7,14 +7,23 @@ import json
 import math
 import os
 from pathlib import Path
-import re
 import tempfile
 
-from .evaluation import ReportingError, stereo_geometry, validate_output_options
-from .filesystem import file_sha256
-from .initialization import InitializationError, _transform
-from .task import TaskError, dump_yaml, load_yaml
-from .version import SCHEMA_VERSION, VERSION
+from ..results.evaluation import ReportingError, stereo_geometry, validate_output_options
+from ..filesystem import file_sha256
+from ..task.initialization import InitializationError, _transform
+from ..task.document import TaskError, dump_yaml, load_yaml
+from ..version import (
+    CALIBRATION_BEHAVIOR_VERSION,
+    CALIB_PARAMS_SCHEMA_VERSION,
+    SUPPORTED_CONFIG_SCHEMA_VERSIONS,
+    SUPPORTED_RESULT_SCHEMA_VERSIONS,
+    VERSION,
+    supports_schema_version,
+)
+
+from .config import machine_identity
+from .parameter_reuse import validate_imu_parameters
 
 
 PROFILE_KIND = "machine_calib_params_profile"
@@ -22,20 +31,7 @@ CALIB_PARAM_OUTPUTS = {
     "vision": Path("vision") / "stereo_imu_calib.yaml",
     "mono": Path("mono_camera") / "usb_mono_calib.yaml",
 }
-_MACHINE_NAME = re.compile(
-    r"^(?P<machine_version>[A-Za-z][A-Za-z0-9]*)-(?P<machine_num>[0-9]+)$")
 _TIMESTAMP_FORMAT = "%Y-%m-%d-%H:%M:%S"
-def machine_identity(machine_dir):
-    """Parse public identity from an exact ``MODEL-NUMBER`` basename."""
-    match = _MACHINE_NAME.fullmatch(Path(machine_dir).name)
-    if match is None:
-        raise TaskError(
-            "machine_dir basename must match <machine_version>-<machine_num>; "
-            "for example EVT312-02")
-    return {
-        "machine_version": match.group("machine_version"),
-        "machine_num": match.group("machine_num"),
-    }
 
 
 def _finite(value, label, *, minimum=None):
@@ -77,7 +73,8 @@ def _load_profile(profile_dir):
         raise TaskError(
             "machine calib_params profile is missing: {}".format(path))
     value = load_yaml(path)
-    if (value.get("schema_version") != SCHEMA_VERSION
+    if (not supports_schema_version(
+            value.get("schema_version"), SUPPORTED_CONFIG_SCHEMA_VERSIONS)
             or value.get("kind") != PROFILE_KIND
             or set(value) != {
                 "schema_version", "kind", "imu", "stereo_camera",
@@ -246,7 +243,8 @@ def _delivery_source(deliveries, stage, expected_type):
     if expected_digest is not None and expected_digest != digest:
         raise TaskError("{} result hash changed".format(stage))
     document = load_yaml(path)
-    if (document.get("schema_version") != SCHEMA_VERSION
+    if (not supports_schema_version(
+            document.get("schema_version"), SUPPORTED_RESULT_SCHEMA_VERSIONS)
             or document.get("kind") != "calibration_result"
             or document.get("calibration_type") != expected_type):
         raise TaskError("{} result has an unexpected schema".format(stage))
@@ -414,7 +412,8 @@ def _metrics(source, label):
     except (OSError, ValueError) as error:
         raise TaskError("invalid {} metrics.json: {}".format(label, error)) from error
     if (not isinstance(value, dict)
-            or value.get("schema_version") != SCHEMA_VERSION
+            or not supports_schema_version(
+                value.get("schema_version"), SUPPORTED_RESULT_SCHEMA_VERSIONS)
             or value.get("kind") != "calibration_metrics"
             or value.get("calibration_type")
             != source["document"].get("calibration_type")):
@@ -443,6 +442,34 @@ def _biases(metrics):
     return result
 
 
+def _native_imu_parameters(imu):
+    if not isinstance(imu, dict) or imu.get("id") != "imu0":
+        raise TaskError("Camera-IMU result must contain imu0")
+    model = imu.get("model")
+    result = {"model": model}
+    if model == "calibrated":
+        return result
+    if model not in {"scale-misalignment", "scale-misalignment-size-effect"}:
+        raise TaskError("Camera-IMU result has an unsupported imu0 model")
+    accelerometers = imu.get("accelerometers")
+    gyroscopes = imu.get("gyroscopes")
+    if not isinstance(accelerometers, dict) or not isinstance(gyroscopes, dict):
+        raise TaskError("Camera-IMU imu0 intrinsic blocks are missing")
+    result.update({
+        "M_accel": deepcopy(accelerometers.get("M")),
+        "M_gyro": deepcopy(gyroscopes.get("M")),
+        "C_gyro_i": deepcopy(gyroscopes.get("C_gyro_i")),
+        "A_gyro_accel": deepcopy(gyroscopes.get("A")),
+    })
+    if model == "scale-misalignment-size-effect":
+        result.update({
+            "rx_i_m": deepcopy(accelerometers.get("rx_i")),
+            "ry_i_m": deepcopy(accelerometers.get("ry_i")),
+            "rz_i_m": deepcopy(accelerometers.get("rz_i")),
+        })
+    return result
+
+
 def _rectification(metrics, label):
     options = metrics.get("evaluation_options")
     if not isinstance(options, dict) or not isinstance(
@@ -464,7 +491,8 @@ def _header(identity, generated_at):
         "machine_num": identity["machine_num"],
         "time": generated_at,
         "algorithm_version": VERSION,
-        "calib_file_version": SCHEMA_VERSION,
+        "calibration_behavior_version": CALIBRATION_BEHAVIOR_VERSION,
+        "calib_file_version": CALIB_PARAMS_SCHEMA_VERSION,
     }
 
 
@@ -538,13 +566,13 @@ def _vision_body(profile, camera_source, camera_imu_source, baselink_source,
         defaulted.extend(["imu.gyro_bias", "imu.acc_bias"])
     elif "parameters" in camera_imu_source:
         values = camera_imu_source["parameters"].get("imu", {})
-        rate = _finite(values.get("imu_data_rate"), "imu.imu_data_rate",
-                       minimum=0.0)
+        accepted = validate_imu_parameters({**imu, **values})
+        rate = accepted["imu_data_rate"]
         if not math.isclose(rate, float(imu["imu_data_rate"]), rel_tol=0.0,
                             abs_tol=1e-9):
             raise TaskError("Camera-IMU update_rate does not match imu_data_rate")
-        imu["gyro_bias"] = _vector(values.get("gyro_bias"), 3, "imu.gyro_bias")
-        imu["acc_bias"] = _vector(values.get("acc_bias"), 3, "imu.acc_bias")
+        imu.update({key: deepcopy(value) for key, value in accepted.items()
+                    if key != "imu_data_rate"})
     else:
         imus = camera_imu_source["document"].get("imus")
         if (not isinstance(imus, list) or len(imus) != 1
@@ -557,10 +585,15 @@ def _vision_body(profile, camera_source, camera_imu_source, baselink_source,
         biases = _biases(metrics)
         imu["gyro_bias"] = biases["gyro_bias"]
         imu["acc_bias"] = biases["acc_bias"]
+        native = _native_imu_parameters(imus[0])
+        accepted = validate_imu_parameters({**imu, **native})
+        imu.update({key: value for key, value in accepted.items()
+                    if key != "imu_data_rate"})
     # Preserve the consumer's requested key order around the two bias vectors.
     imu = {
         "imu_type": imu["imu_type"],
         "imu_data_rate": imu["imu_data_rate"],
+        **({"model": imu["model"]} if "model" in imu else {}),
         "arw": imu["arw"],
         "vrw": imu["vrw"],
         "gb_std": imu["gb_std"],
@@ -571,6 +604,10 @@ def _vision_body(profile, camera_source, camera_imu_source, baselink_source,
         "gyro_scale": imu["gyro_scale"],
         "acc_bias": imu["acc_bias"],
         "acc_scale": imu["acc_scale"],
+        **{field: imu[field] for field in (
+            "M_accel", "M_gyro", "C_gyro_i", "A_gyro_accel",
+            "rx_i_m", "ry_i_m", "rz_i_m",
+        ) if field in imu},
     }
     imu_values = {}
     native_imu = (_camera_map(camera_imu_source, ["cam0", "cam1"],
@@ -694,7 +731,7 @@ def _artifact(identity, generated_at, profile, body, defaulted,
     document.update(body)
     defaulted = sorted(defaulted)
     signature = _json_sha256({
-        "format_version": SCHEMA_VERSION,
+        "format_version": CALIB_PARAMS_SCHEMA_VERSION,
         "identity": identity,
         "profile_sha256": profile["sha256"],
         "sources": source_files,

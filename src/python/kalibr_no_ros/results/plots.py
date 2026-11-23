@@ -15,7 +15,8 @@ import textwrap
 import numpy as np
 
 from .evaluation import ReportingError, camera_geometry, corner_residual, merged_cameras, vector
-from .version import VERSION
+from ..version import VERSION
+from ..filesystem import contained_path
 
 
 _BLUE = "#2563a6"
@@ -475,6 +476,42 @@ def _summary_sections(metrics, assessment, calibration):
             if transform is not None:
                 source = final.get("from_camera", final.get("source_camera", previous_ids.get(name, source))) if field == "T_cn_cnm1" else source
                 yield "{} → {} · {} (translation in m)".format(source, target, field), ["", "x", "y", "z", "translation"], [[str(index), *row] for index, row in enumerate(transform)]
+    for index, imu in enumerate((calibration or {}).get("imus", [])):
+        if not isinstance(imu, dict):
+            continue
+        imu_id = imu.get("id", "imu{}".format(index))
+        yield imu_id + " · IMU parameters", ["Parameter", "Value"], [
+            ["Model", imu.get("model")],
+            ["Update rate [Hz]", imu.get("update_rate")],
+        ]
+        accelerometers = imu.get("accelerometers") or {}
+        gyroscopes = imu.get("gyroscopes") or {}
+        rows = []
+        for name, matrix in (
+                ("M_accel", accelerometers.get("M")),
+                ("M_gyro", gyroscopes.get("M")),
+                ("C_gyro_i", gyroscopes.get("C_gyro_i")),
+                ("A_gyro_accel", gyroscopes.get("A"))):
+            if (isinstance(matrix, list) and len(matrix) == 3
+                    and all(isinstance(row, list) and len(row) == 3
+                            for row in matrix)):
+                rows.extend([[name, row_index, *row]
+                             for row_index, row in enumerate(matrix)])
+        if rows:
+            yield imu_id + " · IMU intrinsic matrices", [
+                "Matrix", "Row", "x", "y", "z",
+            ], rows
+        lever_rows = []
+        for name, values in (
+                ("rx_i [m]", accelerometers.get("rx_i")),
+                ("ry_i [m]", accelerometers.get("ry_i")),
+                ("rz_i [m]", accelerometers.get("rz_i"))):
+            if isinstance(values, list) and len(values) == 3:
+                lever_rows.append([name, *values])
+        if lever_rows:
+            yield imu_id + " · Accelerometer size effect", [
+                "Lever arm", "x", "y", "z",
+            ], lever_rows
     if assessment.get("rules"):
         yield "Configured assessment rules", ["Metric", "Value", "Minimum", "Maximum", "Status"], [
             [rule["metric"], rule.get("value"), rule.get("min"), rule.get("max"), rule.get("status")]
@@ -634,7 +671,11 @@ def render_reports(metrics, assessment, files, *, artifacts=None, calibration=No
                 html.escape(title), html.escape(title, quote=True), encoded, html.escape(caption)))
             figure.clear()
         if output_dir is not None:
-            from .reporting import _child
+            def _child(root, relative):
+                try:
+                    return contained_path(root, relative)
+                except ValueError as error:
+                    raise ReportingError(str(error)) from error
             import matplotlib.image as mpimg
             for number, item in enumerate(images, 1):
                 path = item["alignment_path"]

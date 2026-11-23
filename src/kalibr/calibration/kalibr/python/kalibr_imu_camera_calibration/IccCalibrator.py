@@ -1,6 +1,6 @@
 import aslam_backend as aopt
 import kalibr_runtime as native_runtime
-from kalibr_no_ros import artifacts as run_artifacts
+from kalibr_no_ros.native_bridge import evidence as run_artifacts
 # kalibr-native-source-overlay
 import aslam_splines as asp
 from . import IccUtil as util

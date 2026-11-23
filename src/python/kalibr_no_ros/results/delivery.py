@@ -7,9 +7,9 @@ import os
 import re
 import shutil
 import tempfile
-from .filesystem import file_sha256
-from .rolling_shutter import CAMERA_IMU_JOBS, CAMERA_CALIBRATION_JOBS
-from .jobs import CAMERA_BASELINK_JOB
+from ..filesystem import file_sha256
+from ..task.jobs import CAMERA_IMU_JOBS, CAMERA_CALIBRATION_JOBS
+from ..task.jobs import CAMERA_BASELINK_JOB
 
 
 FLAT_LAYOUT = 'flat'
@@ -18,7 +18,7 @@ MACHINE_LAYOUT = 'machine'
 
 
 def _validate_layout(layout):
-    from .task import TaskError
+    from ..task.document import TaskError
     if layout not in {FLAT_LAYOUT, CONTAINED_LAYOUT, MACHINE_LAYOUT}:
         raise TaskError('delivery layout must be flat, contained, or machine')
     return layout
@@ -54,7 +54,7 @@ def _print_published_paths(paths, layout):
 
 
 def _ids(task):
-    from .task import load_yaml, resolve_task_path
+    from ..task.document import load_yaml, resolve_task_path
     if task['job'] in CAMERA_CALIBRATION_JOBS or task['job'] == CAMERA_BASELINK_JOB:
         return [c.get('id', 'cam{}'.format(i)) for i, c in enumerate(task['cameras'])]
     value = task['camera_calibration']
@@ -63,7 +63,7 @@ def _ids(task):
 
 
 def result_name(task, rs_solver_backend='system'):
-    from .task import TaskError
+    from ..task.document import TaskError
     name = task['output'].get('name')
     if not name:
         ids = _ids(task)
@@ -77,45 +77,6 @@ def result_name(task, rs_solver_backend='system'):
     return name
 
 
-def discover_camera_result(task, output):
-    """Never guess between multiple models/runs or silently replace an explicit input."""
-    from .task import TaskError, load_yaml, resolve_task_path
-    if task['job'] not in CAMERA_IMU_JOBS or task.get('camera_calibration'):
-        return
-    expected = None
-    if task['dataset']['type'] == 'directory':
-        from kalibr_bag_io.directory import DirectoryReader
-        reader = DirectoryReader(resolve_task_path(task, task['dataset']['path']))
-        expected = [c['id'] for c in reader.manifest.get('cameras', [])]
-    matches = []
-    for path in sorted(Path(output).glob('*.yaml')):
-        if path.is_symlink() or not path.is_file():
-            continue
-        try:
-            value = load_yaml(path)
-        except (OSError, ValueError):
-            continue
-        if value.get('schema_version') != '1.0.0' or value.get('kind') != 'calibration_result' or value.get('calibration_type') != 'cameras':
-            continue
-        cameras = value.get('cameras', [])
-        if not isinstance(cameras, list) or len(cameras) < 2 or not all(isinstance(c, dict) for c in cameras):
-            continue
-        ids = [c.get('id') for c in cameras]
-        if any(not isinstance(i, str) for i in ids) or len(set(ids)) != len(ids):
-            continue
-        if expected is not None and set(ids) != set(expected):
-            continue
-        try:
-            from .validation import load_cameras
-            candidate_task = dict(task, camera_calibration={'path': str(path.resolve())})
-            load_cameras(candidate_task)
-        except (ValueError, OSError, KeyError, TypeError):
-            continue
-        matches.append(path.resolve())
-    if len(matches) != 1:
-        reason = 'none found' if not matches else ', '.join(p.name for p in matches)
-        raise TaskError('camera_calibration.path omitted: expected one matching stereo/multicamera result in output directory; {}. Specify camera_calibration.path explicitly.'.format(reason))
-    task['camera_calibration'] = {'path': str(matches[0])}
 
 
 def apply_camera_ids(task, artifacts, result):
@@ -143,7 +104,7 @@ def _rolling_shutter_pair_quality(pair, field, pair_id):
     Detailed unavailability reasons remain in metrics.json and the reports; the
     calibration-result contract keeps these fields scalar (or null).
     """
-    from .task import TaskError
+    from ..task.document import TaskError
 
     metric = pair.get(field)
     label = '{} for {}'.format(field, pair_id)
@@ -174,7 +135,7 @@ def _rolling_shutter_pair_quality(pair, field, pair_id):
 
 
 def enrich_result(result, metrics):
-    from .task import TaskError
+    from ..task.document import TaskError
 
     result.pop('transform_convention', None)
     for i, camera in enumerate(result['cameras']):
@@ -202,7 +163,7 @@ def enrich_result(result, metrics):
 
 
 def locate_result(source):
-    from .task import TaskError, load_yaml
+    from ..task.document import TaskError, load_yaml
     source = Path(source).resolve()
     if source.is_file():
         return source
@@ -222,7 +183,7 @@ def locate_result(source):
 
 
 def _inspect_sidecar(side):
-    from .task import TaskError
+    from ..task.document import TaskError
 
     if not side.is_dir() or side.is_symlink():
         raise TaskError('completed delivery sidecar is missing: {}'.format(side))
@@ -253,7 +214,7 @@ def _inspect_sidecar(side):
 
 
 def _read_completed_manifest(manifest_path):
-    from .task import TaskError
+    from ..task.document import TaskError
 
     try:
         manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
@@ -273,7 +234,7 @@ def _read_completed_manifest(manifest_path):
 
 
 def _validate_file_records(records, expected, *, published=False):
-    from .task import TaskError
+    from ..task.document import TaskError
 
     invalid = (
         'delivery run manifest has an invalid published file record'
@@ -310,7 +271,7 @@ def inspect_managed_delivery(output, name, layout=FLAT_LAYOUT):
     only proves that the named YAML/reports and evidence directory form one
     intact delivery whose run manifest says ``completed``.
     """
-    from .task import TaskError
+    from ..task.document import TaskError
 
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,159}', name):
         raise TaskError('managed delivery name is not a safe filename')
@@ -399,7 +360,7 @@ def _destinations(stage, output, name, options, failed=False,
         if not failed and (stage / source).is_file():
             files[source] = dest
     if failed and options.get('save_diagnostics') and (stage / 'calibration.yaml').is_file():
-        from .task import load_yaml
+        from ..task.document import load_yaml
         try:
             # Preserve a finite solve after report failure, clearly inside failed diagnostics.
             json.dumps(load_yaml(stage / 'calibration.yaml'), allow_nan=False)
@@ -425,7 +386,7 @@ def _destinations(stage, output, name, options, failed=False,
 
 def _check_owned(output, name, force, layout=FLAT_LAYOUT):
     """Inspect only this delivery; other tasks and arbitrary sibling files are untouched."""
-    from .task import TaskError
+    from ..task.document import TaskError
     layout = _validate_layout(layout)
     output = Path(output).resolve()
     side = output / name
@@ -480,7 +441,7 @@ def published_paths(stage, output, name, options, layout=FLAT_LAYOUT):
 def publish(stage, output, name, options, force=False, failed=False,
             layout=FLAT_LAYOUT):
     """All copies and link rewrites complete before old owned files are replaced."""
-    from .task import dump_yaml, load_yaml
+    from ..task.document import dump_yaml, load_yaml
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     layout = _validate_layout(layout)
@@ -536,7 +497,8 @@ def publish(stage, output, name, options, force=False, failed=False,
                 # Inventory is local to the optional evidence directory.
                 value = json.loads(manifest.read_text())
                 formal_paths = {prepared / relative for relative in main_relatives}
-                value['files'] = [{'path': p.relative_to(side).as_posix(), 'size_bytes': p.stat().st_size, 'sha256': file_sha256(p), 'schema_version': '1.0.0'}
+                from ..version import RESULT_SCHEMA_VERSION
+                value['files'] = [{'path': p.relative_to(side).as_posix(), 'size_bytes': p.stat().st_size, 'sha256': file_sha256(p), 'schema_version': RESULT_SCHEMA_VERSION}
                                   for p in side.rglob('*') if p.is_file() and p != manifest and p not in formal_paths]
                 value['directories'] = [p.relative_to(side).as_posix() for p in side.rglob('*') if p.is_dir()]
                 value['delivery_files'] = [
@@ -544,7 +506,7 @@ def publish(stage, output, name, options, force=False, failed=False,
                         'path': p.name,
                         'size_bytes': p.stat().st_size,
                         'sha256': file_sha256(p),
-                        'schema_version': '1.0.0',
+                        'schema_version': RESULT_SCHEMA_VERSION,
                     }
                     for p in sorted(prepared / relative for relative in main_relatives)
                 ]
@@ -560,56 +522,3 @@ def publish(stage, output, name, options, force=False, failed=False,
         for path in prepared.iterdir():
             os.replace(path, output / path.name)
     return output
-
-
-def run_delivery(prefix, config, output_dir, expected_job, force, overrides):
-    from .task import TaskError, load_task, resolve_task_path, _run_task_staged
-    run_overrides = dict(overrides)
-    layout = _validate_layout(
-        run_overrides.pop('_delivery_layout', FLAT_LAYOUT))
-    task = load_task(config, expected_job)
-    output = Path(output_dir).expanduser().resolve()
-    dataset = resolve_task_path(task, task['dataset']['path'])
-    if output in {Path('/'), Path.home(), Path.cwd()} or output == dataset or dataset in output.parents or output in dataset.parents:
-        raise TaskError('output directory must be separate from the input dataset and workspace root')
-    discover_camera_result(task, output)
-    rs_solver_backend = overrides.get('_rs_solver_backend', 'system')
-    name = result_name(task, rs_solver_backend)
-    _check_owned(output, name, force, layout)
-    inputs = [Path(config).resolve(), *([Path(run_overrides['initialization']).resolve()] if run_overrides.get('initialization') else [])]
-    for block in [task.get('target'), task.get('camera_calibration'), task.get('initialization'), *task.get('imus', [])]:
-        value = block.get('path') if isinstance(block, dict) else block
-        if value:
-            source = resolve_task_path(task, value)
-            inputs.append(source)
-    delivery_paths = _delivery_paths(output, name, layout)
-    replaced = {delivery_paths[key] for key in ('result', 'html', 'pdf', 'text')}
-    for source in inputs:
-        if source in replaced or output / name in source.parents:
-            raise TaskError('delivery would overwrite its input: {}'.format(source))
-    with tempfile.TemporaryDirectory(prefix='kalibr-delivery-') as temporary:
-        stage = Path(temporary) / 'run'
-        if run_overrides.get('timing_json'):
-            run_overrides['timing_json'] = str(stage / 'timing.json')
-        try:
-            _run_task_staged(prefix, config, stage, expected_job, _task=task, **run_overrides)
-        except Exception:
-            # Failed attempts never replace a previous successful delivery.
-            if task['output'].get('save_diagnostics') and stage.exists():
-                from uuid import uuid4
-                failed_name = name + '_failed'
-                while (output / failed_name).exists() or (output / failed_name).is_symlink():
-                    failed_name = name + '_failed_' + uuid4().hex[:12]
-                try:
-                    publish(
-                        stage, output, failed_name, task['output'], False,
-                        failed=True, layout=layout)
-                except Exception as diagnostic_error:
-                    import sys
-                    print('Could not preserve failure diagnostics: {}'.format(diagnostic_error), file=sys.stderr)
-            raise
-        published = publish(
-            stage, output, name, task['output'], force, layout=layout)
-        paths = _delivery_paths(output, name, layout)
-        _print_published_paths(paths, layout)
-        return published

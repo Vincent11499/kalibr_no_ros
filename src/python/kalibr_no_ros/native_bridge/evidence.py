@@ -11,7 +11,7 @@ import os
 
 import numpy as np
 
-from .version import SCHEMA_VERSION
+from ..version import RESULT_SCHEMA_VERSION
 
 
 _ACTIVE = ContextVar("kalibr_run_artifacts", default=None)
@@ -144,7 +144,7 @@ class RunContext:
         self.pid = os.getpid()
         self.capture_history = bool(capture_history)
         self.artifacts = {
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": RESULT_SCHEMA_VERSION,
             "kind": "run_artifacts",
             "calibration_type": calibration_type,
             "state": "running",

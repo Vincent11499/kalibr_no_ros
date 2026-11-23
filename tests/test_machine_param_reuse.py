@@ -5,15 +5,15 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from kalibr_no_ros.machine_param_reuse import (
+from kalibr_no_ros.machine.parameter_reuse import (
     assert_compatible_camera_geometry,
     camera_seed,
     parameter_path,
     semantic_sha256,
     validate_reused_stage,
 )
-from kalibr_no_ros.task import TaskError, dump_yaml, load_yaml
-from kalibr_no_ros.validation import load_cameras
+from kalibr_no_ros.task.document import TaskError, dump_yaml, load_yaml
+from kalibr_no_ros.task.validation import load_cameras
 
 
 IDENTITY = [
@@ -74,9 +74,11 @@ def public_parameters(mono=False):
         result["stereo_baselink_calibrated"] = True
         result["imu"] = {
             "imu_data_rate": 100,
+            "model": "calibrated",
             "gyro_bias": [0.001, -0.002, 0.003],
             "acc_bias": [0.01, -0.02, 0.03],
             "gyro_scale": [0.99, 0.99, 0.99],
+            "acc_scale": [1.01, 1.01, 1.01],
         }
     return result
 
@@ -93,7 +95,9 @@ class MachineParamReuseTest(unittest.TestCase):
 
         imu = validate_reused_stage(vision, "camera_imu", MACHINE)
         self.assertEqual(imu["imu"]["gyro_bias"], [0.001, -0.002, 0.003])
-        self.assertNotIn("gyro_scale", imu["imu"])
+        self.assertEqual(imu["imu"]["model"], "calibrated")
+        self.assertEqual(imu["imu"]["gyro_scale"], [0.99, 0.99, 0.99])
+        self.assertEqual(imu["imu"]["acc_scale"], [1.01, 1.01, 1.01])
         self.assertEqual(imu["camera"]["cam1"]["T_imu_cam"][0][3], 0.3)
 
         base = validate_reused_stage(vision, "camera_baselink", MACHINE)
@@ -192,6 +196,36 @@ class MachineParamReuseTest(unittest.TestCase):
             with self.subTest(field=field):
                 with self.assertRaises(TaskError):
                     validate_reused_stage(document, "camera_imu", MACHINE)
+
+    def test_scale_misalignment_intrinsics_are_validated_and_reused(self):
+        document = public_parameters()
+        document["imu"].update({
+            "model": "scale-misalignment-size-effect",
+            "M_accel": [[1.01, 0.0, 0.0],
+                        [0.01, 1.02, 0.0],
+                        [0.02, 0.03, 1.03]],
+            "M_gyro": [[0.99, 0.0, 0.0],
+                       [0.01, 0.98, 0.0],
+                       [0.02, 0.03, 0.97]],
+            "C_gyro_i": [row[:3] for row in IDENTITY[:3]],
+            "A_gyro_accel": [[0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.0],
+                             [0.0, 0.0, 0.0]],
+            "rx_i_m": [0.0, 0.0, 0.0],
+            "ry_i_m": [0.01, 0.02, 0.03],
+            "rz_i_m": [-0.01, -0.02, -0.03],
+            "acc_scale": [1.01, 1.02, 1.03],
+            "gyro_scale": [0.99, 0.98, 0.97],
+        })
+        reused = validate_reused_stage(document, "camera_imu", MACHINE)["imu"]
+        for field in (
+                "model", "M_accel", "M_gyro", "C_gyro_i", "A_gyro_accel",
+                "rx_i_m", "ry_i_m", "rz_i_m"):
+            self.assertEqual(reused[field], document["imu"][field])
+
+        document["imu"]["M_gyro"][0][1] = 0.1
+        with self.assertRaisesRegex(TaskError, "lower triangular"):
+            validate_reused_stage(document, "camera_imu", MACHINE)
 
     def test_native_seed_is_accepted_by_existing_low_level_reader(self):
         for mono, stage in ((False, "camera"), (True, "mono_camera")):

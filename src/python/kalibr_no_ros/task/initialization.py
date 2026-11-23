@@ -6,24 +6,32 @@ import copy
 import math
 from pathlib import Path
 import re
+import os
 
 import yaml
 
 
-from .version import SCHEMA_VERSION
-from .rolling_shutter import (
-    JOB as ROLLING_SHUTTER_JOB,
+from ..version import (
+    CONFIG_SCHEMA_VERSION,
+    RESULT_SCHEMA_VERSION,
+    SUPPORTED_CONFIG_SCHEMA_VERSIONS,
+    supports_schema_version,
+)
+from ..filesystem import file_sha256 as _sha256
+from .document import TaskError, dump_yaml, load_yaml, require_document_version, resolve_task_path
+from .jobs import (
+    CAMERA_IMU_RS_JOB,
     CAMERA_RS_JOB,
     CAMERA_IMU_JOBS,
     CAMERA_CALIBRATION_JOBS,
 )
 
-INITIALIZATION_SCHEMA_VERSION = SCHEMA_VERSION
+INITIALIZATION_SCHEMA_VERSION = CONFIG_SCHEMA_VERSION
 _JOB_KINDS = {
     "camera_calibration": "camera_calibration_initialization",
     CAMERA_RS_JOB: "camera_calibration_initialization",
     "camera_imu_calibration": "camera_imu_calibration_initialization",
-    ROLLING_SHUTTER_JOB: "camera_imu_calibration_initialization",
+    CAMERA_IMU_RS_JOB: "camera_imu_calibration_initialization",
 }
 
 # Public task model -> (intrinsic parameter count, distortion parameter count).
@@ -176,11 +184,12 @@ def _validate_header(document, expected_job):
     if expected_job not in _JOB_KINDS:
         raise InitializationError(
             "unsupported initialization job: {}".format(expected_job))
-    if (type(document.get("schema_version")) is not str
-            or document.get("schema_version") != INITIALIZATION_SCHEMA_VERSION):
+    if not supports_schema_version(
+            document.get("schema_version"),
+            SUPPORTED_CONFIG_SCHEMA_VERSIONS):
         raise InitializationError(
-            "initialization schema_version must be {}".format(
-                INITIALIZATION_SCHEMA_VERSION))
+            "initialization schema_version must be one of {}".format(
+                ", ".join(sorted(SUPPORTED_CONFIG_SCHEMA_VERSIONS))))
     expected_kind = _JOB_KINDS[expected_job]
     if document.get("kind") != expected_kind:
         raise InitializationError(
@@ -812,7 +821,7 @@ def build_initialization_report(document, task, *, source_path,
             if freeze_intrinsics else
             "the seed adds no fixed state; native task activity still applies")
     result = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": RESULT_SCHEMA_VERSION,
         "kind": "calibration_initialization_report",
         "job": task["job"],
         "status": "configured",
@@ -850,3 +859,146 @@ def build_initialization_report(document, task, *, source_path,
             camera_id: "cam{}".format(index) for index, camera_id in enumerate(source_ids)
         }
     return result
+
+
+def _camera_freeze_intrinsics(task):
+    """Return the validated camera-intrinsics activity policy.
+
+    Initialization supplies parameter values; this independent flag controls
+    whether those values may change during camera calibration.
+    """
+    calibration = task.get("calibration")
+    if calibration is None:
+        return False
+    if not isinstance(calibration, dict):
+        raise TaskError("calibration must be a mapping")
+    if "freeze_intrinsics" not in calibration:
+        return False
+    value = calibration["freeze_intrinsics"]
+    if type(value) is not bool:
+        raise TaskError("calibration.freeze_intrinsics must be a boolean")
+    job = task.get("job")
+    if job is not None and job not in CAMERA_CALIBRATION_JOBS:
+        raise TaskError(
+            "calibration.freeze_intrinsics is only supported for "
+            "camera calibration jobs")
+    cameras = task.get("cameras")
+    if value and isinstance(cameras, list) and len(cameras) < 2:
+        raise TaskError(
+            "calibration.freeze_intrinsics: true requires at least two "
+            "cameras because no camera extrinsic exists in a monocular task")
+    return value
+
+
+def _require_frozen_intrinsics_initialization(task, initialization):
+    """Require complete fixed camera models when intrinsics are frozen."""
+    if not _camera_freeze_intrinsics(task):
+        return
+    if initialization is None:
+        raise TaskError(
+            "calibration.freeze_intrinsics: true requires an "
+            "initialization path")
+    camera_seeds = initialization["document"].get("cameras", {})
+    missing = []
+    for index, _camera in enumerate(task.get("cameras") or []):
+        camera_id = "cam{}".format(index)
+        block = camera_seeds.get(camera_id, {})
+        for field in ("intrinsics", "distortion_coeffs"):
+            if field not in block:
+                missing.append("{}.{}".format(camera_id, field))
+    if missing:
+        raise TaskError(
+            "calibration.freeze_intrinsics: true requires complete camera "
+            "intrinsics and distortion coefficients; missing: {}".format(
+                ", ".join(missing)))
+
+
+def _camera_calibration_ids(task):
+    value = task.get("camera_calibration")
+    if isinstance(value, dict):
+        value = value.get("path")
+    if not value:
+        raise TaskError("camera_calibration.path is required")
+    data = load_yaml(resolve_task_path(task, value))
+    require_document_version(
+        data, "camera calibration", "calibration_result", result=True)
+    cameras = data.get("cameras")
+    if not isinstance(cameras, list) or not cameras:
+        raise TaskError("camera calibration contains no cameras")
+    return [camera["id"] for camera in cameras]
+
+
+def resolve_initialization(task, expected_job=None, initialization=None):
+    """Resolve CLI-over-task initialization settings and validate the file.
+
+    Task paths are relative to the task YAML.  A CLI path is resolved against
+    the caller's current working directory before the legacy command changes it.
+    """
+    expected_job = expected_job or task.get("job")
+    configured = task.get("initialization") or {}
+    configured_path = configured.get("path")
+
+    if initialization is not None:
+        if not isinstance(initialization, (str, os.PathLike)) or not str(initialization):
+            raise TaskError("--initialization requires a non-empty path")
+        path = Path(initialization).expanduser().resolve()
+        path_origin = "cli"
+    elif configured_path is not None:
+        path = resolve_task_path(task, configured_path)
+        path_origin = "task"
+    else:
+        path = None
+        path_origin = None
+
+    if path is None:
+        _require_frozen_intrinsics_initialization(task, None)
+        return None
+
+    camera_ids = None
+    if expected_job in CAMERA_IMU_JOBS:
+        camera_ids = _camera_calibration_ids(task)
+    try:
+        document = load_initialization(
+            path, expected_job, task, camera_ids=camera_ids)
+        source_sha256 = _sha256(path)
+    except OSError as error:
+        raise TaskError(
+            "could not hash initialization file {}: {}".format(
+                path, error)) from error
+    except InitializationError as error:
+        raise TaskError(str(error)) from error
+    resolved = {
+        "path": path,
+        "document": document,
+        "path_origin": path_origin,
+        "camera_ids": camera_ids,
+        "source_sha256": source_sha256,
+    }
+    _require_frozen_intrinsics_initialization(task, resolved)
+    return resolved
+
+
+def _write_initialization_config(initialization, temporary):
+    if initialization is None:
+        return None
+    path = temporary / "initialization.yaml"
+    dump_yaml(canonical_initialization(initialization["document"]), path)
+    return path
+
+
+def _write_initialization_report(
+        initialization, task, temporary, solver_backend=None):
+    if initialization is None:
+        return None
+    report = build_initialization_report(
+        initialization["document"],
+        task,
+        source_path=initialization["path"],
+        source_sha256=initialization["source_sha256"],
+        path_origin=initialization["path_origin"],
+        camera_ids=initialization["camera_ids"],
+        solver_backend=solver_backend,
+    )
+    path = temporary / "initialization_report.yaml"
+    dump_yaml(report, path)
+    return path

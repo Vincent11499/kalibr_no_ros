@@ -7,17 +7,11 @@ import subprocess
 import sys
 
 from .version import VERSION
-from .rolling_shutter import JOB as ROLLING_SHUTTER_JOB, CAMERA_RS_JOB
-from .jobs import CAMERA_BASELINK_JOB
+from .task.jobs import CAMERA_IMU_RS_JOB, CAMERA_RS_JOB
 
 from kalibr_runtime import profiling_enabled
-from .task import (
-    TASK_SCHEMA_VERSION,
-    STANDARD_EXECUTION,
-    TaskError,
-    dump_yaml,
-    run_task,
-)
+from .task.document import TaskError
+from .task.runner import run_task
 
 
 def _positive_integer(value):
@@ -39,7 +33,7 @@ def _add_execution_arguments(parser):
 
 
 def _add_runtime_arguments(parser, *, allow_initialization=True):
-    parser.add_argument("--config", required=True, help="task schema-version 1.0.0 YAML")
+    parser.add_argument("--config", required=True, help="versioned calibration task YAML")
     parser.add_argument("--output-dir", required=True)
     if allow_initialization:
         parser.add_argument(
@@ -63,45 +57,10 @@ def build_parser():
 
     evaluate = commands.add_parser("evaluate", help="recompute metrics and reports from saved observations")
     evaluate.add_argument("--run", required=True, help="existing calibration run")
-    evaluate.add_argument("--config", help="evaluation schema-version 1.0.0 YAML")
+    evaluate.add_argument("--config", help="versioned evaluation YAML")
     evaluate.add_argument("--dataset", help="relocated directory dataset")
     evaluate.add_argument("--output-dir", required=True)
     evaluate.add_argument("--force", action="store_true")
-
-    verify = commands.add_parser(
-        "verify", help="validate fixed calibration parameters on a new dataset")
-    verification_commands = verify.add_subparsers(
-        dest="verification", required=True)
-    verify_cameras = verification_commands.add_parser(
-        "cameras", help="validate fixed stereo K/D/T on a directory dataset")
-    verify_cameras.add_argument(
-        "--calibration", action="append", required=True,
-        help="repeatable LABEL=calibration-result.yaml (LABEL= may be omitted)")
-    verify_cameras.add_argument("--dataset", required=True)
-    verify_cameras.add_argument("--target", required=True)
-    verify_cameras.add_argument("--output-dir", required=True)
-    verify_cameras.add_argument("--window-half-size-px", type=int, default=2)
-    verify_cameras.add_argument(
-        "--max-displacement-px", type=float, default=1.5 ** 0.5)
-    verify_cameras.add_argument(
-        "--synchronization-tolerance-s", type=float, default=0.0002)
-    verify_cameras.add_argument(
-        "--rectification-balance", type=float, default=0.0)
-    verify_cameras.add_argument(
-        "--rectification-fov-scale", type=float, default=1.0)
-    verify_cameras.add_argument(
-        "--detector-opencv-threads", type=_positive_integer, default=1)
-    verify_cameras.add_argument(
-        "--visualizations", action="store_true",
-        help="save detected corners, undistorted images, and rectified stereo pairs")
-    verify_cameras.add_argument(
-        "--max-frames-per-camera", type=_positive_integer, default=20)
-    verify_cameras.add_argument(
-        "--max-pairs", type=_positive_integer, default=20)
-    verify_cameras.add_argument(
-        "--undistortion-crop", action="store_true",
-        help="crop invalid borders in per-camera undistorted images")
-    verify_cameras.add_argument("--force", action="store_true")
 
     calibrate = commands.add_parser("calibrate", help="run calibration")
     calibration_commands = calibrate.add_subparsers(dest="calibration", required=True)
@@ -188,81 +147,12 @@ def _runtime_overrides(arguments, output_dir):
     }
 
 
-def _convert_job(arguments):
-    output = Path(arguments.output).expanduser().resolve()
-    if output.exists() and not arguments.force:
-        raise TaskError("output exists; pass --force to replace it: {}".format(output))
-    dataset = {
-        "type": "bag",
-        "path": str(Path(arguments.bag).expanduser().resolve()),
-    }
-    if arguments.bag_from_to:
-        dataset["time_range_s"] = list(arguments.bag_from_to)
-    if arguments.bag_freq is not None:
-        dataset["frequency_hz"] = arguments.bag_freq
-    task = {
-        "schema_version": TASK_SCHEMA_VERSION,
-        "job": (
-            "camera_calibration"
-            if arguments.type == "cameras"
-            else "camera_imu_calibration"
-        ),
-        "dataset": dataset,
-        "target": {"path": str(Path(arguments.target).expanduser().resolve())},
-    }
-    calibration = {}
-    task["kind"] = "calibration_task"
-    task["output"] = {"interactive_report": False}
-    if arguments.type == "cameras":
-        if not arguments.topics or not arguments.models:
-            raise TaskError("camera conversion requires --topics and --models")
-        if len(arguments.topics) != len(arguments.models):
-            raise TaskError("--topics and --models must have equal lengths")
-        task["cameras"] = [
-            {"id": "cam{}".format(index), "topic": topic, "model": model}
-            for index, (topic, model) in enumerate(zip(arguments.topics, arguments.models))
-        ]
-        if arguments.no_shuffle:
-            calibration["shuffle"] = False
-        if arguments.approx_sync is not None:
-            calibration["synchronization_tolerance_s"] = arguments.approx_sync
-    else:
-        if not arguments.cams or not arguments.imu:
-            raise TaskError("IMU conversion requires --cams and --imu")
-        models = arguments.imu_models or ["calibrated"] * len(arguments.imu)
-        if len(models) != len(arguments.imu):
-            raise TaskError("--imu and --imu-models must have equal lengths")
-        task["camera_calibration"] = {
-            "path": str(Path(arguments.cams).expanduser().resolve())
-        }
-        task["imus"] = [
-            {"id": "imu{}".format(index), "path": str(Path(path).expanduser().resolve()), "model": model}
-            for index, (path, model) in enumerate(zip(arguments.imu, models))
-        ]
-        if arguments.max_iter is not None:
-            calibration["max_iterations"] = arguments.max_iter
-        if arguments.timeoffset_padding is not None:
-            calibration["time_offset_padding_s"] = arguments.timeoffset_padding
-        if arguments.no_time_calibration:
-            calibration["calibrate_time_offset"] = False
-        if arguments.recover_covariance:
-            calibration["recover_covariance"] = True
-        if arguments.recompute_camera_chain_extrinsics:
-            calibration["recompute_camera_chain_extrinsics"] = True
-    task["calibration"] = calibration
-    task["execution"] = dict(STANDARD_EXECUTION)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    dump_yaml(task, output)
-    print(output)
-    return 0
-
-
 def main(argv=None, prefix=None):
     arguments = build_parser().parse_args(argv)
     prefix = Path(prefix or Path(__file__).resolve().parents[3])
     try:
         if arguments.group == "validate":
-            from .validation import validate_task
+            from .task.validation import validate_task
             report = validate_task(arguments.config)
             serialized = json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
             if arguments.output:
@@ -273,8 +163,8 @@ def main(argv=None, prefix=None):
             print(serialized, end="")
             return 0 if report["status"] == "passed" else 2
         if arguments.group == "evaluate":
-            from .reporting import evaluate_run, validate_output_options
-            from .task import load_yaml, require_document_version
+            from .results.reporting import evaluate_run, validate_output_options
+            from .task.document import load_yaml, require_document_version
             options = None
             if arguments.config:
                 document = load_yaml(arguments.config)
@@ -288,8 +178,10 @@ def main(argv=None, prefix=None):
             destination = Path(arguments.output_dir).expanduser().resolve()
             if source == destination or source in destination.parents or destination in source.parents:
                 raise TaskError("evaluation output must be separate from the source run")
-            from .delivery import locate_result
-            require_document_version(load_yaml(locate_result(source)), "calibration", "calibration_result")
+            from .results.delivery import locate_result
+            require_document_version(
+                load_yaml(locate_result(source)), "calibration",
+                "calibration_result", result=True)
             if arguments.config:
                 config_path = Path(arguments.config).expanduser().resolve()
                 if destination == config_path or destination in config_path.parents:
@@ -302,32 +194,9 @@ def main(argv=None, prefix=None):
             evaluate_run(source, output, options, dataset=arguments.dataset, force=arguments.force)
             print(output)
             return 0
-        if arguments.group == "verify" and arguments.verification == "cameras":
-            from .fixed_camera_validation import verify_fixed_cameras
-            output = Path(arguments.output_dir).expanduser().resolve()
-            verify_fixed_cameras(
-                arguments.calibration,
-                arguments.dataset,
-                arguments.target,
-                output,
-                window_half_size_px=arguments.window_half_size_px,
-                max_displacement_px=arguments.max_displacement_px,
-                synchronization_tolerance_s=(
-                    arguments.synchronization_tolerance_s),
-                rectification_balance=arguments.rectification_balance,
-                rectification_fov_scale=arguments.rectification_fov_scale,
-                detector_opencv_threads=arguments.detector_opencv_threads,
-                visualizations=arguments.visualizations,
-                max_frames_per_camera=arguments.max_frames_per_camera,
-                max_pairs=arguments.max_pairs,
-                undistortion_crop=arguments.undistortion_crop,
-                force=arguments.force,
-            )
-            print(output)
-            return 0
         if arguments.group == "calibrate":
             if arguments.calibration == "cameras-baselink":
-                from .camera_baselink import run_camera_baselink
+                from .task.camera_baselink import run_camera_baselink
                 output = run_camera_baselink(
                     arguments.config,
                     arguments.output_dir,
@@ -341,7 +210,7 @@ def main(argv=None, prefix=None):
             elif arguments.calibration in ("cameras-rs", "native-rs-cameras"):
                 job = CAMERA_RS_JOB
             elif arguments.calibration == "imu-camera-rs":
-                job = ROLLING_SHUTTER_JOB
+                job = CAMERA_IMU_RS_JOB
             else:
                 job = "camera_imu_calibration"
             overrides = _runtime_overrides(
@@ -359,9 +228,10 @@ def main(argv=None, prefix=None):
             print(output)
             return 0
         if arguments.group == "convert" and arguments.conversion == "job":
-            return _convert_job(arguments)
+            from .conversion.job import convert_job
+            return convert_job(arguments)
         if arguments.group == "convert":
-            from .conversion import main as converter
+            from .conversion.camera import main as converter
             converter_arguments = list(arguments.arguments)
             if arguments.converter_help:
                 converter_arguments.insert(0, "--help")

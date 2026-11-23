@@ -11,7 +11,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "python"))
 
-from kalibr_no_ros.report_plots import (
+from kalibr_no_ros.results.plots import (
     _summary_sections, camera_frames, camera_observations, observation_rays,
     render_reports, report_figures, stereo_comparison_page,
 )
@@ -219,7 +219,7 @@ class ReportPlotsTest(unittest.TestCase):
                 aligned.parent.mkdir(parents=True, exist_ok=True)
                 cv2.imwrite(str(original), np.full((12, 48, 3), i, dtype=np.uint8))
                 cv2.imwrite(str(aligned), np.full((12, 48, 3), i + 30, dtype=np.uint8))
-            with mock.patch('kalibr_no_ros.report_plots.stereo_comparison_page', wraps=stereo_comparison_page) as pages:
+            with mock.patch('kalibr_no_ros.results.plots.stereo_comparison_page', wraps=stereo_comparison_page) as pages:
                 html_with_images, pdf_with_images = render_reports(
                     metrics, assessment, files, calibration=calibration,
                     output_dir=root)

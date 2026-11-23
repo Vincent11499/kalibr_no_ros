@@ -12,6 +12,7 @@ import tempfile
 import numpy as np
 
 from .jobs import CAMERA_BASELINK_JOB
+from ..version import CONFIG_SCHEMA_VERSION, RESULT_SCHEMA_VERSION
 
 
 class CameraBaselinkError(RuntimeError):
@@ -314,10 +315,11 @@ def _public_source_camera(camera):
 def _solve(task, resolved_task, target_path):
     from kalibr_common import extractCornersFromDataset
 
-    from .artifacts import run_context
-    from .datasets import BagImageDatasetReader
-    from .evaluation import camera_geometry
-    from .fixed_camera_validation import _detector
+    from ..native_bridge.camera_geometry import create_camera_geometry
+    from ..native_bridge.evidence import run_context
+    from ..native_bridge.datasets import BagImageDatasetReader
+    from ..native_bridge.target_detector import create_target_detector
+    from ..results.evaluation import camera_geometry
     from .validation import load_cameras
 
     source_cameras = load_cameras(task)
@@ -331,8 +333,9 @@ def _solve(task, resolved_task, target_path):
     with run_context(CAMERA_BASELINK_JOB,
                      capture_history=task["output"]["archive_selection_history"]) as context:
         for source in source_cameras:
-            geometry, detector = _detector(
-                target_path, source,
+            geometry = create_camera_geometry(source)
+            detector = create_target_detector(
+                target_path, geometry,
                 calibration.get("window_half_size_px", 2),
                 calibration.get("max_displacement_px", math.sqrt(1.5)),
                 show_extraction=task["output"].get("show_extraction", False),
@@ -420,7 +423,7 @@ def _solve(task, resolved_task, target_path):
         artifacts = context.artifacts
 
     result = {
-        "schema_version": "1.0.0",
+        "schema_version": RESULT_SCHEMA_VERSION,
         "kind": "calibration_result",
         "calibration_type": "cameras_baselink",
         "base_frame": task["base_link"].get("frame_id", "base_link"),
@@ -434,11 +437,13 @@ def _solve(task, resolved_task, target_path):
 
 
 def _resolved_task(task, dataset_path, overrides):
-    from .task import resolve_execution, resolve_task_path
+    from .document import resolve_task_path
+    from .execution import resolve_execution
 
     resolved = deepcopy({
         key: value for key, value in task.items() if not key.startswith("_")
     })
+    resolved["schema_version"] = CONFIG_SCHEMA_VERSION
     resolved["dataset"] = dict(task["dataset"], path=str(dataset_path))
     for key in ("target", "camera_calibration"):
         block = resolved[key]
@@ -455,16 +460,15 @@ def _run_staged(config, stage, task, overrides):
     import json
     import kalibr_runtime as native_runtime
 
-    from .delivery import enrich_result
-    from .reporting import generate_report
-    from .task import (
-        _capture_solver_logs,
+    from ..results.delivery import enrich_result
+    from ..results.reporting import generate_report
+    from .document import dump_yaml
+    from .runner import (
         _staged_dataset_path,
-        _target_path,
-        dump_yaml,
         prepare_output_directory,
         write_run_manifest,
     )
+    from .solver_adapter import _capture_solver_logs, _target_path
     from .validation import validate_task
 
     dataset_path = _staged_dataset_path(task, config, stage, None)
@@ -515,16 +519,20 @@ def _run_staged(config, stage, task, overrides):
 
 def run_camera_baselink(config, output_dir, force=False, **overrides):
     """Run privately and publish one named camera/base_link delivery."""
-    from .delivery import (
+    from ..results.delivery import (
         FLAT_LAYOUT, _check_owned, _delivery_paths, _print_published_paths,
         _validate_layout, publish, result_name,
     )
-    from .task import TaskError, load_task, resolve_task_path
+    from .document import TaskError, resolve_task_path
+    from .validation import load_task
 
     task = load_task(config, expected_job=CAMERA_BASELINK_JOB)
     run_overrides = dict(overrides)
     layout = _validate_layout(
         run_overrides.pop("_delivery_layout", FLAT_LAYOUT))
+    before_publish = run_overrides.pop("_before_publish", None)
+    if before_publish is not None and not callable(before_publish):
+        raise TaskError("_before_publish must be callable")
     output = Path(output_dir).expanduser().resolve()
     dataset = resolve_task_path(task, task["dataset"]["path"])
     if (output in {Path("/").resolve(), Path.home().resolve(), Path.cwd().resolve()}
@@ -568,6 +576,8 @@ def run_camera_baselink(config, output_dir, force=False, **overrides):
                             diagnostic_error),
                         file=sys.stderr)
             raise
+        if before_publish is not None:
+            before_publish()
         published = publish(
             stage, output, name, task["output"], force=force,
             layout=layout)

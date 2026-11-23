@@ -159,6 +159,11 @@ copy_python_package("${KALIBR_APP_ROOT}/python" kalibr_camera_calibration)
 copy_python_package("${KALIBR_APP_ROOT}/python" kalibr_rs_camera_calibration)
 copy_python_package("${KALIBR_APP_ROOT}/python" kalibr_imu_camera_calibration)
 copy_python_package("${CMAKE_CURRENT_SOURCE_DIR}/src/python" kalibr_bag_io)
+# These two packages contain only copied Python sources; discard obsolete modules
+# before copying a reorganized tree. Generated build metadata is written below.
+file(REMOVE_RECURSE
+  "${KALIBR_PYTHON_DIR}/kalibr_no_ros"
+  "${KALIBR_PYTHON_DIR}/kalibr_tools")
 copy_python_package("${CMAKE_CURRENT_SOURCE_DIR}/src/python" kalibr_no_ros)
 copy_python_package("${CMAKE_CURRENT_SOURCE_DIR}/src/python" kalibr_tools)
 copy_python_package("${CMAKE_CURRENT_SOURCE_DIR}/src/camera_models/radtan5/python" kalibr_radtan5)
@@ -179,7 +184,7 @@ file(GLOB_RECURSE _kalibr_fingerprint_files
   "${CMAKE_CURRENT_SOURCE_DIR}/src/*"
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/*"
   "${CMAKE_CURRENT_SOURCE_DIR}/config/mechine/*.yaml"
-  "${CMAKE_CURRENT_SOURCE_DIR}/config/mechine/workflow_v1.0.0/*")
+  "${CMAKE_CURRENT_SOURCE_DIR}/config/mechine/workflow_v1.1.0/*")
 list(SORT _kalibr_fingerprint_files)
 list(FILTER _kalibr_fingerprint_files EXCLUDE REGEX
   "(__pycache__|[.]pyc$)")
@@ -327,7 +332,7 @@ function(prepare_public_cli name module)
 endfunction()
 
 prepare_public_cli(kalibr-noros kalibr_no_ros.cli)
-prepare_public_cli(kalibr-cedarobot kalibr_no_ros.machine_cli)
+prepare_public_cli(kalibr-cedarobot kalibr_no_ros.machine.cli)
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/config/examples/"
   DESTINATION config/examples
   FILES_MATCHING PATTERN "*.yaml" PATTERN "README_ZH.md")

@@ -19,8 +19,8 @@ from kalibr_bag_io import (
     detect_dataset_format,
     open_dataset,
 )
-from kalibr_no_ros.datasets import BagImageDatasetReader, BagImuDatasetReader
-from kalibr_no_ros.validation import validate_task
+from kalibr_no_ros.native_bridge.datasets import BagImageDatasetReader, BagImuDatasetReader
+from kalibr_no_ros.task.validation import validate_task
 
 
 class FakeTime:

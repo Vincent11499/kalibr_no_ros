@@ -13,16 +13,19 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src/python"))
 
-from kalibr_no_ros.delivery import (
-    apply_camera_ids, discover_camera_result, enrich_result,
+from kalibr_no_ros.task.runner import discover_camera_result
+from kalibr_no_ros.results.delivery import (
+    apply_camera_ids, enrich_result,
     _print_published_paths, inspect_managed_delivery, MACHINE_LAYOUT,
     publish, result_name,
 )
-from kalibr_no_ros.evaluation import validate_output_options
-from kalibr_no_ros.reporting import evaluate_run
-from kalibr_no_ros.task import (
-    TaskError, dump_yaml, load_task, load_yaml, run_task,
-)
+from kalibr_no_ros.results.evaluation import validate_output_options
+from kalibr_no_ros.results.reporting import evaluate_run
+from kalibr_no_ros.task.document import TaskError
+from kalibr_no_ros.task.document import dump_yaml
+from kalibr_no_ros.task.validation import load_task
+from kalibr_no_ros.task.document import load_yaml
+from kalibr_no_ros.task.runner import run_task
 
 
 class DeliveryTest(unittest.TestCase):
@@ -272,7 +275,7 @@ class DeliveryTest(unittest.TestCase):
 
         destination = self.root / "evaluated"
         with mock.patch(
-                "kalibr_no_ros.reporting._evaluate_staged",
+                "kalibr_no_ros.results.reporting._evaluate_staged",
                 side_effect=evaluated):
             evaluate_run(source, destination, {"export_opencv": False})
         self.assertTrue((destination / "stereo.yaml").is_file())
@@ -431,7 +434,7 @@ class DeliveryTest(unittest.TestCase):
             result["calibration_type"] = "camera_imu"
             self.populate_stage(stage, result)
 
-        with mock.patch("kalibr_no_ros.task._run_task_staged", side_effect=staged) as solver:
+        with mock.patch("kalibr_no_ros.task.runner._run_task_staged", side_effect=staged) as solver:
             run_task(self.root / "unused", config, self.output, "camera_imu_calibration")
         solver.assert_called_once()
         self.assertEqual(config.read_bytes(), before)
@@ -447,7 +450,7 @@ class DeliveryTest(unittest.TestCase):
             self.populate_stage(stage, self.camera_result(("cam1",)))
 
         with mock.patch(
-                "kalibr_no_ros.task._run_task_staged",
+                "kalibr_no_ros.task.runner._run_task_staged",
                 side_effect=staged) as solver:
             run_task(
                 self.root / "unused", config, self.output,
@@ -457,12 +460,40 @@ class DeliveryTest(unittest.TestCase):
             (self.output / "contained/contained.yaml").is_file())
         self.assertFalse((self.output / "contained.yaml").exists())
 
+    def test_pre_publish_check_runs_after_staging_and_before_publication(self):
+        config, _ = self.task(
+            ids=("cam1",), output={"name": "guarded"})
+        events = []
+
+        def staged(prefix, config, stage, job, **kwargs):
+            self.populate_stage(stage, self.camera_result(("cam1",)))
+            events.append("staged")
+
+        def reject():
+            self.assertEqual(events, ["staged"])
+            events.append("checked")
+            raise TaskError("input changed before publication")
+
+        with mock.patch(
+                "kalibr_no_ros.task.runner._run_task_staged",
+                side_effect=staged), mock.patch(
+                    "kalibr_no_ros.task.runner.publish") as publisher:
+            with self.assertRaisesRegex(
+                    TaskError, "input changed before publication"):
+                run_task(
+                    self.root / "unused", config, self.output,
+                    "camera_calibration", _before_publish=reject)
+
+        self.assertEqual(events, ["staged", "checked"])
+        publisher.assert_not_called()
+        self.assertFalse((self.output / "guarded.yaml").exists())
+
     def test_force_must_not_overwrite_the_task_configuration(self):
         _, task = self.task(ids=("cam1",), output={"name": "task"})
         config = self.output / "task.yaml"
         dump_yaml({key: value for key, value in task.items() if not key.startswith("_")}, config)
         before = config.read_bytes()
-        with mock.patch("kalibr_no_ros.task._run_task_staged",
+        with mock.patch("kalibr_no_ros.task.runner._run_task_staged",
                         side_effect=lambda prefix, config, stage, job, **kw: self.populate_stage(stage)) as solver:
             with self.assertRaisesRegex(TaskError, "input"):
                 run_task(self.root / "unused", config, self.output, "camera_calibration", force=True)
@@ -476,7 +507,7 @@ class DeliveryTest(unittest.TestCase):
                 config = self.output / ("task" + suffix)
                 dump_yaml({key: value for key, value in task.items() if not key.startswith("_")}, config)
                 before = config.read_bytes()
-                with mock.patch("kalibr_no_ros.task._run_task_staged") as solver:
+                with mock.patch("kalibr_no_ros.task.runner._run_task_staged") as solver:
                     with self.assertRaisesRegex(TaskError, "overwrite its input"):
                         run_task(self.root / "unused", config, self.output, "camera_calibration", force=True)
                 solver.assert_not_called()
@@ -501,7 +532,7 @@ class DeliveryTest(unittest.TestCase):
             raise error
 
         first = self.output / "repeat_failed"
-        with mock.patch("kalibr_no_ros.task._run_task_staged", side_effect=fail) as solver:
+        with mock.patch("kalibr_no_ros.task.runner._run_task_staged", side_effect=fail) as solver:
             for index, expected in enumerate(failures):
                 with self.assertRaises(RuntimeError) as caught:
                     run_task(self.root / "unused", config, self.output, "camera_calibration", force=True)

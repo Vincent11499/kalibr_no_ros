@@ -10,7 +10,7 @@ __all__ = ["BagImageDatasetReader", "BagImuDatasetReader"]
 
 def __getattr__(name):
     if name in __all__:
-        from .datasets import BagImageDatasetReader, BagImuDatasetReader
+        from .native_bridge.datasets import BagImageDatasetReader, BagImuDatasetReader
 
         return {
             "BagImageDatasetReader": BagImageDatasetReader,

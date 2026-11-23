@@ -1,11 +1,6 @@
 """Input contract shared by the opt-in rolling-shutter calibration jobs."""
 import math
 
-JOB = "camera_imu_rolling_shutter_calibration"
-CAMERA_RS_JOB = "camera_rolling_shutter_calibration"
-CAMERA_IMU_JOBS = frozenset(("camera_imu_calibration", JOB))
-CAMERA_CALIBRATION_JOBS = frozenset(("camera_calibration", CAMERA_RS_JOB))
-ROLLING_SHUTTER_JOBS = frozenset((CAMERA_RS_JOB, JOB))
 CAMERA_RS_MODELS = frozenset((
     "pinhole-equi",
     "pinhole-radtan",
@@ -16,7 +11,7 @@ NATIVE_CAMERA_RS_MODELS = CAMERA_RS_MODELS
 
 
 def validate_shutters(value, camera_ids=None):
-    from .task import TaskError
+    from .document import TaskError
     if not isinstance(value, dict) or not value:
         raise TaskError("rolling_shutter must map every camera ID to its timing configuration")
     if camera_ids is not None and set(value) != set(camera_ids):

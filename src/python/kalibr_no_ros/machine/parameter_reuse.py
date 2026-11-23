@@ -8,11 +8,18 @@ from pathlib import Path
 
 import numpy as np
 
-from .initialization import (
+from ..task.initialization import (
     InitializationError, _matrix, _rotation, _transform,
 )
-from .task import TaskError
-from .version import SCHEMA_VERSION, VERSION
+from ..task.document import TaskError
+from ..task.validation import IMU_MODELS
+from ..version import (
+    CALIBRATION_BEHAVIOR_VERSION,
+    RESULT_SCHEMA_VERSION,
+    SUPPORTED_CALIB_PARAMS_SCHEMA_VERSIONS,
+    calibration_behavior_version,
+    supports_schema_version,
+)
 
 
 _STAGE_FILES = {
@@ -35,6 +42,10 @@ _MODELS = {
     "pinhole-radtan8": ("pinhole", "radtan8", 4, 8),
     "pinhole-opencv-fisheye": (
         "pinhole_opencv_fisheye", "opencv_fisheye", 5, 4),
+}
+_IMU_INTRINSIC_FIELDS = {
+    "M_accel", "M_gyro", "C_gyro_i", "A_gyro_accel",
+    "rx_i_m", "ry_i_m", "rz_i_m",
 }
 
 
@@ -74,15 +85,95 @@ def _vector(value, size, label):
             for index, element in enumerate(value)]
 
 
+def _scale_matrix(value, label):
+    try:
+        matrix = _matrix(value, 3, 3, label)
+    except InitializationError as error:
+        raise TaskError(str(error)) from error
+    if any(abs(matrix[row][column]) > 1e-12
+           for row in range(3) for column in range(row + 1, 3)):
+        raise TaskError("{} must be lower triangular".format(label))
+    if any(matrix[index][index] <= 0.0 for index in range(3)):
+        raise TaskError("{} diagonal entries must be positive".format(label))
+    return matrix
+
+
+def validate_imu_parameters(value, label="imu"):
+    """Validate the Camera-IMU fields carried by machine parameter reuse."""
+    value = _mapping(value, label)
+    rate = _finite(value.get("imu_data_rate"), label + ".imu_data_rate",
+                   minimum=0.0)
+    if rate == 0.0:
+        raise TaskError(label + ".imu_data_rate must be positive")
+    result = {
+        "imu_data_rate": rate,
+        "gyro_bias": _vector(value.get("gyro_bias"), 3, label + ".gyro_bias"),
+        "gyro_scale": _vector(value.get("gyro_scale"), 3, label + ".gyro_scale"),
+        "acc_bias": _vector(value.get("acc_bias"), 3, label + ".acc_bias"),
+        "acc_scale": _vector(value.get("acc_scale"), 3, label + ".acc_scale"),
+    }
+    model = value.get("model")
+    if model is None:
+        if _IMU_INTRINSIC_FIELDS & set(value):
+            raise TaskError(label + ".model is required with IMU intrinsics")
+        return result
+    if not isinstance(model, str) or model not in IMU_MODELS:
+        raise TaskError(label + ".model is unsupported")
+    result["model"] = model
+    supplied = _IMU_INTRINSIC_FIELDS & set(value)
+    if model == "calibrated":
+        if supplied:
+            raise TaskError(
+                "{} model calibrated cannot contain {}".format(
+                    label, ", ".join(sorted(supplied))))
+        return result
+
+    required = {"M_accel", "M_gyro", "C_gyro_i", "A_gyro_accel"}
+    if not required <= supplied:
+        raise TaskError("{} model {} requires {}".format(
+            label, model, ", ".join(sorted(required - supplied))))
+    result["M_accel"] = _scale_matrix(
+        value["M_accel"], label + ".M_accel")
+    result["M_gyro"] = _scale_matrix(
+        value["M_gyro"], label + ".M_gyro")
+    try:
+        result["C_gyro_i"] = _rotation(
+            value["C_gyro_i"], label + ".C_gyro_i")
+        result["A_gyro_accel"] = _matrix(
+            value["A_gyro_accel"], 3, 3, label + ".A_gyro_accel")
+    except InitializationError as error:
+        raise TaskError(str(error)) from error
+    lever_fields = {"rx_i_m", "ry_i_m", "rz_i_m"}
+    if model == "scale-misalignment-size-effect":
+        if not lever_fields <= supplied:
+            raise TaskError("{} model {} requires {}".format(
+                label, model, ", ".join(sorted(lever_fields - supplied))))
+        for field in ("rx_i_m", "ry_i_m", "rz_i_m"):
+            result[field] = _vector(value[field], 3, label + "." + field)
+    elif lever_fields & supplied:
+        raise TaskError(
+            "{} model scale-misalignment cannot contain size-effect parameters"
+            .format(label))
+    return result
+
+
 def _header(document, identity):
     _mapping(document, "calib_params")
     for key in ("machine_version", "machine_num"):
         if not isinstance(document.get(key), str) or document[key] != identity[key]:
             raise TaskError("calib_params {} does not match the current machine".format(key))
-    if document.get("calib_file_version") != SCHEMA_VERSION:
-        raise TaskError("calib_params calib_file_version must be " + SCHEMA_VERSION)
-    if document.get("algorithm_version") != VERSION:
-        raise TaskError("calib_params algorithm_version must be " + VERSION)
+    if not supports_schema_version(
+            document.get("calib_file_version"),
+            SUPPORTED_CALIB_PARAMS_SCHEMA_VERSIONS):
+        raise TaskError(
+            "calib_params calib_file_version must be one of "
+            + ", ".join(sorted(SUPPORTED_CALIB_PARAMS_SCHEMA_VERSIONS)))
+    if calibration_behavior_version({
+            "version": document.get("algorithm_version"),
+            "calibration_behavior_version": document.get(
+                "calibration_behavior_version"),
+    }) != CALIBRATION_BEHAVIOR_VERSION:
+        raise TaskError("calib_params algorithm version is incompatible")
     try:
         datetime.strptime(document.get("time"), "%Y-%m-%d-%H:%M:%S")
     except (TypeError, ValueError) as error:
@@ -175,15 +266,7 @@ def validate_reused_stage(document, stage, identity):
         result["camera"]["cam0_cam1_correct"] = _correction(
             cameras.get("cam0_cam1_correct"))
         if stage == "camera_imu":
-            imu = _mapping(document.get("imu"), "imu")
-            rate = _finite(imu.get("imu_data_rate"), "imu.imu_data_rate", minimum=0.0)
-            if rate == 0.0:
-                raise TaskError("imu.imu_data_rate must be positive")
-            result["imu"] = {
-                "imu_data_rate": rate,
-                "gyro_bias": _vector(imu.get("gyro_bias"), 3, "imu.gyro_bias"),
-                "acc_bias": _vector(imu.get("acc_bias"), 3, "imu.acc_bias"),
-            }
+            result["imu"] = validate_imu_parameters(document.get("imu"))
             # Both directions describe one rigid camera chain, even when its
             # baseline was refined by the Camera–IMU stage.
             expected = np.linalg.inv(np.asarray(
@@ -202,7 +285,7 @@ def camera_seed(parameters, mono=False):
     public = _mapping(parameters.get("camera"), "camera")
     cameras = {"cam0": public} if mono else public
     result = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": RESULT_SCHEMA_VERSION,
         "kind": "calibration_result",
         "calibration_type": "cameras",
         "transform_convention": "p_target = T_target_source * p_source",

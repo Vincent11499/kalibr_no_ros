@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src" / "python"))
 
 from kalibr_bag_io import ImageRecord, ImuRecord
-from kalibr_no_ros.datasets import BagImageDatasetReader, BagImuDatasetReader
+from kalibr_no_ros.native_bridge.datasets import BagImageDatasetReader, BagImuDatasetReader
 
 
 class FakeTime:

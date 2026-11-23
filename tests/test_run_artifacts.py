@@ -13,8 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src" / "python"))
 
 from kalibr_bag_io.model import FileImageIndex, ImageRecord, ImuRecord
-from kalibr_no_ros import artifacts
-from kalibr_no_ros.datasets import BagImageDatasetReader, BagImuDatasetReader
+from kalibr_no_ros.native_bridge import evidence as artifacts
+from kalibr_no_ros.native_bridge.datasets import BagImageDatasetReader, BagImuDatasetReader
 
 try:
     import aslam_cv as acv
@@ -296,7 +296,7 @@ class NativeRunArtifactsTest(unittest.TestCase):
 
     def test_rolling_shutter_archive_keeps_final_corner_times_and_poses(self):
         import tempfile
-        from kalibr_no_ros.reporting import write_archive, load_archive
+        from kalibr_no_ros.results.reporting import write_archive, load_archive
         observation = self.observation(0)
         shutter = {"type": "rolling_shutter", "line_delay_s": 8e-6,
                    "reference_row_px": 39.5, "first_to_last_row_span_s": 79*8e-6,

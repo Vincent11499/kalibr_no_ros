@@ -7,10 +7,15 @@ import copy
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src/python"))
-from kalibr_no_ros.task import TaskError, dump_yaml, load_yaml, load_task, _imu_arguments
-from kalibr_no_ros.rolling_shutter import JOB, validate_shutters
+from kalibr_no_ros.task.document import TaskError
+from kalibr_no_ros.task.document import dump_yaml
+from kalibr_no_ros.task.document import load_yaml
+from kalibr_no_ros.task.validation import load_task
+from kalibr_no_ros.task.solver_adapter import _imu_arguments
+from kalibr_no_ros.task.jobs import CAMERA_IMU_RS_JOB as JOB
+from kalibr_no_ros.task.rolling_shutter_config import validate_shutters
 from kalibr_no_ros.cli import build_parser
-from kalibr_no_ros.delivery import result_name
+from kalibr_no_ros.results.delivery import result_name
 
 
 class RollingShutterContractTest(unittest.TestCase):
@@ -35,8 +40,8 @@ class RollingShutterContractTest(unittest.TestCase):
             validate_shutters({"cam0": {"estimate": False}}, ["left"])
 
     def test_saved_observability_reaches_metrics_and_both_report_formats(self):
-        from kalibr_no_ros.evaluation import compute_metrics
-        from kalibr_no_ros.report_plots import _summary_sections
+        from kalibr_no_ros.results.evaluation import compute_metrics
+        from kalibr_no_ros.results.plots import _summary_sections
         summary = {"status": "full_rank", "quality": "weakly_observable",
                    "rank": 10, "columns": 10, "operational_rank": 9}
         metrics = compute_metrics({"calibration_type": "camera_imu", "cameras": [],

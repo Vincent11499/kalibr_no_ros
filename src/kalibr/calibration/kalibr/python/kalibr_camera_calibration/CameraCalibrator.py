@@ -15,7 +15,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 import mpl_toolkits.mplot3d.axes3d as p3
 import cv2
 import numpy as np
-from kalibr_no_ros import artifacts as run_artifacts
+from kalibr_no_ros.native_bridge import evidence as run_artifacts
 from kalibr_no_ros.version import SCHEMA_VERSION
 import pylab as pl
 import math

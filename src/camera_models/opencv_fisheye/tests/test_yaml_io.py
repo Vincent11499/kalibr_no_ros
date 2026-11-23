@@ -9,7 +9,7 @@ import yaml
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "python"))
-from kalibr_no_ros import opencv_fisheye_io as yaml_io
+from kalibr_no_ros.conversion import opencv_fisheye_io as yaml_io
 
 
 class OpenCvFisheyeYamlTest(unittest.TestCase):

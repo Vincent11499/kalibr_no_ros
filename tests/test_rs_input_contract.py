@@ -9,16 +9,14 @@ from unittest import mock
 
 import numpy as np
 
-from kalibr_no_ros.rolling_shutter import CAMERA_RS_JOB
-from kalibr_no_ros.task import (
-    TaskError,
-    _native_rs_camera_arguments,
-    _run_task_staged,
-    dump_yaml,
-    load_task,
-    load_yaml,
-)
-from kalibr_no_ros.validation import validate_task
+from kalibr_no_ros.task.jobs import CAMERA_RS_JOB
+from kalibr_no_ros.task.document import TaskError
+from kalibr_no_ros.task.solver_adapter import _native_rs_camera_arguments
+from kalibr_no_ros.task.runner import _run_task_staged
+from kalibr_no_ros.task.document import dump_yaml
+from kalibr_no_ros.task.validation import load_task
+from kalibr_no_ros.task.document import load_yaml
+from kalibr_no_ros.task.validation import validate_task
 
 
 def _task(camera_count=1):
@@ -141,7 +139,7 @@ class RollingShutterInputContractTest(unittest.TestCase):
             root = Path(directory)
             unused_path, task = self._load(root, _task())
             with mock.patch(
-                    "kalibr_no_ros.task._selected_frame_rate_hz",
+                    "kalibr_no_ros.task.solver_adapter._selected_frame_rate_hz",
                     return_value=2.0):
                 arguments = _native_rs_camera_arguments(
                     task, root / "dataset.bag", root / "target.yaml",
@@ -159,13 +157,13 @@ class RollingShutterInputContractTest(unittest.TestCase):
             path, unused_task = self._load(root, document)
             reader = _BagReader(height=100)
             with mock.patch(
-                    "kalibr_no_ros.validation.open_dataset",
+                    "kalibr_no_ros.task.validation.open_dataset",
                     return_value=reader):
                 report = validate_task(path)
 
             native_reader = _BagReader(height=100)
             with mock.patch(
-                    "kalibr_no_ros.validation.open_dataset",
+                    "kalibr_no_ros.task.validation.open_dataset",
                     return_value=native_reader):
                 native_report = validate_task(
                     path, solver_backend="native")

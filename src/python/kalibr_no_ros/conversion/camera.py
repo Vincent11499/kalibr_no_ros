@@ -3,8 +3,13 @@
 from pathlib import Path
 import tempfile
 
-from .task import TaskError, dump_yaml, load_yaml, require_document_version
-from .version import SCHEMA_VERSION, VERSION
+from ..task.document import TaskError, dump_yaml, load_yaml, require_document_version
+from ..version import (
+    RESULT_SCHEMA_VERSION,
+    SUPPORTED_RESULT_SCHEMA_VERSIONS,
+    VERSION,
+    supports_schema_version,
+)
 
 
 def converter_modules(full_fisheye=False):
@@ -26,14 +31,15 @@ def _result_from_camchain(camchain):
         camera = dict(entry)
         cameras.append(dict(id=key, **camera))
     return {
-        "schema_version": SCHEMA_VERSION, "kind": "calibration_result",
+        "schema_version": RESULT_SCHEMA_VERSION, "kind": "calibration_result",
         "calibration_type": "cameras",
         "cameras": cameras,
     }
 
 
 def _camchain_from_result(document):
-    require_document_version(document, "camera calibration", "calibration_result")
+    require_document_version(
+        document, "camera calibration", "calibration_result", result=True)
     cameras = document.get("cameras")
     if not isinstance(cameras, list) or not cameras:
         raise TaskError("camera calibration contains no cameras")
@@ -56,8 +62,13 @@ def _validate_opencv_version(path):
         if not storage.isOpened():
             raise TaskError("could not read OpenCV YAML: {}".format(path))
         version = storage.getNode("schema_version")
-        if not version.empty() and (not version.isString() or version.string() != SCHEMA_VERSION):
-            raise TaskError("OpenCV project schema_version must be {}".format(SCHEMA_VERSION))
+        if (not version.empty()
+                and (not version.isString()
+                     or not supports_schema_version(
+                         version.string(), SUPPORTED_RESULT_SCHEMA_VERSIONS))):
+            raise TaskError(
+                "OpenCV project schema_version must be one of {}".format(
+                    ", ".join(sorted(SUPPORTED_RESULT_SCHEMA_VERSIONS))))
     finally:
         storage.release()
 
@@ -68,7 +79,7 @@ def _add_opencv_metadata(path):
     # modifying OpenCV's independent %YAML:1.0 FileStorage format declaration.
     with path.open("a", encoding="utf-8") as stream:
         stream.write('schema_version: "{}"\nkind: "{}"\nsoftware_version: "{}"\n'.format(
-            SCHEMA_VERSION, kind, VERSION))
+            RESULT_SCHEMA_VERSION, kind, VERSION))
     _validate_opencv_version(path)
 
 

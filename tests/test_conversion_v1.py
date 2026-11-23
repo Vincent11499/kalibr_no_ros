@@ -14,8 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src/python"))
 
 from kalibr_no_ros.cli import main as cli_main
-from kalibr_no_ros.conversion import converter_modules, main as convert
-from kalibr_no_ros.task import TaskError, dump_yaml, load_yaml
+from kalibr_no_ros.conversion.camera import converter_modules, main as convert
+from kalibr_no_ros.task.document import TaskError, dump_yaml, load_yaml
 
 
 class ConversionV1Test(unittest.TestCase):
@@ -45,7 +45,7 @@ class ConversionV1Test(unittest.TestCase):
         storage = cv2.FileStorage(str(path), cv2.FILE_STORAGE_READ)
         try:
             self.assertEqual(storage.getNode("schema_version").string(), "1.0.0")
-            self.assertEqual(storage.getNode("software_version").string(), "1.0.0")
+            self.assertEqual(storage.getNode("software_version").string(), "1.1.0")
             self.assertEqual(storage.getNode("kind").string(), kind)
         finally:
             storage.release()

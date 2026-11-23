@@ -17,17 +17,18 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src" / "python"))
 
-from kalibr_no_ros.evaluation import (
+from kalibr_no_ros.results.evaluation import (
     ReportingError, assess_metrics, compute_metrics, prepare_evaluation_artifacts,
     rectification_maps, rectified_points, stereo_geometry, undistortion_maps,
     validate_output_options,
 )
-from kalibr_no_ros.artifacts import RunContext
-from kalibr_no_ros import opencv_fisheye_io
-from kalibr_no_ros.reporting import (
+from kalibr_no_ros.native_bridge.evidence import RunContext
+from kalibr_no_ros.conversion import opencv_fisheye_io as opencv_fisheye_io
+from kalibr_no_ros.results.reporting import (
     _alignment_label, _corner_count_label, _draw_image_label, evaluate_run,
     export_opencv, generate_report, load_archive, write_archive,
 )
+from kalibr_no_ros.results.plots import _summary_sections
 from kalibr_no_ros.version import SCHEMA_VERSION
 
 
@@ -149,6 +150,38 @@ def tls_grid_distances(points):
 
 
 class ReportingTest(unittest.TestCase):
+    def test_report_lists_imu_intrinsics_and_size_effect(self):
+        calibration = {"imus": [{
+            "id": "imu0",
+            "model": "scale-misalignment-size-effect",
+            "update_rate": 100.0,
+            "accelerometers": {
+                "M": [[1.01, 0.0, 0.0], [0.01, 1.02, 0.0],
+                      [0.02, 0.03, 1.03]],
+                "rx_i": [0.0, 0.0, 0.0],
+                "ry_i": [0.01, 0.02, 0.03],
+                "rz_i": [-0.01, -0.02, -0.03],
+            },
+            "gyroscopes": {
+                "M": [[0.99, 0.0, 0.0], [0.01, 0.98, 0.0],
+                      [0.02, 0.03, 0.97]],
+                "C_gyro_i": np.eye(3).tolist(),
+                "A": np.zeros((3, 3)).tolist(),
+            },
+        }]}
+        sections = list(_summary_sections(
+            {"calibration_type": "camera_imu", "cameras": {}, "imus": {}},
+            {"rules": []}, calibration))
+        by_title = {title: rows for title, unused_headers, rows in sections}
+        self.assertEqual(
+            by_title["imu0 · IMU parameters"][0],
+            ["Model", "scale-misalignment-size-effect"])
+        matrices = by_title["imu0 · IMU intrinsic matrices"]
+        self.assertEqual({row[0] for row in matrices}, {
+            "M_accel", "M_gyro", "C_gyro_i", "A_gyro_accel"})
+        self.assertEqual(len(by_title[
+            "imu0 · Accelerometer size effect"]), 3)
+
     def test_corner_count_label_distinguishes_detected_retained_and_target(self):
         frame = {"detected_corner_count": 9, "target_corner_count": 320,
                  "corners": [{"used": True}, {"used": False}, {"used": True}]}
@@ -633,7 +666,7 @@ class ReportingTest(unittest.TestCase):
             original = root / "run"
             original.mkdir()
             (original / "calibration.yaml").write_text(yaml.safe_dump(calibration))
-            with mock.patch("kalibr_no_ros.reporting._draw_image_label",
+            with mock.patch("kalibr_no_ros.results.reporting._draw_image_label",
                             wraps=_draw_image_label) as labels:
                 result = generate_report(
                     artifacts, calibration, original,

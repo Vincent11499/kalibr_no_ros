@@ -6,11 +6,12 @@ import unittest
 from contextlib import redirect_stderr
 from io import StringIO
 from pathlib import Path
+from unittest import mock
 
 import cv2
 import numpy as np
 
-from kalibr_no_ros.camera_baselink import (
+from kalibr_no_ros.task.camera_baselink import (
     CameraBaselinkError,
     _correct_output_rotation,
     _relative_rotation_pairs,
@@ -18,16 +19,17 @@ from kalibr_no_ros.camera_baselink import (
     optical_axis_pitch_deg,
     platform_position,
     relative_rotation_angles_rad,
+    run_camera_baselink,
     solve_direct_rotation,
 )
-from kalibr_no_ros.artifacts import RunContext
+from kalibr_no_ros.native_bridge.evidence import RunContext
 from kalibr_no_ros.cli import build_parser
-from kalibr_no_ros.evaluation import compute_metrics
-from kalibr_no_ros.jobs import CAMERA_BASELINK_JOB
-from kalibr_no_ros.report_plots import _summary_sections
-from kalibr_no_ros.reporting import _summary
-from kalibr_no_ros.task import dump_yaml, load_task
-from kalibr_no_ros.validation import validate_task
+from kalibr_no_ros.results.evaluation import compute_metrics
+from kalibr_no_ros.task.jobs import CAMERA_BASELINK_JOB
+from kalibr_no_ros.results.plots import _summary_sections
+from kalibr_no_ros.results.reporting import _summary
+from kalibr_no_ros.task.document import dump_yaml
+from kalibr_no_ros.task.validation import load_task, validate_task
 
 
 class CameraBaselinkTest(unittest.TestCase):
@@ -42,6 +44,49 @@ class CameraBaselinkTest(unittest.TestCase):
                 "calibrate", "cameras-baselink", "--config", "task.yaml",
                 "--output-dir", "result", "--initialization", "seed.yaml",
             ])
+
+    def test_pre_publish_check_runs_after_staging_and_before_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dataset = root / "dataset"
+            dataset.mkdir()
+            output = root / "output"
+            task = {
+                "_config_dir": str(root),
+                "job": CAMERA_BASELINK_JOB,
+                "dataset": {"path": str(dataset)},
+                "target": {"path": str(root / "target.yaml")},
+                "camera_calibration": {
+                    "path": str(root / "cameras.yaml")},
+                "cameras": [{"id": "cam0"}],
+                "output": {"name": "guarded"},
+            }
+            events = []
+
+            def staged(config, stage, loaded_task, overrides):
+                Path(stage).mkdir(parents=True)
+                events.append("staged")
+
+            def reject():
+                self.assertEqual(events, ["staged"])
+                events.append("checked")
+                raise RuntimeError("input changed before publication")
+
+            with mock.patch(
+                    "kalibr_no_ros.task.validation.load_task",
+                    return_value=task), mock.patch(
+                        "kalibr_no_ros.task.camera_baselink._run_staged",
+                        side_effect=staged), mock.patch(
+                            "kalibr_no_ros.results.delivery.publish") as publisher:
+                with self.assertRaisesRegex(
+                        RuntimeError, "input changed before publication"):
+                    run_camera_baselink(
+                        root / "task.yaml", output,
+                        _before_publish=reject)
+
+            self.assertEqual(events, ["staged", "checked"])
+            publisher.assert_not_called()
+            self.assertFalse((output / "guarded").exists())
 
     def test_artifacts_and_metrics_use_baselink_type_without_stereo_pair(self):
         context = RunContext(CAMERA_BASELINK_JOB)

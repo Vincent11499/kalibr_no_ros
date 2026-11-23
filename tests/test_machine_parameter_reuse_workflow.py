@@ -8,10 +8,11 @@ import unittest
 import test_machine_workflow as workflow_fixtures
 from test_machine_param_reuse import public_parameters
 
-from kalibr_no_ros.initialization import _inverse_transform
-from kalibr_no_ros.machine_param_reuse import parameter_path
-from kalibr_no_ros.machine_workflow import load_workflow_config, run_machine_workflow
-from kalibr_no_ros.task import TaskError, dump_yaml, load_yaml
+from kalibr_no_ros.task.initialization import _inverse_transform
+from kalibr_no_ros.machine.parameter_reuse import parameter_path
+from kalibr_no_ros.machine.config import load_workflow_config
+from kalibr_no_ros.machine.runner import run_machine_workflow
+from kalibr_no_ros.task.document import TaskError, dump_yaml, load_yaml
 from kalibr_no_ros.filesystem import file_sha256
 
 

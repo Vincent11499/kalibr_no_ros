@@ -1,22 +1,32 @@
 """Configuration and input validation without detection or optimization."""
 
 import math
+from pathlib import Path
 import re
 
 from kalibr_bag_io import open_dataset, DirectoryReader
-from .version import SCHEMA_VERSION
+from ..version import (
+    RESULT_SCHEMA_VERSION,
+    SUPPORTED_CONFIG_SCHEMA_VERSIONS,
+    supports_schema_version,
+)
 from .initialization import CAMERA_MODEL_DIMENSIONS, _inverse_transform, _transform
-from .rolling_shutter import (
-    CAMERA_RS_JOB,
-    CAMERA_RS_MODELS,
-    CAMERA_CALIBRATION_JOBS,
-    ROLLING_SHUTTER_JOBS,
-)
+from .jobs import CAMERA_RS_JOB, CAMERA_IMU_RS_JOB, CAMERA_CALIBRATION_JOBS, ROLLING_SHUTTER_JOBS
+from .rolling_shutter_config import CAMERA_RS_MODELS
 from .jobs import CAMERA_BASELINK_JOB
-from .task import (
-    TaskError, load_task, load_yaml, require_document_version,
-    resolve_execution, resolve_initialization, resolve_task_path,
+from .document import TaskError, load_yaml, require_document_version, resolve_task_path
+from .execution import resolve_execution
+from .initialization import (
+    InitializationError, validate_task_initialization,
+    _camera_freeze_intrinsics, resolve_initialization,
 )
+
+
+IMU_MODELS = frozenset((
+    "calibrated",
+    "scale-misalignment",
+    "scale-misalignment-size-effect",
+))
 
 
 def _fields(value, allowed, label):
@@ -75,7 +85,7 @@ def _quality_summary(value, label, rms=False):
 
 
 def validate_options(task):
-    from .rolling_shutter import validate_shutters
+    from .rolling_shutter_config import validate_shutters
     if task["job"] in ROLLING_SHUTTER_JOBS:
         validate_shutters(task.get("rolling_shutter"))
     dataset = task["dataset"]
@@ -240,7 +250,8 @@ def validate_options(task):
                 raise TaskError("IMU IDs must follow the task order imu0..imuN")
             if not isinstance(imu.get("path"), str) or not imu["path"].strip():
                 raise TaskError("imus.path is required")
-            if not isinstance(imu.get("model", "calibrated"), str) or imu.get("model", "calibrated") not in {"calibrated", "scale-misalignment", "scale-misalignment-size-effect"}:
+            if (not isinstance(imu.get("model", "calibrated"), str)
+                    or imu.get("model", "calibrated") not in IMU_MODELS):
                 raise TaskError("unsupported IMU model")
 
 
@@ -400,7 +411,8 @@ def load_cameras(task):
         raise TaskError("camera_calibration.path is required for standalone validation; calibrate imu-camera can discover a camera result in its output directory")
     path = _input_path(task["camera_calibration"], "camera_calibration")
     value = load_yaml(resolve_task_path(task, path))
-    require_document_version(value, "camera calibration", "calibration_result")
+    require_document_version(
+        value, "camera calibration", "calibration_result", result=True)
     _fields(value, {"schema_version", "kind", "calibration_type", "transform_convention", "cameras", "imus"}, "camera calibration result")
     if "calibration_type" in value and value["calibration_type"] not in ("cameras", "camera_imu"):
         raise TaskError("camera calibration_type must be cameras or camera_imu")
@@ -516,7 +528,7 @@ def _validate_camera_rs_time_support(task, camera, resolution, shutters):
 
 def validate_task(config, *, decode_images=True, solver_backend=None):
     """Return a versioned report; no target detector or native solver is loaded."""
-    report = {"schema_version": SCHEMA_VERSION, "kind": "input_validation", "status": "passed", "errors": [], "warnings": [], "cameras": [], "imus": []}
+    report = {"schema_version": RESULT_SCHEMA_VERSION, "kind": "input_validation", "status": "passed", "errors": [], "warnings": [], "cameras": [], "imus": []}
     try:
         if solver_backend not in {None, "system", "native"}:
             raise TaskError("solver_backend must be system or native")
@@ -527,7 +539,7 @@ def validate_task(config, *, decode_images=True, solver_backend=None):
         validate_options(task)
         load_target(task)
         cameras = load_cameras(task)
-        from .rolling_shutter import ROLLING_SHUTTER_JOBS, validate_shutters
+        from .rolling_shutter_config import validate_shutters
         shutters = None
         if task["job"] in ROLLING_SHUTTER_JOBS:
             shutters = validate_shutters(
@@ -607,3 +619,99 @@ def validate_task(config, *, decode_images=True, solver_backend=None):
         report["status"] = "failed"
         report["errors"].append(str(error))
     return report
+
+
+_COMMON_TASK_KEYS = {
+    "schema_version",
+    "kind",
+    "job",
+    "dataset",
+    "target",
+    "calibration",
+    "execution",
+    "initialization",
+    "output",
+}
+_JOB_TASK_KEYS = {
+    "camera_calibration": {"cameras"},
+    CAMERA_RS_JOB: {"cameras", "rolling_shutter"},
+    CAMERA_BASELINK_JOB: {"camera_calibration", "cameras", "base_link"},
+    "camera_imu_calibration": {"camera_calibration", "imus"},
+    CAMERA_IMU_RS_JOB: {"camera_calibration", "imus", "rolling_shutter"},
+}
+
+
+def load_task(path, expected_job=None):
+    path = Path(path).resolve()
+    task = load_yaml(path)
+    if not supports_schema_version(
+            task.get("schema_version"), SUPPORTED_CONFIG_SCHEMA_VERSIONS):
+        raise TaskError(
+            "task schema_version must be one of {}".format(
+                ", ".join(sorted(SUPPORTED_CONFIG_SCHEMA_VERSIONS))))
+    job = task.get("job")
+    if task.get("kind", "calibration_task") != "calibration_task":
+        raise TaskError("task kind must be calibration_task")
+    if job not in _JOB_TASK_KEYS:
+        raise TaskError("unsupported calibration job: {}".format(job))
+    if expected_job is not None and job != expected_job:
+        raise TaskError("expected job {}, got {}".format(expected_job, job))
+    allowed = _COMMON_TASK_KEYS | _JOB_TASK_KEYS[job]
+    unknown = sorted(set(task) - allowed)
+    if unknown:
+        raise TaskError("unknown fields for {}: {}".format(
+            job, ", ".join(unknown)))
+    if not isinstance(task.get("dataset"), dict) or not task["dataset"].get("path"):
+        raise TaskError("dataset.path is required")
+    dataset_type = str(task["dataset"].get("type", "")).lower()
+    if dataset_type not in {"bag", "directory"}:
+        raise TaskError("dataset.type must be bag or directory")
+    task["dataset"]["type"] = dataset_type
+    if not isinstance(task.get("target"), dict):
+        raise TaskError("target mapping is required")
+    if "initialization" in task:
+        try:
+            validate_task_initialization(task["initialization"])
+        except InitializationError as error:
+            raise TaskError(str(error)) from error
+    _camera_freeze_intrinsics(task)
+    if job in CAMERA_CALIBRATION_JOBS:
+        cameras = task.get("cameras")
+        if not isinstance(cameras, list) or not cameras:
+            raise TaskError("cameras must be a non-empty list")
+    elif job == CAMERA_BASELINK_JOB:
+        cameras = task.get("cameras")
+        if not isinstance(cameras, list) or not cameras:
+            raise TaskError("cameras must be a non-empty list")
+        camera_calibration = task.get("camera_calibration")
+        if not (
+            isinstance(camera_calibration, str) and camera_calibration
+            or isinstance(camera_calibration, dict)
+            and camera_calibration.get("path")
+        ):
+            raise TaskError("camera_calibration.path is required")
+        if not isinstance(task.get("base_link"), dict):
+            raise TaskError("base_link mapping is required")
+        if "initialization" in task:
+            raise TaskError(
+                "camera_baselink_calibration does not support initialization; "
+                "use camera_calibration.path for fixed K/D")
+    else:
+        camera_calibration = task.get("camera_calibration")
+        if camera_calibration is not None and not (
+            isinstance(camera_calibration, str) and camera_calibration
+            or isinstance(camera_calibration, dict)
+            and camera_calibration.get("path")
+        ):
+            raise TaskError("camera_calibration.path is required")
+        imus = task.get("imus")
+        if not isinstance(imus, list) or not imus:
+            raise TaskError("imus must be a non-empty list")
+    task["_config_dir"] = str(path.parent)
+    from ..results.evaluation import validate_output_options
+    try:
+        task["output"] = validate_output_options(task.get("output"))
+    except ValueError as error:
+        raise TaskError(str(error)) from error
+    validate_options(task)
+    return task

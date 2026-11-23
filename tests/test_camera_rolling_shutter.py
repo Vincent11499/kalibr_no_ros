@@ -10,22 +10,20 @@ from unittest import mock
 import numpy as np
 
 from kalibr_no_ros.cli import build_parser
-from kalibr_no_ros.delivery import enrich_result
-from kalibr_no_ros.evaluation import compute_metrics
-from kalibr_no_ros.initialization import validate_initialization
-from kalibr_no_ros.rolling_shutter import CAMERA_RS_JOB
-from kalibr_no_ros.task import (
-    TaskError,
-    _legacy_camchain,
-    _native_rs_camera_arguments,
-    _normalize_camera_rs_result,
-    _overlay_structured_camera_snapshots,
-    _rs_camera_arguments,
-    dump_yaml,
-    load_task,
-    load_yaml,
-)
-from kalibr_no_ros.validation import _validate_shutter_result, load_cameras
+from kalibr_no_ros.results.delivery import enrich_result
+from kalibr_no_ros.results.evaluation import compute_metrics
+from kalibr_no_ros.task.initialization import validate_initialization
+from kalibr_no_ros.task.jobs import CAMERA_RS_JOB
+from kalibr_no_ros.task.document import TaskError
+from kalibr_no_ros.task.solver_adapter import _legacy_camchain
+from kalibr_no_ros.task.solver_adapter import _native_rs_camera_arguments
+from kalibr_no_ros.task.solver_adapter import _normalize_camera_rs_result
+from kalibr_no_ros.task.solver_adapter import _overlay_structured_camera_snapshots
+from kalibr_no_ros.task.solver_adapter import _rs_camera_arguments
+from kalibr_no_ros.task.document import dump_yaml
+from kalibr_no_ros.task.validation import load_task
+from kalibr_no_ros.task.document import load_yaml
+from kalibr_no_ros.task.validation import _validate_shutter_result, load_cameras
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -214,7 +212,7 @@ class VisualRollingShutterContractTest(unittest.TestCase):
                 arguments[topics + 1:models], ["/left", "/right", "/rear"])
             shutter_path = Path(arguments[
                 arguments.index("--rolling-shutter-config") + 1])
-            from kalibr_no_ros.task import load_yaml
+            from kalibr_no_ros.task.document import load_yaml
             shutter = load_yaml(shutter_path)
             self.assertEqual(list(shutter["cameras"]), ["cam0", "cam1", "cam2"])
             self.assertEqual(shutter["cameras"]["cam2"]["line_delay_s"], 3e-6)
@@ -248,7 +246,7 @@ class VisualRollingShutterContractTest(unittest.TestCase):
                     task, root / "input.bag", root / "target.yaml", root, {})
 
             with mock.patch(
-                    "kalibr_no_ros.task._selected_frame_rate_hz",
+                    "kalibr_no_ros.task.solver_adapter._selected_frame_rate_hz",
                     return_value=5.0):
                 for model in ("pinhole-radtan5", "pinhole-radtan8"):
                     extended = _task(1)
@@ -435,9 +433,9 @@ class VisualRollingShutterContractTest(unittest.TestCase):
             "disparity_axis": "x", "size": (640, 480),
         }
         with mock.patch(
-                "kalibr_no_ros.evaluation.stereo_geometry",
+                "kalibr_no_ros.results.evaluation.stereo_geometry",
                 return_value=fake_geometry), mock.patch(
-                    "kalibr_no_ros.evaluation.rectified_points",
+                    "kalibr_no_ros.results.evaluation.rectified_points",
                     side_effect=lambda points, unused_geometry, unused_side:
                     np.asarray(points, dtype=float)):
             pair = compute_metrics(artifacts, calibration)[
@@ -515,9 +513,9 @@ class VisualRollingShutterContractTest(unittest.TestCase):
             "disparity_axis": "x", "size": (640, 480),
         }
         with mock.patch(
-                "kalibr_no_ros.evaluation.stereo_geometry",
+                "kalibr_no_ros.results.evaluation.stereo_geometry",
                 return_value=fake_geometry), mock.patch(
-                    "kalibr_no_ros.evaluation.rectified_points",
+                    "kalibr_no_ros.results.evaluation.rectified_points",
                     side_effect=lambda points, unused_geometry, unused_side:
                     np.asarray(points, dtype=float)):
             metrics = compute_metrics(artifacts, calibration)

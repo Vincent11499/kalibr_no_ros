@@ -18,12 +18,19 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src/python"))
 
-from kalibr_no_ros import artifacts, reporting
-from kalibr_no_ros.task import (
-    TaskError, _native_cameras_to_result, dump_yaml, load_task, load_yaml, prepare_output_directory,
-    require_document_version, resolve_initialization, run_task, write_run_manifest,
-)
-from kalibr_no_ros.validation import load_cameras, load_imu, load_target, validate_options, validate_task
+from kalibr_no_ros.native_bridge import evidence as artifacts
+from kalibr_no_ros.results import reporting as reporting
+from kalibr_no_ros.task.document import TaskError
+from kalibr_no_ros.task.solver_adapter import _native_cameras_to_result
+from kalibr_no_ros.task.document import dump_yaml
+from kalibr_no_ros.task.validation import load_task
+from kalibr_no_ros.task.document import load_yaml
+from kalibr_no_ros.task.runner import prepare_output_directory
+from kalibr_no_ros.task.document import require_document_version
+from kalibr_no_ros.task.initialization import resolve_initialization
+from kalibr_no_ros.task.runner import run_task
+from kalibr_no_ros.task.runner import write_run_manifest
+from kalibr_no_ros.task.validation import load_cameras, load_imu, load_target, validate_options, validate_task
 
 
 class V1ContractTest(unittest.TestCase):
@@ -96,7 +103,7 @@ class V1ContractTest(unittest.TestCase):
         self.assertRegex("; ".join(report["errors"]), pattern)
 
     def test_directory_topics_can_be_omitted_and_native_arguments_select_same_stream(self):
-        from kalibr_no_ros.task import _camera_arguments
+        from kalibr_no_ros.task.solver_adapter import _camera_arguments
         original = _camera_arguments(load_task(self.task_path), self.dataset, 'target.yaml', {})
         del self.task['cameras'][0]['topic']
         self.write_inputs()
@@ -147,7 +154,7 @@ class V1ContractTest(unittest.TestCase):
         self.assert_validation_failed('IMU.rostopic')
 
     def test_directory_imu_and_camera_chain_resolve_ids_without_modifying_input_result(self):
-        from kalibr_no_ros.task import _imu_arguments
+        from kalibr_no_ros.task.solver_adapter import _imu_arguments
         self.camera_imu_task()
         self.task['imus'][0]['id'] = 'imu0'
         for streams in (self.manifest['cameras'], self.manifest['imus']):
@@ -166,7 +173,17 @@ class V1ContractTest(unittest.TestCase):
         self.assertEqual(load_yaml(self.root / 'camchain.yaml')['cam0']['rostopic'], 'cam0')
         self.assertEqual((self.root / 'calibration.yaml').read_bytes(), source)
 
-    def test_only_release_string_is_accepted_for_task_dataset_and_result(self):
+    def test_schema_families_accept_v1_aliases_and_reject_unregistered_values(self):
+        for compatible in ("1.0.0", "1.1.0"):
+            with self.subTest(compatible=compatible):
+                self.task["schema_version"] = compatible
+                self.manifest["schema_version"] = compatible
+                self.write_inputs()
+                self.assertEqual(validate_task(self.task_path)["status"], "passed")
+                require_document_version(
+                    {"schema_version": compatible,
+                     "kind": "calibration_result"},
+                    "camera calibration", "calibration_result", result=True)
         for old in (1, 2, True, 1.0, "1", "2"):
             with self.subTest(version=old):
                 self.task["schema_version"] = old
@@ -180,7 +197,10 @@ class V1ContractTest(unittest.TestCase):
                 self.manifest["schema_version"] = "1.0.0"
                 with self.assertRaisesRegex(TaskError, "schema_version"):
                     require_document_version({"schema_version": old, "kind": "calibration_result"},
-                                             "camera calibration", "calibration_result")
+                                             "camera calibration", "calibration_result",
+                                             result=True)
+        self.task["schema_version"] = "1.0.0"
+        self.manifest["schema_version"] = "1.0.0"
         self.write_inputs()
         self.assertEqual(validate_task(self.task_path)["status"], "passed")
 
@@ -300,7 +320,7 @@ class V1ContractTest(unittest.TestCase):
         self.task["output"] = {"name": "camera_input"}
         self.write_inputs()
         before = self.tree_bytes(output)
-        with mock.patch("kalibr_no_ros.task._run_legacy") as solver:
+        with mock.patch("kalibr_no_ros.task.runner._run_legacy") as solver:
             with self.assertRaisesRegex(TaskError, "input|overlap|contain|separate"):
                 run_task(self.root / "unused_prefix", self.task_path, output,
                          "camera_imu_calibration", force=True)
@@ -333,7 +353,7 @@ class V1ContractTest(unittest.TestCase):
         output = self.root / "snapshot_run"
         # Stop at the native boundary: exercise real resolution and persistence
         # without detection, optimization, or constructing synthetic results.
-        with mock.patch("kalibr_no_ros.task._run_legacy", side_effect=RuntimeError("snapshot boundary")):
+        with mock.patch("kalibr_no_ros.task.runner._run_legacy", side_effect=RuntimeError("snapshot boundary")):
             with self.assertRaisesRegex(RuntimeError, "snapshot boundary"):
                 run_task(self.root / "unused_prefix", self.task_path, output,
                          "camera_imu_calibration", initialization=cli_seed_path,
@@ -552,7 +572,7 @@ class V1ContractTest(unittest.TestCase):
         self.task["output"] = {"save_diagnostics": True}
         self.write_inputs()
         output = self.root / "bad_image_run"
-        with mock.patch("kalibr_no_ros.task._run_legacy") as solver:
+        with mock.patch("kalibr_no_ros.task.runner._run_legacy") as solver:
             with self.assertRaisesRegex(TaskError, "input validation failed"):
                 run_task(self.root / "unused_prefix", self.task_path, output, "camera_calibration")
             solver.assert_not_called()
@@ -600,7 +620,7 @@ class V1ContractTest(unittest.TestCase):
 import os
 from pathlib import Path
 import sys
-from kalibr_no_ros.task import _capture_solver_logs
+from kalibr_no_ros.task.solver_adapter import _capture_solver_logs
 before_streams = (sys.stdout, sys.stderr)
 before_fds = [(os.fstat(fd).st_dev, os.fstat(fd).st_ino) for fd in (1, 2)]
 try:
@@ -642,8 +662,8 @@ os.write(2, b'native stderr restored\\n')
         script.parent.mkdir(parents=True)
         script.write_text(
             "from pathlib import Path\n"
-            "from kalibr_no_ros.artifacts import current_context\n"
-            "from kalibr_no_ros.task import dump_yaml\n"
+            "from kalibr_no_ros.native_bridge.evidence import current_context\n"
+            "from kalibr_no_ros.task.document import dump_yaml\n"
             "context = current_context()\n"
             "assert context is not None and context.artifacts['events'] == []\n"
             "context.artifacts['events'].append({'native_run': True})\n"

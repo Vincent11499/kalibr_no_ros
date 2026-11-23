@@ -726,7 +726,7 @@ class SystemRsCalibrator(object):
                                        (batch, []) )[1].append(corner_id)
 
         try:
-            from kalibr_no_ros import artifacts as run_artifacts
+            from kalibr_no_ros.native_bridge import evidence as run_artifacts
             context = run_artifacts.current_context()
         except ImportError:
             context = None
@@ -766,7 +766,7 @@ class SystemRsCalibrator(object):
         return result
 
     def observability_parameter_blocks(self):
-        from kalibr_no_ros import observability
+        from kalibr_no_ros.native_bridge import observability
         blocks = observability.camera_parameter_blocks(self)
         for index, state in enumerate(self.line_delays):
             if state.dv.isActive():
@@ -782,7 +782,7 @@ class SystemRsCalibrator(object):
 
     def publish_artifacts(self, models):
         """Publish final residuals, then attach RS per-corner timing evidence."""
-        from kalibr_no_ros import artifacts as run_artifacts
+        from kalibr_no_ros.native_bridge import evidence as run_artifacts
         results = self.line_delay_results()
         context = run_artifacts.current_context()
         if context is None:

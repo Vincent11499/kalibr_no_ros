@@ -10,14 +10,14 @@ from unittest import mock
 
 import numpy as np
 
-from kalibr_no_ros.evaluation import stereo_geometry
+from kalibr_no_ros.results.evaluation import stereo_geometry
 from kalibr_no_ros.filesystem import file_sha256
-from kalibr_no_ros.machine_calib_params import (
+from kalibr_no_ros.machine.config import machine_identity
+from kalibr_no_ros.machine.calib_params import (
     build_calib_params,
-    machine_identity,
     write_calib_param,
 )
-from kalibr_no_ros.task import TaskError, dump_yaml, load_yaml
+from kalibr_no_ros.task.document import TaskError, dump_yaml, load_yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -135,7 +135,8 @@ class MachineCalibParamsTest(unittest.TestCase):
             }},
         }
 
-    def camera_imu(self, *, metrics=True):
+    def camera_imu(self, *, metrics=True, model="calibrated",
+                   name="camera_imu"):
         cameras = []
         for index, camera_id in enumerate(("cam0", "cam1")):
             camera = self.camera(camera_id, rms=0.5 + index, shutter=2.0e-6 + index * 1e-7)
@@ -149,9 +150,33 @@ class MachineCalibParamsTest(unittest.TestCase):
             cameras.append(camera)
         metric_value = self.evaluation_metrics("camera_imu")
         metric_value.update(self.bias_metrics())
+        imu = {"id": "imu0", "model": model, "update_rate": 100.0}
+        if model != "calibrated":
+            imu.update({
+                "accelerometers": {"M": [
+                    [1.01, 0.0, 0.0],
+                    [0.01, 1.02, 0.0],
+                    [0.02, 0.03, 1.03],
+                ]},
+                "gyroscopes": {
+                    "M": [[0.99, 0.0, 0.0],
+                          [0.01, 0.98, 0.0],
+                          [0.02, 0.03, 0.97]],
+                    "C_gyro_i": [row[:3] for row in IDENTITY[:3]],
+                    "A": [[0.0, 0.0, 0.0],
+                          [0.0, 0.0, 0.0],
+                          [0.0, 0.0, 0.0]],
+                },
+            })
+            if model == "scale-misalignment-size-effect":
+                imu["accelerometers"].update({
+                    "rx_i": [0.0, 0.0, 0.0],
+                    "ry_i": [0.01, 0.02, 0.03],
+                    "rz_i": [-0.01, -0.02, -0.03],
+                })
         return self.result(
-            "camera_imu", "camera_imu", cameras,
-            imus=[{"id": "imu0", "update_rate": 100.0}],
+            name, "camera_imu", cameras,
+            imus=[imu],
             metrics=metric_value if metrics else None)
 
     def reused(self, stage, document):
@@ -178,10 +203,12 @@ class MachineCalibParamsTest(unittest.TestCase):
         vision = artifacts["vision"]["document"]
         self.assertEqual(list(vision), [
             "machine_version", "machine_num", "time", "algorithm_version",
+            "calibration_behavior_version",
             "calib_file_version", "stereo_imu_calibrated",
             "stereo_baselink_calibrated", "imu", "camera", "odom", "lidar",
         ])
-        self.assertEqual(vision["algorithm_version"], "1.0.0")
+        self.assertEqual(vision["algorithm_version"], "1.1.0")
+        self.assertEqual(vision["calibration_behavior_version"], "1.0.0")
         self.assertEqual(vision["calib_file_version"], "1.0.0")
         self.assertNotIn("calib_version", vision)
         self.assertNotIn("T_BS", vision["imu"])
@@ -232,6 +259,7 @@ class MachineCalibParamsTest(unittest.TestCase):
         mono = artifacts["mono"]["document"]
         self.assertEqual(list(mono), [
             "machine_version", "machine_num", "time", "algorithm_version",
+            "calibration_behavior_version",
             "calib_file_version", "mono_baselink_calibrated", "camera",
         ])
         self.assertFalse(mono["mono_baselink_calibrated"])
@@ -307,6 +335,43 @@ class MachineCalibParamsTest(unittest.TestCase):
             vision["camera"]["cam0_cam1_correct"]["alignment"], 0.31)
         self.assertEqual(artifacts["vision"]["defaulted_fields"], [])
         self.assertIn("camera_imu_metrics", artifacts["vision"]["sources"])
+
+    def test_all_imu_models_reach_machine_summary_and_reuse(self):
+        stereo = self.stereo()
+        for model in (
+                "calibrated", "scale-misalignment",
+                "scale-misalignment-size-effect"):
+            with self.subTest(model=model):
+                artifact = build_calib_params(
+                    self.machine, PROFILE, {
+                        "camera": stereo,
+                        "camera_imu": self.camera_imu(
+                            model=model, name="camera_imu_" + model),
+                    }, "2026-10-11-20:01:02")["vision"]
+                imu = artifact["document"]["imu"]
+                self.assertEqual(imu["model"], model)
+                if model == "calibrated":
+                    self.assertNotIn("M_accel", imu)
+                else:
+                    self.assertEqual(
+                        imu["acc_scale"], PROFILE_DEFAULTS["imu"]["acc_scale"])
+                    self.assertEqual(
+                        imu["gyro_scale"], PROFILE_DEFAULTS["imu"]["gyro_scale"])
+                    for field in (
+                            "M_accel", "M_gyro", "C_gyro_i",
+                            "A_gyro_accel"):
+                        self.assertIn(field, imu)
+                if model == "scale-misalignment-size-effect":
+                    for field in ("rx_i_m", "ry_i_m", "rz_i_m"):
+                        self.assertIn(field, imu)
+
+                reused = self.reused("camera_imu", artifact["document"])
+                rebuilt = build_calib_params(
+                    self.machine, PROFILE, {}, "2026-10-12-20:01:02",
+                    reused={"camera": self.reused(
+                        "camera", artifact["document"]),
+                            "camera_imu": reused})["vision"]["document"]
+                self.assertEqual(rebuilt["imu"], imu)
 
     def test_rectification_matrices_use_saved_evaluation_options(self):
         delivery = self.stereo()
@@ -401,7 +466,7 @@ class MachineCalibParamsTest(unittest.TestCase):
         before = Path(written["path"]).read_bytes()
         replacement = dict(artifact, document={"value": 2})
         with mock.patch(
-                "kalibr_no_ros.machine_calib_params.load_yaml",
+                "kalibr_no_ros.machine.calib_params.load_yaml",
                 return_value={"value": "changed"}):
             with self.assertRaisesRegex(TaskError, "read-back"):
                 write_calib_param(self.output, replacement)
@@ -424,7 +489,7 @@ class MachineCalibParamsTest(unittest.TestCase):
                 ("mono_camera_baselink", "mono"))
         }
         with mock.patch(
-                "kalibr_no_ros.machine_calib_params._metrics",
+                "kalibr_no_ros.machine.calib_params._metrics",
                 side_effect=AssertionError("reused sources have no metrics")):
             restored = build_calib_params(
                 self.machine, PROFILE, {}, "2026-10-10-19:58:00", reused=reused)
@@ -432,6 +497,25 @@ class MachineCalibParamsTest(unittest.TestCase):
             self.assertEqual(restored[name]["document"], original[name]["document"])
             self.assertEqual(restored[name]["defaulted_fields"], [])
         self.assertNotIn("camera_imu_metrics", restored["vision"]["sources"])
+
+    def test_legacy_reuse_state_without_intrinsic_fields_uses_profile_scales(self):
+        original = build_calib_params(
+            self.machine, PROFILE, {
+                "camera": self.stereo(), "camera_imu": self.camera_imu(),
+            }, "2026-10-10-19:58:00")["vision"]["document"]
+        camera = self.reused("camera", original)
+        camera_imu = self.reused("camera_imu", original)
+        camera_imu["parameters"]["imu"] = {
+            key: camera_imu["parameters"]["imu"][key]
+            for key in ("imu_data_rate", "gyro_bias", "acc_bias")
+        }
+        restored = build_calib_params(
+            self.machine, PROFILE, {}, "2026-10-11-19:58:00",
+            reused={"camera": camera, "camera_imu": camera_imu},
+        )["vision"]["document"]["imu"]
+        self.assertNotIn("model", restored)
+        self.assertEqual(restored["gyro_scale"], PROFILE_DEFAULTS["imu"]["gyro_scale"])
+        self.assertEqual(restored["acc_scale"], PROFILE_DEFAULTS["imu"]["acc_scale"])
 
     def test_local_imu_uses_reused_camera_and_preserves_reused_baselink(self):
         original = build_calib_params(
