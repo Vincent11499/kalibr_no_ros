@@ -1,27 +1,28 @@
 # 输入、算法求解、输出：代码位置与手动修改指南
 
-本文对应当前 v1.0.0 源码，重点说明输入、输出应在哪里修改，以及怎样让修改生效。
+本文对应当前 v1.1.0 源码，重点说明输入、输出应在哪里修改，以及怎样让修改生效。
 完整参数定义见[任务参数](TASK_PARAMETERS_ZH.md)，使用方法见
 [使用指南](USER_GUIDE_ZH.md)，算法原理见[源码导读](SOURCE_CODE_DEEP_DIVE_ZH.md)。
 
 ## 1. 先看三个部分在哪里
 
-当前是**按职责分层**，没有物理拆成 `input/`、`solver/`、`output/` 三个目录。
-输入与输出主要在同一个 Python 包中，`task.py` 负责跨层调度。
+应用层按 `task/`、`native_bridge/`、`results/`、`conversion/`、`machine/` 组织。
+`task/runner.py` 编排单任务生命周期，`task/solver_adapter.py` 负责原生参数、调用与结果适配。
 
-`src/python` 下三个正式包的边界如下：
+`src/python` 下四个正式包的边界如下：
 
 | 包 | 职能边界 |
 |---|---|
 | `kalibr_no_ros` | 面向用户的应用层：CLI、task/schema、输入校验、初始化适配、调用原生求解器、收集最终观测，以及结果 YAML、指标、可视化、HTML/PDF 和受管交付 |
 | `kalibr_bag_io` | 数据访问层：在无 ROS 运行环境中识别和读取 ROS1/ROS2 bag 或目录数据集，解码图像、保留整数纳秒时间戳、按 `dataset.yaml` 将传感器 ID 映射到流；不负责标定数学和报告 |
 | `kalibr_runtime` | 执行支持层：detector/optimizer 线程预算、阶段计时与 profile 内存采样；不定义输入 schema、标定残差或输出格式 |
+| `kalibr_tools` | 安装后可用的诊断与实验工作流，包括固定双目验证、RS 诊断和老化／振动验证 |
 
 | 部分 | 主要源码位置 | 职责 |
 |---|---|---|
 | 输入 | [kalibr_no_ros](../src/python/kalibr_no_ros/)、[kalibr_bag_io](../src/python/kalibr_bag_io/) | 任务与辅助 YAML、初始化、数据校验、目录/bag 读取、传入原生入口的参数 |
 | 算法求解 | [src/kalibr](../src/kalibr/)、[src/camera_models](../src/camera_models/) | 角点检测、初始化、残差、参数优化、异常点处理及相机模型 |
-| 输出 | [kalibr_no_ros](../src/python/kalibr_no_ros/) 中的 `artifacts.py`、`evaluation.py`、`reporting.py`、`report_plots.py`、`delivery.py` | 收集观测、计算指标与判定、生成图像和报告、交付命名文件 |
+| 输出 | [kalibr_no_ros](../src/python/kalibr_no_ros/) 中的 `native_bridge/evidence.py`、`results/evaluation.py`、`results/reporting.py`、`results/plots.py`、`results/delivery.py` | 收集观测、计算指标与判定、生成图像和报告、交付命名文件 |
 | 执行支持 | [kalibr_runtime](../src/python/kalibr_runtime/) | 检测/优化执行预算、可选计时与内存诊断 |
 
 **如果只改输入格式、结果字段或报告排版，一般不需要修改优化器。**
@@ -34,42 +35,42 @@
 | 想修改什么 | 首先看哪里 | 还需关注 |
 |---|---|---|
 | 数据路径、相机 ID、模型、板参数、初值 | `config/` 内对应 YAML | 配置值修改通常不需要改源码 |
-| task 支持的新字段或合法范围 | `task.py`、`validation.py` | 是否实际传入原生入口；不能只放行字段 |
+| task 支持的新字段或合法范围 | `task/solver_adapter.py`、`task/validation.py` | 是否实际传入原生入口；不能只放行字段 |
 | 目录 manifest、CSV、图像路径格式 | `kalibr_bag_io/directory.py` | 采集端格式、时间戳、ID 映射及读取测试 |
-| 图像频率筛选 | `datasets.py`、目录/bag reader 的 `_decimate()` | 改变参与标定的数据；不是报告图片采样 |
-| 初值字段及相机间变换 | `initialization.py` | `task.py` 的内部格式适配、坐标方向测试 |
-| 最终结果文件名 | `delivery.py::result_name()` | `output.name` 已可直接配置 |
-| 结果 YAML 的 `rms`、`alignment` | `delivery.py::enrich_result()` | 指标来源在 `evaluation.py`；结果读取在 `validation.py` |
-| YAML 数字精度、数组/矩阵排版 | `task.py::dump_yaml()` 及其 dumper | 序列化往返，不能只比较文本外观 |
-| 指标计算公式或合格判定 | `evaluation.py` | 缺失证据不得作为零值或通过 |
-| 独立测试集固定 K/D/T 验证 | `fixed_camera_validation.py` | CLI 在 `cli.py`；复用 `evaluation.py` 的校正与参考评级 |
-| 角点图、去畸变/极线校正图、绿色线宽 | `reporting.py::create_images()` | 几何计算在 `evaluation.py` |
-| HTML 样式、PDF 排版、报告选哪 5 组图 | `report_plots.py` | HTML/PDF 共用选图，不能分别随机抽取 |
-| 输出开关、哪些文件交给用户 | `evaluation.py::validate_output_options()`、`delivery.py::_destinations()` | 生成文件与保留文件是两个步骤 |
+| 图像频率筛选 | `native_bridge/datasets.py`、目录/bag reader 的 `_decimate()` | 改变参与标定的数据；不是报告图片采样 |
+| 初值字段及相机间变换 | `task/initialization.py` | `task/solver_adapter.py` 的内部格式适配、坐标方向测试 |
+| 最终结果文件名 | `results/delivery.py::result_name()` | `output.name` 已可直接配置 |
+| 结果 YAML 的 `rms`、`alignment` | `results/delivery.py::enrich_result()` | 指标来源在 `results/evaluation.py`；结果读取在 `task/validation.py` |
+| YAML 数字精度、数组/矩阵排版 | `task/document.py::dump_yaml()` 及其 dumper | 序列化往返，不能只比较文本外观 |
+| 指标计算公式或合格判定 | `results/evaluation.py` | 缺失证据不得作为零值或通过 |
+| 独立测试集固定 K/D/T 验证 | [fixed_stereo_validation.py](../src/python/kalibr_tools/fixed_stereo_validation.py) | CLI 在 `kalibr_tools/cli.py`；复用 `results/evaluation.py` 的校正与参考评级 |
+| 角点图、去畸变/极线校正图、绿色线宽 | `results/reporting.py::create_images()` | 几何计算在 `results/evaluation.py` |
+| HTML 样式、PDF 排版、报告选哪 5 组图 | `results/plots.py` | HTML/PDF 共用选图，不能分别随机抽取 |
+| 输出开关、哪些文件交给用户 | `results/evaluation.py::validate_output_options()`、`results/delivery.py::_destinations()` | 生成文件与保留文件是两个步骤 |
 
 ## 2. 实际调用关系
 
 ```mermaid
 flowchart TD
-    A[cli.main] --> B[task.run_task]
-    B --> C[delivery.run_delivery]
-    C --> D[task._run_task_staged]
+    A[cli.main] --> B[task.runner.run_task]
+    B --> C[task.runner.run_delivery]
+    C --> D[task.runner._run_task_staged]
     D --> E[输入校验 / 初始化解析 / 原生参数适配]
     E --> F[原生标定入口]
     G[目录或 bag reader] --> F
-    F --> H[artifacts 观测与求解结果快照]
-    F --> I[task._collect_outputs 参数结果转换]
+    F --> H[native_bridge.evidence 观测与求解结果快照]
+    F --> I[task.solver_adapter._collect_outputs 参数结果转换]
     H --> J[apply_camera_ids 恢复公开相机 ID]
     I --> J
     J --> K[reporting.generate_report]
     K --> L[evaluation 指标与判定]
-    K --> M[图像生成 / report_plots HTML 与 PDF]
+    K --> M[图像生成 / results.plots HTML 与 PDF]
     L --> N[enrich_result / dump_yaml]
     M --> O[delivery.publish]
     N --> O
     P[已有结果 YAML 与观测归档] --> Q[reporting.evaluate_run]
     Q --> K
-    R[已有结果 YAML 与独立测试集] --> S[fixed_camera_validation.verify_fixed_cameras]
+    R[已有结果 YAML 与独立测试集] --> S[kalibr_tools.fixed_stereo_validation.verify_fixed_cameras]
     S --> T[固定参数验证 JSON 与中文汇总]
 ```
 
@@ -87,11 +88,11 @@ flowchart TD
 | 文件 | 关键入口 | 修改范围 |
 |---|---|---|
 | [cli.py](../src/python/kalibr_no_ros/cli.py) | `build_parser()`、`main()`、`_runtime_overrides()` | CLI 子命令、参数、命令行覆盖值 |
-| [task.py](../src/python/kalibr_no_ros/task.py) | `load_task()`、`resolve_task_path()` | task 顶层结构、版本、相对路径解析 |
-| [validation.py](../src/python/kalibr_no_ros/validation.py) | `validate_options()`、`validate_task()`、`load_target()`、`load_imu()`、`load_cameras()` | 字段白名单、类型、范围、板/IMU/相机结果校验 |
-| [task.py](../src/python/kalibr_no_ros/task.py) | `_camera_arguments()`、`_imu_arguments()`、`_append_common_dataset()`、`_append_corner_refinement()` | 将公开 task 转成原生命令参数 |
-| [task.py](../src/python/kalibr_no_ros/task.py) | `resolve_execution()` | YAML 与 CLI 执行预算合并 |
-| [配置示例](../config/examples/v1.0.0/README_ZH.md) | 根目录、`all_params/` | 给用户复制的模板，不是程序默认值的实现 |
+| [task/document.py](../src/python/kalibr_no_ros/task/document.py) | `load_yaml()`、`dump_yaml()`、`require_document_version()`、`resolve_task_path()` | YAML、版本和 task 相对路径基础操作 |
+| [task/validation.py](../src/python/kalibr_no_ros/task/validation.py) | `load_task()`、`validate_options()`、`validate_task()`、`load_target()`、`load_imu()`、`load_cameras()` | task 顶层结构、字段白名单、类型、范围、板/IMU/相机结果校验 |
+| [task/solver_adapter.py](../src/python/kalibr_no_ros/task/solver_adapter.py) | `_camera_arguments()`、`_imu_arguments()`、`_append_common_dataset()`、`_append_corner_refinement()` | 将公开 task 转成原生命令参数 |
+| [task/execution.py](../src/python/kalibr_no_ros/task/execution.py) | `resolve_execution()` | YAML 与 CLI 执行预算合并 |
+| [配置示例](../config/examples/v1.1.0/README_ZH.md) | 根目录、`all_params/` | 给用户复制的模板，不是程序默认值的实现 |
 
 路径规则：task 中的数据、标定板、IMU、初始化、相机结果相对路径以 **task YAML 所在目录**
 为基准；目录 manifest 中的流路径以 **数据集根目录**为基准。不要改成依赖启动命令的工作目录。
@@ -106,7 +107,7 @@ calibration:
 
 这不需要编译，但需要重新检测/标定才会体现在结果中。修改 `all_params/` 中的值只改变
 示例；字段省略时，程序仍保留原生默认窗口 2、最大位移 `sqrt(1.5)`。
-输出选项的省略值集中在 `evaluation.py::validate_output_options()`；算法参数的省略值
+输出选项的省略值集中在 `results/evaluation.py::validate_output_options()`；算法参数的省略值
 还可能来自原生入口或 C++，不能只改某一份示例就认为全局默认值已经改变。
 
 ### 3.2 目录、bag 与传感器 ID
@@ -118,7 +119,7 @@ calibration:
 | 同上 | `IndexedDirectoryImageDataset`、`_read_csv()`、`_parse_timestamp()`、`read_imu()` | 图像索引、CSV 字段、整数纳秒时间戳、IMU 数据 |
 | 同上 | `_crop()`、`_decimate()`、`_decode_image()` | 时间裁剪、频率筛选、文件图像解码 |
 | [reader.py](../src/python/kalibr_bag_io/reader.py)、[image_codec.py](../src/python/kalibr_bag_io/image_codec.py) | bag reader 与图像解码实现 | bag 消息索引、读取与图像编码适配 |
-| [datasets.py](../src/python/kalibr_no_ros/datasets.py) | `BagImageDatasetReader`、`BagImuDatasetReader` | 向原生 Kalibr 提供兼容读取接口，同时支持目录与 bag |
+| [native_bridge/datasets.py](../src/python/kalibr_no_ros/native_bridge/datasets.py) | `BagImageDatasetReader`、`BagImuDatasetReader` | 向原生 Kalibr 提供兼容读取接口，同时支持目录与 bag |
 
 目录数据的对应关系是：
 
@@ -146,10 +147,12 @@ Kalibr 目录读取与校验不依赖 `meta/*`。采集工程对 `meta/` 的追�
 
 | 文件 | 关键入口 | 职责 |
 |---|---|---|
-| [initialization.py](../src/python/kalibr_no_ros/initialization.py) | `validate_initialization()`、`_validate_camera_document()`、`canonical_initialization()` | 初值维数、变换矩阵、相机顺序、内部标准化 |
-| [task.py](../src/python/kalibr_no_ros/task.py) | `resolve_initialization()`、`_write_initialization_config()`、`_legacy_camchain()` | 初值文件解析、原生初始化与 camchain 适配 |
-| [delivery.py](../src/python/kalibr_no_ros/delivery.py) | `discover_camera_result()`、`apply_camera_ids()` | Camera–IMU 自动查找结果；将原生 `camN` 映射回公开 ID |
-| [conversion.py](../src/python/kalibr_no_ros/conversion.py) | 相机结果/camchain 转换函数 | 项目结果与外部格式互操作 |
+| [task/initialization.py](../src/python/kalibr_no_ros/task/initialization.py) | `validate_initialization()`、`_validate_camera_document()`、`canonical_initialization()` | 初值维数、变换矩阵、相机顺序、内部标准化 |
+| [task/initialization.py](../src/python/kalibr_no_ros/task/initialization.py) | `resolve_initialization()`、`_write_initialization_config()` | 初值文件解析与原生初始化配置适配 |
+| [task/solver_adapter.py](../src/python/kalibr_no_ros/task/solver_adapter.py) | `_legacy_camchain()` | 相机结果转换成原生 camchain |
+| [task/runner.py](../src/python/kalibr_no_ros/task/runner.py) | `discover_camera_result()` | Camera–IMU 自动查找唯一匹配的相机结果 |
+| [results/delivery.py](../src/python/kalibr_no_ros/results/delivery.py) | `apply_camera_ids()` | 将原生 `camN` 映射回公开 ID |
+| [conversion/camera.py](../src/python/kalibr_no_ros/conversion/camera.py) | 相机结果/camchain 转换函数 | 项目结果与外部格式互操作 |
 
 当前初值写在 `cameras.<id>.T_cn_cnm1` 中；它将 **task 列表前一台相机**坐标变到当前相机，
 不是按 ID 字符串排序。例如 task 顺序为 `[cam2, cam0, cam5]`，则 `cam0` 下的矩阵将
@@ -185,18 +188,19 @@ Camera–IMU 没给 `camera_calibration.path` 时，在输出目录找到唯一�
 
 | 文件 | 关键入口 | 负责什么 |
 |---|---|---|
-| [artifacts.py](../src/python/kalibr_no_ros/artifacts.py) | `run_context()`、`RunContext.record_detection()`、`publish_camera()`、`publish_imu_camera()` | 从原生执行收集帧、角点、最终残差、位姿、是否使用及筛选事件；是求解到输出的桥梁 |
-| [evaluation.py](../src/python/kalibr_no_ros/evaluation.py) | `compute_metrics()`、`assess_metrics()`、`distribution()` | 重投影、对齐误差、统计量及规则判定，不回馈求解 |
+| [native_bridge/evidence.py](../src/python/kalibr_no_ros/native_bridge/evidence.py) | `run_context()`、`RunContext.record_detection()`、`publish_camera()`、`publish_imu_camera()` | 从原生执行收集帧、角点、最终残差、位姿、是否使用及筛选事件；是求解到输出的桥梁 |
+| [results/evaluation.py](../src/python/kalibr_no_ros/results/evaluation.py) | `compute_metrics()`、`assess_metrics()`、`distribution()` | 重投影、对齐误差、统计量及规则判定，不回馈求解 |
 | 同上 | `stereo_geometry()`、`rectified_points()`、`rectification_maps()` | 双目校正几何、角点变换及图像映射 |
-| [reporting.py](../src/python/kalibr_no_ros/reporting.py) | `write_archive()`、`load_archive()` | 观测 CSV/压缩文件与清单的序列化和读取 |
+| [results/reporting.py](../src/python/kalibr_no_ros/results/reporting.py) | `write_archive()`、`load_archive()` | 观测 CSV/压缩文件与清单的序列化和读取 |
 | 同上 | `create_images()`、`export_opencv()` | `camX_det` 角点图、`camX_dist` 独立去畸变图、双目对齐图、报告内嵌原图及 OpenCV 导出 |
 | 同上 | `generate_report()`、`evaluate_run()` | 标定后输出编排、已有证据的离线评价 |
-| [report_plots.py](../src/python/kalibr_no_ros/report_plots.py) | `report_figures()`、`render_reports()` | Camera system、Estimated poses、Polar/Azimuthal error、Reprojection errors 等图表及 HTML/PDF |
+| [results/plots.py](../src/python/kalibr_no_ros/results/plots.py) | `report_figures()`、`render_reports()` | Camera system、Estimated poses、Polar/Azimuthal error、Reprojection errors 等图表及 HTML/PDF |
 | 同上 | `_STYLE`、`_summary_sections()`、`_pdf_table_page()`、`stereo_comparison_page()` | HTML 样式、摘要表格、PDF 表格与上下双目图排版 |
-| [delivery.py](../src/python/kalibr_no_ros/delivery.py) | `result_name()`、`enrich_result()`、`_destinations()`、`publish()` | 结果命名、质量字段、文件筛选与最终发布 |
-| [task.py](../src/python/kalibr_no_ros/task.py) | `_collect_outputs()`、`_native_cameras_to_result()`、`dump_yaml()` | 原生结果转项目结果、稳定 YAML 序列化；当前 schema 为 `"1.0.0"` |
+| [results/delivery.py](../src/python/kalibr_no_ros/results/delivery.py) | `result_name()`、`enrich_result()`、`_destinations()`、`publish()` | 结果命名、质量字段、文件筛选与最终发布 |
+| [task/solver_adapter.py](../src/python/kalibr_no_ros/task/solver_adapter.py) | `_collect_outputs()`、`_native_cameras_to_result()` | 原生结果转项目结果 |
+| [task/document.py](../src/python/kalibr_no_ros/task/document.py) | `dump_yaml()` | 稳定 YAML 序列化；当前规范 schema 为 `"1.0.0"` |
 
-扩展报告所需的中间量时，先检查 `artifacts.py` 是否已收集；已存在的量直接用于输出。
+扩展报告所需的中间量时，先检查 `native_bridge/evidence.py` 是否已收集；已存在的量直接用于输出。
 确实缺少时，在对应原生阶段增加只读采集，并同时更新归档写入、读取和测试。
 不要为了绘图重新检测一次角点，否则无法证明绘出的就是最终参与优化的观测。
 
@@ -211,7 +215,7 @@ output:
 
 | 最终产物 | 控制位置/配置 |
 |---|---|
-| `<name>.yaml`、`<name>.report.html`、`<name>.report.pdf` | `delivery.py::_destinations()` 中的主文件映射 |
+| `<name>.yaml`、`<name>.report.html`、`<name>.report.pdf` | `results/delivery.py::_destinations()` 中的主文件映射 |
 | `<name>.results.txt` | `output.export_text` |
 | `<name>/metrics.json` | `output.save_metrics` |
 | `<name>/observations/` | `output.archive_observations`，历史另由 `archive_selection_history` 控制 |
@@ -221,7 +225,7 @@ output:
 | `<name>/timing.json` | profile 构建且显式请求计时，与普通报告开关分开 |
 
 源码中仍能搜到 `calibration.yaml`、`report.pdf`：它们是内部临时工作区文件名，
-最终交付由 `delivery.py` 重命名。不要把所有字符串全局替换成某个模型专用名称。
+最终交付由 `results/delivery.py` 重命名。不要把所有字符串全局替换成某个模型专用名称。
 
 `save_diagnostics: false` 控制交付内容，不表示跳过输入校验或必要的可观性检查。
 可选证据目录的 `.inventory.json` 用于受管文件检查；更改清理逻辑时必须保护同目录其他任务
@@ -237,12 +241,12 @@ K/D/T 的 `alignment` 不是同一指标。
 
 如果只想修改展示名称或小数位，优先修改报告层。若要改变结果 YAML 的字段，需要：
 
-1. 修改 `delivery.py::enrich_result()` 或 `task.py` 的结果转换处。
-2. 在 `validation.py::load_cameras()` 等结果读取处更新允许字段及类型，保证 Camera–IMU 可读取。
-3. 检查 `task.py::_legacy_camchain()` 与 `conversion.py` 的转换，避免把质量字段误传成原生参数。
+1. 修改 `results/delivery.py::enrich_result()` 或 `task/solver_adapter.py` 的结果转换处。
+2. 在 `task/validation.py::load_cameras()` 等结果读取处更新允许字段及类型，保证 Camera–IMU 可读取。
+3. 检查 `task/solver_adapter.py::_legacy_camchain()` 与 `conversion/camera.py` 的转换，避免把质量字段误传成原生参数。
 4. 用 `test_delivery.py`、`test_v1_contract.py`、`test_conversion_v1.py` 验证读写与下游兼容。
 
-如果要改变指标算法，修改 `evaluation.py`，不要在 HTML 或 PDF 内各计算一套。
+如果要改变指标算法，修改 `results/evaluation.py`，不要在 HTML 或 PDF 内各计算一套。
 当前重投影 RMS 按二维角点距离计算：`sqrt(mean(dx² + dy²))`，并非将 x/y 当成两倍样本数。
 规则阈值通常直接写 `output.assessment.rules`；只有新增判定机制才需要改 `assess_metrics()`。
 参考评级用于展示，`rules: []` 不代表生产验收通过。
@@ -260,13 +264,13 @@ create_images(): 生成 <pair>/alignment_XXXX；最多 5 组原图只在内存�
 
 | 想改的效果 | 修改处 |
 |---|---|
-| 网页宽度、留白、字体、卡片布局 | `report_plots.py::_STYLE` |
+| 网页宽度、留白、字体、卡片布局 | `results/plots.py::_STYLE` |
 | 摘要字段与表格列 | `_summary_sections()`；PDF 分页还看 `_pdf_table_page()` |
 | PDF 上下图大小、间距、页标题 | `stereo_comparison_page()` |
 | 报告从 5 组改为其他数量 | `render_reports()` 中共享的 `min(5, len(candidates))`，同时维护说明文字与测试 |
 | 更换随机策略 | 同一函数中的 `random.Random(0)`；保留抽取后排序及 HTML/PDF 共用集合 |
-| 极线颜色、厚度 | `reporting.py::create_images()` 内 `cv2.line()`；当前 BGR `(0, 255, 0)`、厚度 3 校正图像像素 |
-| 校正视场和分辨率 | 先用 `output.rectification`；几何实现才改 `evaluation.py` |
+| 极线颜色、厚度 | `results/reporting.py::create_images()` 内 `cv2.line()`；当前 BGR `(0, 255, 0)`、厚度 3 校正图像像素 |
+| 校正视场和分辨率 | 先用 `output.rectification`；几何实现才改 `results/evaluation.py` |
 
 `max_pairs` 控制生成图对上限，`max_frames_per_camera` 控制每目可视化上限；
 它们不是报告固定展示 5 组的开关，也不会改变求解所用图像。
@@ -275,13 +279,13 @@ create_images(): 生成 <pair>/alignment_XXXX；最多 5 组原图只在内存�
 
 HTML/PDF 都内嵌所选双目原图；对齐图仍引用 `<pair>/alignment_XXXX`，转交 HTML 时应
 保留对应可视化目录。PDF 内嵌原图和对齐图，可单独转交；高分辨率图像会使文件变大。
-当前公开报告应改 `report_plots.py`，而非只改原生 `CameraUtils.py` 中旧报告函数。
+当前公开报告应改 `results/plots.py`，而非只改原生 `CameraUtils.py` 中旧报告函数。
 
 ### 5.5 示例：新增输出开关或文件
 
-1. 在 `evaluation.py::validate_output_options()` 添加字段、默认值、类型和范围校验。
-2. 在 `reporting.py` 相应步骤读取开关，生成文件；纯排版留在 `report_plots.py`。
-3. 若是新的文件类别，在 `delivery.py::_destinations()` 明确交付规则。
+1. 在 `results/evaluation.py::validate_output_options()` 添加字段、默认值、类型和范围校验。
+2. 在 `results/reporting.py` 相应步骤读取开关，生成文件；纯排版留在 `results/plots.py`。
+3. 若是新的文件类别，在 `results/delivery.py::_destinations()` 明确交付规则。
 4. 若离线评价需要新证据，同时更新 `write_archive()`、`load_archive()` 和 `evaluate_run()` 的复制范围。
 5. 更新配置示例、参数说明，并验证开关关闭不交付、开启可读取、多任务共用目录互不覆盖。
 
@@ -381,10 +385,10 @@ install/project-profile/bin/kalibr-noros evaluate \
 
 | 现象 | 检查位置 |
 |---|---|
-| YAML 新字段报 unknown field | `task.py`、`validation.py` 或 `validate_output_options()` 白名单 |
-| YAML 接受了，但求解行为没变 | `task.py` 参数适配、原生入口和实际消费处是否贯通 |
+| YAML 新字段报 unknown field | `task/validation.py` 或 `validate_output_options()` 白名单 |
+| YAML 接受了，但求解行为没变 | `task/solver_adapter.py` 参数适配、原生入口和实际消费处是否贯通 |
 | 源码改了，安装命令还是旧效果 | 是否重新 configure、install；实际执行的是哪一个 preset 的入口 |
-| 文件生成过，最终输出里没有 | `delivery.py::_destinations()` 与相应开关 |
+| 文件生成过，最终输出里没有 | `results/delivery.py::_destinations()` 与相应开关 |
 | HTML 有新效果，PDF 没变 | HTML CSS 不控制 PDF；检查 `stereo_comparison_page()` 等 Matplotlib 布局 |
 | 报告缺少双目对比图 | `visualizations.enabled`、可用共视角点、原图路径、配对是否足够 |
 | Camera–IMU 提示相机结果不唯一 | 同目录存在多份模型结果；显式配置 `camera_calibration.path` |

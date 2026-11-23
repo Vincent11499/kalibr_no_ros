@@ -183,7 +183,7 @@ IMU CSV 表头为 `timestamp_ns,wx,wy,wz,ax,ay,az`，角速度单位 `rad/s`，�
 ## 3. `user.yaml` 是开发者接口
 
 `user.yaml` 由开发者或工位维护人员生成并随机器交付，不要求产线操作员填写。可从
-[`config/examples/v1.0.0/machine_calibration_workflow.yaml`](../config/examples/v1.0.0/machine_calibration_workflow.yaml)
+[`config/examples/v1.1.0/machine_calibration_workflow.yaml`](../config/examples/v1.1.0/machine_calibration_workflow.yaml)
 复制最小配置：
 
 ```yaml
@@ -197,6 +197,11 @@ stereo_imu:
   mode: standard
   recompute_extrinsics: false
 ```
+
+`stereo_imu.mode` 只选择普通或 rolling-shutter Camera–IMU 求解器，不限制 IMU
+内参模型。实际模型由对应的 `stereo_imu_calibration_task.yaml` 或
+`stereo_imu_rs_calibration_task.yaml` 中 `imus[0].model` 指定；两个模板都接受
+`calibrated`、`scale-misalignment` 和 `scale-misalignment-size-effect`。
 
 不同任务使用不同标定板时，按任务覆盖：
 
@@ -275,13 +280,29 @@ AprilGrid，也可由 `targets` 分别覆盖。
 行延时或 BaseLink pitch 等摘要。终端不重复打印结果、HTML、PDF 的完整路径；完整原生
 求解输出仍保存在对应任务目录的 `stdout.log`，正式文件位置遵循本文第 5 节目录约定。
 
-新数据集首次校验会重新解析 manifest、CSV 和 IMU，检查传感器组成及全部引用路径，
-但图像只读取文件元数据，不读取像素内容。快照包含相对路径、大小、`mtime_ns`、
-`ctime_ns`、inode 和 device，保存于
-`result/.kalibr-cedarobot/input_hash_cache.json`。后续元数据完全一致时直接复用；发现
-变化时才计算内容 SHA-256，原有旧版内容哈希记录在缓存缺失时也会完整复核以保持兼容。
-缓存损坏会按已有 workflow state 选择元数据重建或内容复核，缓存符号链接直接拒绝。
-求解结束后再次比较快照；运行期间发生变化时计算内容指纹并拒绝发布该次结果。
+每次数据集校验都会重新解析 manifest 和相机时间戳 CSV，检查传感器组成、时间戳顺序、
+引用路径及图像清单。`dataset.yaml`、各相机时间戳 CSV 和 IMU CSV 按内容计算精确
+SHA-256；图像只记录相机 ID、CSV 顺序、时间戳、相对文件名和文件大小，不读取像素
+内容。因此单纯查看图片或执行 `touch` 不会触发重标定，atime/mtime、ctime、inode 和
+device 也不参与数据身份；图像被增加、删除、改名、改变顺序、时间戳或大小时则视为
+数据集变化。缓存位于 `result/.kalibr-cedarobot/input_hash_cache.json`。
+
+求解器先写私有 staging。staging 完成后、任何正式结果目录移动或替换前，普通任务与
+Camera–BaseLink 都重新计算上述结构文件哈希和图像清单。若结构文件或清单在运行期间
+变化，本阶段记为失败，本次 staging 不发布，旧成功结果仍按原清单校验并保留；仅图像
+时间属性变化则允许发布。新缓存只有在复核通过、发布完成且正式交付完整性验证成功后才
+绑定为可信记录。
+
+旧缓存升级时，若旧记录保存了与既有成功结果绑定的结构文件内容 SHA-256，可在核对
+图像路径与大小后直接迁移，图像无需补算哈希。若旧缓存只有路径、大小和时间属性，则
+无法证明历史 `dataset.yaml`/CSV 内容，受影响阶段会自动重跑一次并建立新记录；失败时
+不会把候选记录提升为可信缓存。缓存损坏或缺失会结合 workflow state 和既有正式交付
+保守重建，缓存符号链接直接拒绝。
+
+纯复用、图片时间属性变化或复核失败只会更新
+`result/.kalibr-cedarobot/` 中的状态、锁和缓存，不改原始数据，也不改既有正式结果、
+报告或 `calib_params`。只有受影响阶段确实重新求解、复核和发布均成功后，才原子替换
+该阶段正式交付，并按现有汇总规则更新 `calib_params`。
 
 ### 3.1 启用 Camera–BaseLink
 
@@ -305,7 +326,7 @@ stereo_baselink:
 上述配置用于双目模组，固定从本工单双目结果读取 K/D，只求配置中各目的 `R_base_camera`。
 采用全部有效无序帧对的直接差分，不提供 `alpha` 参数；写出前固定左乘绕 X 轴 180°
 的旋转矩阵，配置平移不变。完整注释示例见
-[`machine_calibration_workflow_full.yaml`](../config/examples/v1.0.0/all_params/machine_calibration_workflow_full.yaml)。
+[`machine_calibration_workflow_full.yaml`](../config/examples/v1.1.0/all_params/machine_calibration_workflow_full.yaml)。
 此前 USB 的 11×8、`square_size=0.05 m` 棋盘格数据不能直接套用当前 AprilGrid 机器
 profile；单目 USB 仍使用独立的 `cameras`、`cameras-baselink` task。
 
@@ -489,7 +510,9 @@ BaseLink YAML 每目含固定 K/D、修正后的 `T_base_camera`、`rotation_lef
 文件首部为 `machine_version`、字符串 `machine_num`、`time`、`algorithm_version` 和
 `calib_file_version`，紧随其后是对应下游阶段的 `*_calibrated` 布尔状态。
 `machine_version`/`machine_num` 从批次父目录名称拆分；
-`EVT312-02` 得到 `EVT312` 和 `"02"`。两个版本字段当前均为 `"1.0.0"`。`time` 是
+`EVT312-02` 得到 `EVT312` 和 `"02"`。`algorithm_version` 是软件版本 `"1.1.0"`，
+`calib_file_version` 是独立的机器汇总 schema `"1.0.0"`；另有
+`calibration_behavior_version: "1.0.0"` 表示可复用的标定语义。`time` 是
 文件最后一次成功组装的 Asia/Shanghai 时间，格式为 `YYYY-MM-DD-HH:MM:SS`；来源没有
 变化的续跑不重写文件或更新时间。
 
@@ -518,6 +541,15 @@ Camera–IMU 且上游为 RS 相机标定时使用上游 RS 行时间，否则�
 `acc_scale=[0.989362,0.989362,0.989362]`。最终 `gyro_bias`/`acc_bias` 是 bias spline
 三轴样本均值；Camera–IMU 尚未完成时使用 profile 中显式配置的默认 bias。
 
+Camera–IMU 完成后，`imu.model` 写实际求解模型。`scale-misalignment` 另外写
+`M_accel`、`M_gyro`、`C_gyro_i` 和 `A_gyro_accel`；
+`scale-misalignment-size-effect` 再写 `rx_i_m`、`ry_i_m`、`rz_i_m`。既有
+`acc_scale`、`gyro_scale` 继续保留 profile 的机器下游兼容值，不把它们重解释为 Kalibr
+正向测量矩阵的对角线；完整内参只以明确命名的矩阵字段表达。`calibrated` 不伪造这些
+矩阵，未完成 Camera–IMU 时也不写 `model`，由
+`stereo_imu_calibrated: false` 明确表示当前仍在使用 profile 默认值。阶段 HTML/PDF 报告
+从正式 Camera–IMU 结果显示同一 model、四个矩阵及 size-effect 杠杆臂。
+
 `odom` 只保留固定噪声和 scale：`w_x_std=0.1`、`w_y_std=0.1`、`w_z_std=2.0`、
 `w_z_std_vision_off=20.0`、`v_x_std=0.05`、`v_y_std=0.05`、`v_z_std=0.001`、
 `v_scale=1.01`、`w_scale=1.01`；不再包含 BaseLink 变换。`lidar` 直接复制 profile 的
@@ -527,7 +559,8 @@ Camera–IMU 且上游为 RS 相机标定时使用上游 RS 行时间，否则�
 machine_version: EVT312
 machine_num: "02"
 time: "2026-10-10-19:58:00"
-algorithm_version: "1.0.0"
+algorithm_version: "1.1.0"
+calibration_behavior_version: "1.0.0"
 calib_file_version: "1.0.0"
 stereo_imu_calibrated: false
 stereo_baselink_calibrated: false
@@ -632,6 +665,31 @@ lidar:
 `mechine_base_param.yaml`；双目 K/D、`T_cn_cnm1`、校正矩阵、基线、RMS 和 alignment
 始终写实际计算值。`fu` 等符号只表示字段位置，不是最终文件中的字符串。
 
+例如 size-effect 模型完成后，`imu` 会包含以下新增字段：
+
+```yaml
+  model: scale-misalignment-size-effect
+  M_accel:
+    - [m00, 0.0, 0.0]
+    - [m10, m11, 0.0]
+    - [m20, m21, m22]
+  M_gyro:
+    - [m00, 0.0, 0.0]
+    - [m10, m11, 0.0]
+    - [m20, m21, m22]
+  C_gyro_i:
+    - [r00, r01, r02]
+    - [r10, r11, r12]
+    - [r20, r21, r22]
+  A_gyro_accel:
+    - [a00, a01, a02]
+    - [a10, a11, a12]
+    - [a20, a21, a22]
+  rx_i_m: [rx0, rx1, rx2]
+  ry_i_m: [ry0, ry1, ry2]
+  rz_i_m: [rz0, rz1, rz2]
+```
+
 `usb_mono_calib.yaml` 的模型、分辨率、内参、畸变和 RMS 来自 USB 单目标定；
 `T_base_cam` 与 `pitch` 来自 USB 单目 Camera–BaseLink。尚未完成 BaseLink 时使用
 `usb_camera` 默认值，并将 `mono_baselink_calibrated` 写为 `false`。文件结构如下：
@@ -640,7 +698,8 @@ lidar:
 machine_version: EVT312
 machine_num: "02"
 time: "2026-10-10-19:58:00"
-algorithm_version: "1.0.0"
+algorithm_version: "1.1.0"
+calibration_behavior_version: "1.0.0"
 calib_file_version: "1.0.0"
 mono_baselink_calibrated: false
 camera:
@@ -671,6 +730,9 @@ camera:
 抹掉 BaseLink 字段，反之亦然。未运行的阶段使用上述明确默认值；某阶段已标记完成却
 缺少必需字段、出现非有限数或不可用 bias 时则停止更新，保留此前文件，不用默认值掩盖
 损坏结果。state 记录聚合文件的来源/输出 SHA-256 和仍使用默认值的字段。
+跨电脑复用 Camera–IMU 阶段时会校验并保留 model、标度/非正交矩阵、gyro 安装旋转、
+加速度敏感矩阵和 size-effect 杠杆臂；旧版仅含 bias/scale 且未写 `model` 的 calibrated
+汇总仍按兼容格式接受，但不会被解释为具有 scale-misalignment 内参。
 若目录中存在上一聚合格式的受管 `stereo_calib.yaml`，下一次运行会先核对 state 中的
 精确路径与 SHA-256，再删除该旧派生文件及空父目录。旧格式的受管
 `usb_mono_calib.yaml` 不删除，而是在校验路径与 SHA-256 后按当前结构原子更新；发现
@@ -758,7 +820,7 @@ config/mechine/
 ```bash
 python3 tools/release/install_runtime.py \
   --build-dir build/release \
-  --prefix /opt/kalibr_cedarobo_v1.0.0 \
+  --prefix /opt/kalibr_cedarobo_v1.1.0 \
   --user-config /path/to/user.yaml
 ```
 

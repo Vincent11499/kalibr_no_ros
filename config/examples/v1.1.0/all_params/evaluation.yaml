@@ -1,5 +1,5 @@
 # 有固定默认值的字段填写程序默认值；无固定默认值的字段填写合法示例并注明可选范围。
-schema_version: "1.0.0" # 必填，无默认值；唯一合法值为字符串"1.0.0"。
+schema_version: "1.0.0" # 必填，无默认值；规范写出值为字符串"1.0.0"。
 kind: calibration_evaluation # 默认calibration_evaluation；使用kalibr-noros evaluate，不调用优化器。
 output: # 只能改变后处理、可视化或判定，不改原运行目录。
   name: null # 默认null；派生评价名；显式值须为1~160位安全文件名stem。

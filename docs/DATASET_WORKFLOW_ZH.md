@@ -37,7 +37,7 @@ imus:
     data: imu/imu0.csv
 ```
 
-这些是完整文件的片段；根 manifest 还必须声明字符串版本 `1.0.0`、类型
+这些是完整文件的片段；根 manifest 还必须声明数据集 schema 字符串版本 `1.0.0`、类型
 `kalibr_directory_dataset` 和稳定的 `dataset_id`。目录名可以移动或改名，ID 不随之改变。
 task 中相对路径以 task 所在目录为基准；manifest 路径以数据集根目录为基准；
 相机 CSV 的 filename 则相对该相机 images 目录。相机编号仍按任务顺序为 cam0、cam1，
@@ -66,7 +66,7 @@ bag 输入需要实际 bag，ROS2 bag 需保留整个目录。数据不能由这
 产物，不是可选 initialization。省略 initialization 时使用原生自动初始化；
 `calibrated` IMU 仍会估计 bias、相机–IMU 外参和默认开启的时间偏移。
 
-可移植模板见[配置示例](../config/examples/v1.0.0/README_ZH.md)，默认使用
+可移植模板见[配置示例](../config/examples/v1.1.0/README_ZH.md)，默认使用
 pinhole-equi 和 calibrated IMU；根据硬件与镜头选择模型。输出路径由 CLI 的
 `--output-dir` 指定。
 
@@ -151,7 +151,7 @@ EVT312-02/
 可视化、指标及诊断归入数据集同名目录，HTML/PDF 报告放在 `result/` 根目录。普通
 `kalibr-noros` CLI 为兼容现有研发脚本，
 仍把正式 YAML/HTML/PDF 平铺在 `--output-dir`，诊断放入同名子目录；两种布局不会混淆。
-目录建立和文件映射由 `delivery.py` 负责；`config/`、`execution/` 等额外归档若由外层
+目录建立和文件映射由 `results/delivery.py` 负责；`config/`、`execution/` 等额外归档若由外层
 流程保存，也归入对应任务子目录，不代表 CLI 默认都会生成。
 
 `--output-dir` 当前表示最终结果目录，不会自动附加 `result`；设备根目录包含输入数据，
@@ -250,7 +250,7 @@ RMS、相邻外参、alignment 和双目校正矩阵，双目 BaseLink 更新
 [机器级一键标定](MACHINE_CALIBRATION_WORKFLOW_ZH.md#51-设备参数文件)。
 
 `evaluate` 不读取一组新的测试图像。要用独立目录测试集固定验证已有双目 K/D/T，使用
-`kalibr-noros verify cameras`；它输出每目 RMS、双目综合 RMS、Alignment RMS、基线、
+`kalibr-noros tools fixed-stereo-validation`；它输出每目 RMS、双目综合 RMS、Alignment RMS、基线、
 参考评级及逐帧证据。详见[固定参数验证与标定诊断](FIXED_CAMERA_VALIDATION_ZH.md)。
 
 ### 可选文件含义
@@ -329,7 +329,7 @@ images/ 副本；仅算已有残差指标时不需要原图。
 ## 7. 采集与标定交付边界
 
 采集端交付公共 `dataset.yaml`、图像、时间戳 CSV 和 IMU CSV。两端共同使用
-v1.0.0 的传感器 ID、纳秒时间戳与物理单位约定。采集配置、SDK、原始话题和完整
+v1.1.0 的传感器 ID、纳秒时间戳与物理单位约定。采集配置、SDK、原始话题和完整
 消息保存在 meta/ 中，标定求解不依赖采集端程序或 ROS 运行时。
 
 目录任务按 ID 选择，不必重复设备话题；需要导出 bag 时，采集端可从 meta/

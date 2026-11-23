@@ -40,7 +40,7 @@ docker load -i \
 chmod +x tools/release/kalibr_docker.sh
 
 tools/release/kalibr_docker.sh check \
-  "$PWD/install/kalibr_cedarobo_v1.0.0"
+  "$PWD/install/kalibr_cedarobo_v1.1.0"
 ```
 
 成功时最后显示：
@@ -72,7 +72,7 @@ Kalibr Docker runtime check passed.
 ```bash
 cd "$DEST"
 
-INSTALL_DIR="$PWD/install/kalibr_cedarobo_v1.0.0"
+INSTALL_DIR="$PWD/install/kalibr_cedarobo_v1.1.0"
 USER_CONFIG="$PWD/config/user.yaml"
 BATCH_DIR="/data/machine_data/EVT312-02/1104-docker"
 
@@ -88,7 +88,7 @@ tools/release/kalibr_docker.sh machine \
 <BATCH_DIR>/result/
 ```
 
-以后只升级 Kalibr 程序时，替换 `install/kalibr_cedarobo_v1.0.0`，然后重新执行第 3 步；依赖没有变化时不需要重新制作 Docker 镜像。
+以后只升级 Kalibr 程序时，替换 `install/kalibr_cedarobo_v1.1.0`，然后重新执行第 3 步；依赖没有变化时不需要重新制作 Docker 镜像。
 
 当前测试版本不应再报告通用 `workflow provenance changed`；若出现，通常说明正在运行旧
 `install`。`dataset changed during calibration` 仍会保留，因为求解期间变化的数据不能

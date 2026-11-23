@@ -23,13 +23,22 @@
 | `tools` | 依赖准备与启动入口 |
 | `build`、`install`、`.deps` | 构建产物与私有依赖，不提交 |
 
+`kalibr_no_ros` 内按 `task/`、`native_bridge/`、`results/`、`conversion/`、`machine/`
+划分单任务执行、原生适配、结果处理、格式转换与机器调度。YAML 基础操作位于
+`task/document.py`，task 语义校验位于 `task/validation.py`；核心执行不得依赖
+`kalibr_tools` 的实现。固定双目验证统一使用 `kalibr-noros tools fixed-stereo-validation`。
+
 搜索优先使用 `rg`；编辑源码使用 `apply_patch`，不要手工修改构建目录里的复制文件。
 不要将工作区缓存、数据集、标定输出或机器专用配置写入可移植示例。
 
-除非用户明确要求升级版本，正式发布固定覆盖当前安装目录
-`~/kalibr_cedarobo/install/kalibr_cedarobo_v1.0.0/`，不得自行创建或改用其他版本目录。
-覆盖发布时完整保留该安装目录下现有的 `config/`，只更新其余发布内容；只有用户明确
-要求更新配置时，才修改或覆盖 `config/` 中指定的文件。
+正式发布默认位于 `/home/gs/kalibr_cedarobo/install/`，版本号必须由用户明确给出，目标
+目录固定为 `kalibr_cedarobo_vX.Y.Z/`；未给版本时必须询问，不得自行决定版本、覆盖
+“最新版本”或创建其他版本目录。覆盖发布时完整保留目标目录现有的 `config/`，只更新
+其余发布内容；只有用户明确要求更新配置时，才修改或覆盖 `config/` 中指定的文件。
+发布后在目标根目录写简洁的 `README_ZH.md`，采用普通软件发版声明格式，只保留版本与
+日期、相对上一版本的主要更新、兼容升级说明、主要使用入口、验证摘要和必要的已知问题。
+详细 Git 状态、测试日志和真实数据证据留在仓库版本文档与完成报告；无法唯一确定上一
+版本时必须先询问。
 
 ## 2. 构建和检查
 
@@ -84,8 +93,12 @@ p_target = T_target_source * p_source
 
 ## 4. 输入与模型契约
 
-软件、CLI、task、初始化、目录清单及结果版本统一为字符串 `"1.0.0"`。
-旧整数 schema 不能作为项目运行输入；第三方 ROS/OpenCV 编码独立于本项目版本。
+软件版本当前为字符串 `"1.1.0"`。配置、task、初始化、目录清单、结果、机器状态与
+`calib_params` 各自维护 schema，当前规范写出版本均为字符串 `"1.0.0"`；为兼容曾经
+误写的 v1.1.0 文档，读取时可接受字符串 `"1.1.0"` 并按同一结构解释，后续写回必须
+规范化为 `"1.0.0"`。标定行为版本当前为 `"1.0.0"`，仅算法、默认值、数据选择或
+坐标语义变化时升级。旧整数 schema 不能作为项目运行输入；第三方 ROS/OpenCV 编码
+独立于本项目版本。
 
 task 必须显式指定 `dataset.type: bag|directory` 和 `dataset.path`。
 相对路径以 task 所在目录为基准。目录数据集用 `dataset.yaml` 将 ID 映射到图像、

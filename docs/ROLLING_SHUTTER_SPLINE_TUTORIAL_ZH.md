@@ -592,8 +592,8 @@ segment 密度大幅变化，应判定行时间与轨迹尚未分离，而不是
 | [`SystemCalibrator.py`](../src/kalibr/calibration/kalibr/python/kalibr_rs_camera_calibration/SystemCalibrator.py) | spline 初始化、联合状态、逐角点残差、运动先验与求解 |
 | [`BSplinePose.hpp`](../src/kalibr/trajectory/bsplines/include/bsplines/BSplinePose.hpp) | 位姿 B-spline 底层接口，order 对应 degree `order-1` |
 | [`BSplineMotionErrorFactory.hpp`](../src/kalibr/trajectory/aslam_splines/include/aslam/backend/implementation/BSplineMotionErrorFactory.hpp) | 按 segment 构造二阶运动误差 |
-| [`task.py`](../src/python/kalibr_no_ros/task.py) | task 参数转换为正式后端命令行参数 |
-| [`validation.py`](../src/python/kalibr_no_ros/validation.py) | order、padding、行时间支持范围等输入检查 |
+| [`task/solver_adapter.py`](../src/python/kalibr_no_ros/task/solver_adapter.py) | task 参数转换为正式后端命令行参数 |
+| [`task/validation.py`](../src/python/kalibr_no_ros/task/validation.py) | order、padding、行时间支持范围等输入检查 |
 
 ## 12. 常见误解
 
@@ -631,6 +631,6 @@ segment 数计算。
 
 1. 先阅读本文第 1～7 节，理解时间、segment 和二阶先验；
 2. 再阅读[滚动快门相机标定](ROLLING_SHUTTER_CAMERA_CALIBRATION_ZH.md)的正式流程和配置；
-3. 配置字段可直接对照[完整注释示例](../config/examples/v1.0.0/all_params/camera_rolling_shutter_calibration_task_full.yaml)；
+3. 配置字段可直接对照[完整注释示例](../config/examples/v1.1.0/all_params/camera_rolling_shutter_calibration_task_full.yaml)；
 4. 需要修改代码时查看 `SystemCalibrator.py`；
 5. 需要判断行时间可信度时执行固定行时间、不同 knot rate 和独立测试集对照。

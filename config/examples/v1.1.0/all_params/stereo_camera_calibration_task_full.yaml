@@ -1,5 +1,5 @@
 # 有固定默认值的字段填写程序默认值；无固定默认值的字段填写合法示例并注明可选范围。
-schema_version: "1.0.0" # 必填，无默认值；唯一合法值为字符串"1.0.0"。
+schema_version: "1.0.0" # 必填，无默认值；规范写出值为字符串"1.0.0"。
 kind: calibration_task # 默认calibration_task；本例显式写出文档种类。
 job: camera_calibration # 必填，无默认值；可选五种公开job，本文件选camera_calibration。
 
@@ -15,17 +15,19 @@ cameras: # 列表顺序固定相机身份；cam0左目、cam1右目。
   # 普通相机model的十个精确可选名称见上级README_ZH.md。
   - id: cam0 # 目录输入必填且无默认值；可选任意唯一安全ID，本例取cam0。
     model: pinhole-equi # 必填，无默认值；可选值见上一行，本例取pinhole-equi。
+  - id: cam1 # 目录输入必填且无默认值；可选任意唯一安全ID，本例取cam1。
+    model: pinhole-equi # 必填，无默认值；可选值见上一行，本例取pinhole-equi。
 
 # initialization: # 默认不启用；必须先用真实可信物理参数替换模板占位值。
-#   path: ../initialization_mono.yaml # 独立相机seed，不是结果文件。
+#   path: ../initialization_stereo.yaml # 独立相机seed，不是结果文件。
 
 calibration: # 仅求解和观测选择参数；保存与显示选项放output。
-  solver_mode: incremental # 默认incremental；也可选full_batch，直接联合优化全部单目view的K/D与板位姿。
+  solver_mode: incremental # 默认incremental；full_batch在S3全量联合优化后直接输出。
   freeze_intrinsics: false # 默认false；true只适用于至少双目且每台提供完整seed。
   window_half_size_px: 2 # 默认2 px；整数>=1，实际窗口5×5。
   max_displacement_px: 1.224744871391589 # 默认sqrt(1.5) px；有限且>0。
   focal_initialization_min_visible_corner_ratio: 1.0 # 默认1.0；(0,1]，保留原生完整板路径。
-  synchronization_tolerance_s: 0.02 # 默认0.02 s；>=0，单目无跨相机配对。
+  synchronization_tolerance_s: 0.02 # 默认0.02 s；>=0，改变多相机配对。
   qr_tolerance: 0.02 # 默认0.02；无量纲有限数，当前解析后不作用于线性求解器。
   information_gain_tolerance: 0.2 # 默认0.2；>=0或特殊值-1，改变增量view选择。
   min_views_for_outlier_statistics: 20 # 默认20；正整数，开始建立异常点统计的view门槛。

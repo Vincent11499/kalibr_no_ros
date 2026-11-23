@@ -1,4 +1,4 @@
-# v1.0.0 标定配置示例
+# v1.1.0 软件标定配置示例
 
 本目录独立提供各类任务的最简版与完整注释版。相机模型统一为 `pinhole-equi`，
 cam0 表示左目、cam1 表示右目；单目示例只使用 cam0。
@@ -15,7 +15,7 @@ cam0 表示左目、cam1 表示右目；单目示例只使用 cam0。
 
 | 字段 | 合法选择或范围 | 示例值 |
 |---|---|---|
-| `schema_version` | 当前唯一合法字符串 `"1.0.0"` | `"1.0.0"` |
+| `schema_version` | 规范值 `"1.0.0"`；兼容读取曾误写的 `"1.1.0"` | `"1.0.0"` |
 | `job` | `camera_calibration`、`camera_baselink_calibration`、`camera_rolling_shutter_calibration`、`camera_imu_calibration`、`camera_imu_rolling_shutter_calibration` | 按文件用途选择 |
 | `dataset.type` | `directory` 或 `bag` | `directory` |
 | `dataset.path`、各类 `path` | 对应类型的非空有效路径 | 示例相对路径 |

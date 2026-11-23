@@ -673,8 +673,8 @@ calibrate_time_offset: true
 8. 若弱项与独立误差或重复性对应，按弱参数块补充有针对性的采集激励。
 
 可观性诊断的源码入口是
-[`observability.py`](../src/python/kalibr_no_ros/observability.py)，原生只读线性化、消元、缩放和
+[`native_bridge/observability.py`](../src/python/kalibr_no_ros/native_bridge/observability.py)，原生只读线性化、消元、缩放和
 SVD 位于
 [`LinearSolver.cpp`](../src/kalibr/calibration/incremental_calibration_python/src/LinearSolver.cpp)。
-任务何时要求并挂接该文件见 [`task.py`](../src/python/kalibr_no_ros/task.py)。配置字段和正式输出
+任务何时要求并挂接该文件见 [`task/runner.py`](../src/python/kalibr_no_ros/task/runner.py)。配置字段和正式输出
 契约分别见[任务参数](TASK_PARAMETERS_ZH.md)与[输入和输出说明](DATASET_WORKFLOW_ZH.md)。

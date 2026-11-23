@@ -6,6 +6,10 @@
 [`kalibr_calibrate_cameras`](../src/kalibr/calibration/kalibr/python/kalibr_calibrate_cameras)
 中的 `cameraModels` 为准，而不是以 OpenCV 转换工具接受的别名为准。
 
+当前 IMX678 模组水平、垂直同时翻转时，统一使用 `cx'=3856-cx`、`cy'=2184-cy`，
+`fx/fy` 不变；畸变参数按模型处理。完整规则见
+[相机双翻转内参转换](CAMERA_FLIP_CONVERSION_ZH.md)，不再叠加历史拟合偏移。
+
 ## 1. 公开模型与优化参数总表
 
 当前 `cameras[].model` 支持以下 10 个值：

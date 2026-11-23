@@ -1,5 +1,5 @@
 # 有固定默认值的字段填写程序默认值；以下物理字段无默认值，填写合法示例并注明范围。
-schema_version: "1.0.0" # 必填，无默认值；唯一合法值为字符串"1.0.0"。
+schema_version: "1.0.0" # 必填，无默认值；规范写出值为字符串"1.0.0"。
 kind: imu_configuration # 默认imu_configuration；本例显式写出文档种类。
 # rostopic: /imu0 # bag输入必填且无默认值；可选任意非空话题字符串；directory可省略。
 update_rate: 100.0 # 必填，无默认值；可选任意>0 Hz，本例取100.0。

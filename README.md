@@ -1,7 +1,10 @@
-# Kalibr no-ROS v1.0.0
+# Kalibr no-ROS v1.1.0
 
 不依赖 ROS 运行时的相机与 Camera–IMU 标定工程。输入验证、原生 Kalibr 求解和结果
 评价分别维护，保留 ETHZ-ASL Kalibr 的阶段顺序、残差、活动参数与优化器默认行为。
+
+本版本的新增能力、兼容性边界和升级步骤见
+[v1.1.0 版本更新说明](docs/RELEASE_NOTES_V1.1.0_ZH.md)。
 
 ## 构建与安装
 
@@ -16,7 +19,7 @@ cmake --preset release
 cmake --build --preset release --parallel 4
 python3 tools/release/install_runtime.py \
   --build-dir build/release \
-  --prefix /opt/kalibr_cedarobo_v1.0.0
+  --prefix /opt/kalibr_cedarobo_v1.1.0
 ```
 
 上述命令发布可搬移的精简运行包，只含 `bin/`、`lib/`、`libexec/`、`config/`、
@@ -73,6 +76,9 @@ AprilGrid，均使用 `pinhole-equi`。
 `user.yaml` 必须用 `template: EVT320` 选择 `config/mechine/EVT320/`，可用
 `stereo.mode: rolling_shutter` 选择 RS 双目，用
 `stereo_imu.recompute_extrinsics: true` 控制 Camera–IMU 联合阶段重新优化相机链外参；
+普通与 RS Camera–IMU 模板的 `imus[0].model` 均可使用 `calibrated`、
+`scale-misalignment` 或 `scale-misalignment-size-effect`；后两者的完整 IMU 内参会进入
+机器汇总参数、跨电脑复用和 HTML/PDF 报告；
 `targets` 可按 `stereo`、`stereo_imu`、`stereo_baselink`、`mono` 和
 `mono_baselink` 分别选择安装在当前模板目录下的标定板文件名 stem；
 未指定的任务使用自身 task 模板中的 `target.path`。
@@ -85,9 +91,12 @@ USB BaseLink 角色都从 `machine_dir` 自动选择唯一候选；填写的角�
 只有严格匹配 `*_YYMMDD_HHMM` 约定的直接子目录才是候选，`*_bk`、旧名和其他非规范
 目录静默跳过。重复的规范候选会在任何求解启动前报错；缺少上游数据只让对应下游分支
 等待，其他独立分支继续执行；BaseLink 有数据但缺配置时只阻塞该分支并返回非零状态。
-目录搜索先显示五类角色的找到/未找到状态；实际任务进度只计算本次存在的数据集。新数据集
-首次只记录文件元数据，不读取图像内容；快照缓存于
-`result/.kalibr-cedarobot/input_hash_cache.json`，元数据变化时才执行内容哈希。
+目录搜索先显示五类角色的找到/未找到状态；实际任务进度只计算本次存在的数据集。每次
+校验都会对 `dataset.yaml`、相机时间戳 CSV 和 IMU CSV 计算 SHA-256；图像只核对
+相机 ID、CSV 顺序、时间戳、相对文件名和大小，不读取像素内容，也不把 atime/mtime、
+ctime 或 inode 作为数据身份。校验记录保存在
+`result/.kalibr-cedarobot/input_hash_cache.json`。求解完成后、任何正式结果替换前会再次
+执行同样的轻量复核；只修改图像时间属性不会重标定，清单或结构文件变化则拒绝发布。
 精度不足时可删除旧数据集或将它改为非规范名称，再加入唯一的新规范目录；工作流自动
 重跑该任务及其下游依赖，保留旧数据集结果，同名下游结果仅在新求解成功后安全替换。
 `machine_dir` 指向 `<机型>-<编号>/<批次名>`，例如 `EVT312-02/1029`；新一批数据新建
@@ -105,7 +114,7 @@ USB BaseLink 角色都从 `machine_dir` 自动选择唯一候选；填写的角�
 
 下面的 `kalibr-noros` 是研发维护与单任务接口。
 
-从[配置示例](config/examples/v1.0.0/README_ZH.md)复制单目、双目或 Camera–IMU
+从[配置示例](config/examples/v1.1.0/README_ZH.md)复制单目、双目或 Camera–IMU
 任务，修改数据路径、标定板和 IMU 参数。示例根目录 YAML 无注释，完整参数说明位于
 `all_params/`。
 
@@ -126,8 +135,10 @@ kalibr-noros calibrate imu-camera \
 
 目录数据集通过 `dataset.yaml` 将相机 ID 映射到图像与 CSV 路径，任务中可省略相机
 `topic` 和 IMU `rostopic`。ROS1/ROS2 bag 输入仍需填写话题。任务内相对路径以任务
-YAML 所在目录为基准。软件、任务、初始化、目录清单和结果版本统一为字符串
-`"1.0.0"`。
+YAML 所在目录为基准。软件版本为 `1.1.0`；任务、初始化、目录清单、结果和机器状态
+的规范 schema 分别独立维护，当前均写为字符串 `"1.0.0"`。读取时兼容曾经误写的
+字符串 `"1.1.0"`，不兼容旧整数 schema。详见
+[版本兼容说明](docs/VERSION_COMPATIBILITY_ZH.md)。
 
 公开命令：
 
@@ -140,11 +151,13 @@ kalibr-noros calibrate imu-camera
 kalibr-noros calibrate imu-camera-rs
 kalibr-noros validate
 kalibr-noros evaluate
-kalibr-noros verify cameras
+kalibr-noros tools fixed-stereo-validation
 kalibr-noros convert camera
 kalibr-noros convert job
 kalibr-noros tools rolling-shutter-diagnosis
 kalibr-noros tools stereo-aging-validation
+kalibr-noros tools stereo-tag-distance
+kalibr-noros tools imu-allan
 ```
 
 `convert camera` 提供 OpenCV/Kalibr 参数转换；`evaluate` 只利用已有观测证据重算
@@ -159,11 +172,23 @@ kalibr-noros tools stereo-aging-validation
 旋转固定左乘 `Ry(180°)`；配置平移保持不变。
 
 需要在新的目录测试集上固定已有双目 K/D/T 计算每目 RMS、双目综合 RMS 和
-Alignment RMS 时，使用 `kalibr-noros verify cameras`。该命令会重新检测测试图像，
+Alignment RMS 时，使用 `kalibr-noros tools fixed-stereo-validation`。该命令会重新检测测试图像，
 但不调用标定优化器；显式加入 `--visualizations` 可按参数标签输出测试集角点、单目
 去畸变和双目极线对齐图。验证同时输出 JSON 汇总和逐图像/逐双目图对的 CSV，包含
 重投影与对齐误差的 RMS/P95/Max。参数、公式和输出见
 [固定参数验证与标定诊断](docs/FIXED_CAMERA_VALIDATION_ZH.md)。
+
+使用固定双目 K/D/T 测量目录数据集中两个 tag36h11 AprilTag 的三维中心距离时，使用：
+
+```bash
+kalibr-noros tools stereo-tag-distance \
+  --dataset /data/stereo_YYMMDD_HHMM \
+  --calibration /data/camera_calibration.yaml
+```
+
+默认在数据集同级 `result/distance_YYMMDD_HHMM/` 写出逐图对 CSV、统计 CSV，以及按
+`cam0`、`cam1` 分开的检测标注图；计算口径和输入限制见仓库技能
+`.agents/skills/kalibr-stereo-tag-distance/SKILL.md`。
 
 滚动快门相机＋IMU 使用独立任务 `camera_imu_rolling_shutter_calibration` 和
 `calibrate imu-camera-rs`，逐目联合估计行时间；配置和架构见
@@ -179,6 +204,19 @@ Alignment RMS 时，使用 `kalibr-noros verify cameras`。该命令会重新检
 `kalibr-noros tools rolling-shutter-diagnosis`。它从普通标定观测做严格分块筛查，
 只有证据通过才运行正式 RS 正反值、多初值及轨迹带宽对照；配置、门槛与输出见
 [滚动快门行时间诊断工具](docs/ROLLING_SHUTTER_DIAGNOSIS_TOOL_ZH.md)。
+
+静止 IMU 数据的 Allan 噪声分析使用：
+
+```bash
+kalibr-noros tools imu-allan \
+  --dataset /data/imu_YYMMDD_hhmm \
+  --output-dir /data/results/imu_allan
+```
+
+输入为目录中的 `imu/imu0.csv` 或直接指定 CSV，生成可用于 Camera–IMU 任务的
+`imu_noise.yaml` 和独立 HTML/PDF 报告。保留参考实现的固定尺度和拟合规则，所选数据
+需覆盖约 2,000 s 以上；已有输出不覆盖，也不自动修改现场配置。参数、单位及拟合限制见
+[IMU Allan 噪声分析](docs/IMU_ALLAN_VARIANCE_ZH.md)。
 
 ## 模型与输出
 
@@ -209,6 +247,11 @@ Alignment RMS 时，使用 `kalibr-noros verify cameras`。该命令会重新检
 | `src/camera_models` | radtan5/radtan8 和九参数 OpenCV fisheye 扩展 |
 | `config/examples` | 可移植任务与辅助配置 |
 | `tests` | 精简的输入、模型、初始化和输出正确性检查 |
+
+`kalibr_no_ros` 内按职责组织：`task/` 管理单任务配置与执行，`native_bridge/` 适配原生对象与
+运行证据，`results/` 负责评价、报告和安全交付，`conversion/` 负责参数格式互操作，
+`machine/` 负责机器级任务调度。`kalibr-noros` 使用根 `cli.py`，`kalibr-cedarobot` 使用
+`machine/cli.py`，转换功能不另设可执行入口。
 
 从[文档导航](docs/README_ZH.md)开始；产线使用见
 [机器级一键标定](docs/MACHINE_CALIBRATION_WORKFLOW_ZH.md)和

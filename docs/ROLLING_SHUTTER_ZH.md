@@ -22,8 +22,8 @@ kalibr-noros calibrate imu-camera-rs --config camera_imu_rolling_shutter_calibra
 `imu-camera` 同样只使用其中 K/D/T，不会因结果含 `shutter` 而静默启用逐行残差。
 
 配置入口：
-[简洁示例](../config/examples/v1.0.0/camera_imu_rolling_shutter_calibration_task.yaml)、
-[完整注释示例](../config/examples/v1.0.0/all_params/camera_imu_rolling_shutter_calibration_task_full.yaml)。
+[简洁示例](../config/examples/v1.1.0/camera_imu_rolling_shutter_calibration_task.yaml)、
+[完整注释示例](../config/examples/v1.1.0/all_params/camera_imu_rolling_shutter_calibration_task_full.yaml)。
 
 | 字段 | 默认值、单位与合法范围 | 作用 |
 |---|---|---|
@@ -57,13 +57,13 @@ flowchart LR
     Archive --> Result[YAML 与 HTML/PDF]
 ```
 
-- 输入：`src/python/kalibr_no_ros/rolling_shutter.py` 校验新字段，`task.py` 将公开相机 ID
-  按结果列表顺序转换为原生 ID。`cli.py` 和 `delivery.py` 提供新入口与独立交付名称。
+- 输入：`src/python/kalibr_no_ros/task/rolling_shutter_config.py` 校验新字段，`task/solver_adapter.py` 将公开相机 ID
+  按结果列表顺序转换为原生 ID。`cli.py` 和 `results/delivery.py` 提供新入口与独立交付名称。
 - 求解：`src/kalibr/calibration/kalibr/python/kalibr_imu_camera_calibration/IccRollingShutter.py`
   提供相机、相机链与标定器子类。原相机链仅增加工厂方法；普通任务仍创建原相机对象。
   新任务由已有原生入口显式选择子类，不复制整套 IMU 求解流程。
-- 输出：`artifacts.py` 保存每角点最终时刻和位姿；`evaluation.py` 计算已有证据的 RMS；
-  `report_plots.py` 在 HTML/PDF 显示快门参数与时间含义。`evaluate` 不重新优化。
+- 输出：`native_bridge/evidence.py` 保存每角点最终时刻和位姿；`results/evaluation.py` 计算已有证据的 RMS；
+  `results/plots.py` 在 HTML/PDF 显示快门参数与时间含义。`evaluate` 不重新优化。
 
 ## 联合模型与状态
 

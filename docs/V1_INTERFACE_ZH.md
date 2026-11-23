@@ -1,6 +1,6 @@
-# v1.0.0 输入、求解与输出契约
+# v1.1.0 软件的 v1.0.0 输入、求解与输出契约
 
-本版本统一软件包、CLI、配置和项目结构化输出为字符串版本 `1.0.0`，并将输入验证、
+本软件版本为 `1.1.0`；配置和项目结构化输出的规范 schema 保持字符串 `1.0.0`，并将输入验证、
 原生求解和结果评价分开。新任务不兼容旧整数 schema，运行时不改写输入数据。
 第三方 ROS bag、ROS 消息、OpenCV FileStorage
 编码规则和 SDK ABI 不属于项目 schema 版本，保留其标准。
@@ -27,7 +27,7 @@ dataset manifest 内路径以数据集根为基准，相机 CSV 文件名再相�
 CLI 的 `--output-dir`、初始化覆盖和重定位 `--dataset` 以执行命令时的当前目录为基准。
 生成结果应写新目录，采集数据与标定输出分别管理。
 
-完整可复制示例见 [config/examples/v1.0.0](../config/examples/v1.0.0/README_ZH.md)：
+完整可复制示例见 [config/examples/v1.1.0](../config/examples/v1.1.0/README_ZH.md)：
 单目内参、双目内外参、纯视觉 RS 相机、双目＋IMU 与 RS Camera–IMU 提供最简和完整
 注释 task，并附板、IMU、
 初值与评价示例。示例根目录的配置不带注释，带注释版本位于 `all_params/`；
@@ -228,7 +228,7 @@ Camera–IMU 结果 YAML 仍同时输出两个方向；报告只列 `T_imu_cam`�
 结果 YAML 保持块映射、行内一维数组、矩阵逐行数组与 17 位有效数字，不用排版截断精度。
 
 ```bash
-kalibr-noros evaluate --run output/stereo --config config/examples/v1.0.0/evaluation.yaml --output-dir output/stereo_evaluation
+kalibr-noros evaluate --run output/stereo --config config/examples/v1.1.0/evaluation.yaml --output-dir output/stereo_evaluation
 ```
 
 离线评价使用新的输出目录，原标定参数保持不变，不重新检测或求解。归档观测齐全时可

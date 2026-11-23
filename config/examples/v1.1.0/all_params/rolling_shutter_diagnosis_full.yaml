@@ -1,5 +1,5 @@
 # 输入一个普通相机或普通Camera–IMU任务，先离线筛查，再按证据决定是否运行正式RS对照。
-schema_version: "1.0.0" # 必填，无默认值；唯一合法值为字符串"1.0.0"。
+schema_version: "1.0.0" # 必填，无默认值；规范写出值为字符串"1.0.0"。
 kind: rolling_shutter_diagnosis # 必填，无默认值；唯一合法值rolling_shutter_diagnosis。
 
 source_task:

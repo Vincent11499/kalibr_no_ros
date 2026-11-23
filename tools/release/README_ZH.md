@@ -12,3 +12,9 @@
 
 随安装包交付、可由用户直接运行的诊断和研究工具位于
 `src/python/kalibr_tools/`，统一通过 `kalibr-noros tools --help` 查看。
+
+正式运行包发布遵循仓库 skill `kalibr-runtime-release`：版本号由用户明确指定，默认安装
+到 `/home/gs/kalibr_cedarobo/install/kalibr_cedarobo_vX.Y.Z/`；覆盖时保留现有
+`config/`，并在安装根写入比较上一版本的 `README_ZH.md`。本目录脚本只负责构建依赖、
+原子组装和替换运行包，不自行决定版本号或生成版本差异说明。安装根 README 采用简洁的
+软件发版声明格式；完整 Git、测试和真实数据证据保留在仓库文档与发布完成报告中。

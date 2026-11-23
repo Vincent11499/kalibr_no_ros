@@ -34,7 +34,7 @@ K/D 运行 BaseLink 旋转标定；不需要 IMU 数据，平移由配置明确�
 
 - 开发者调试某个阶段或模型；
 - 单目／双目模组不符合当前机型 profile，或需要纯视觉 RS、三目及更多相机的联合任务；
-- 独立 `verify cameras`、`evaluate` 或格式转换；
+- 独立 `tools fixed-stereo-validation`、`evaluate` 或格式转换；
 - 根据已生成 task 复现失败。
 
 机器入口的完整数据发现、复用与冲突规则见
@@ -44,14 +44,14 @@ K/D 运行 BaseLink 旋转标定；不需要 IMU 数据，平移由配置明确�
 
 | 文件 | 谁创建 | 是否需要经常修改 | 作用 |
 |---|---|---:|---|
-| `task.yaml` | 用户 | 是 | 选择任务、数据、target、模型和可选参数；接口版本为字符串 `"1.0.0"` |
+| `task.yaml` | 用户 | 是 | 选择任务、数据、target、模型和可选参数；配置 schema 为字符串 `"1.0.0"` |
 | `dataset.yaml` | 用户，仅目录数据集需要 | 很少 | 把图像/IMU 文件映射为逻辑数据流 |
-| `*_initialization.yaml` | 用户，仅显式初值需要 | 按硬件维护 | 保存相机或 Camera–IMU 的物理 seed；接口版本为 `"1.0.0"` |
-| `<任务类型>_<传感器ID...>.yaml` | 程序 | 否 | 保存标定结果；结果接口版本为字符串 `"1.0.0"` |
+| `*_initialization.yaml` | 用户，仅显式初值需要 | 按硬件维护 | 保存相机或 Camera–IMU 的物理 seed；配置 schema 为 `"1.0.0"` |
+| `<任务类型>_<传感器ID...>.yaml` | 程序 | 否 | 保存标定结果；结果 schema 为字符串 `"1.0.0"` |
 | `initialization_report.yaml` / `observability.yaml` | 程序，仅显式初值运行生成 | 否 | 记录初值应用情况和最终标定块可观性 |
 
-`config/examples/v1.0.0/` 提供可复制的简洁模板与完整参数示例；字段由 CLI 在运行前检查。
-详见[配置示例](../config/examples/v1.0.0/README_ZH.md)。
+`config/examples/v1.1.0/` 提供可复制的简洁模板与完整参数示例；字段由 CLI 在运行前检查。
+详见[配置示例](../config/examples/v1.1.0/README_ZH.md)。
 
 ## 2. 最简任务配置
 
@@ -168,7 +168,7 @@ kalibr-noros calibrate cameras --config task.yaml --output-dir output \
 两类初始化 YAML 的全部字段、坐标变换方向、单位、相机模型向量长度、IMU 模型门控
 和分阶段行为见
 [`INITIALIZATION_ZH.md`](INITIALIZATION_ZH.md)。
-[配置示例](../config/examples/v1.0.0/README_ZH.md)提供 `pinhole-equi` 的单目、
+[配置示例](../config/examples/v1.1.0/README_ZH.md)提供 `pinhole-equi` 的单目、
 双目和双目＋IMU 完整 task 及匹配初值模板。模板中的数值是教学占位值，默认未启用；
 先换成当前硬件的可信 seed，再启用完整 task 中已注释的 `initialization` 块。
 输入准备、验证和双目到 Camera–IMU 的运行顺序见初始化指南第 8 节。
@@ -472,7 +472,7 @@ ID 表或其他 AprilTag family。
 已有双目标定结果需要在另一组目录数据上验证时，使用：
 
 ```bash
-kalibr-noros verify cameras \
+kalibr-noros tools fixed-stereo-validation \
   --calibration candidate=/data/result/camera_calibration.yaml \
   --dataset /data/stereo_test_YYMMDD_hhmm \
   --target /data/config/aprilgrid.yaml \

@@ -18,9 +18,9 @@
 ## 1. 输入配置
 
 最简配置见
-[`config/examples/v1.0.0/rolling_shutter_diagnosis.yaml`](../config/examples/v1.0.0/rolling_shutter_diagnosis.yaml)，
+[`config/examples/v1.1.0/rolling_shutter_diagnosis.yaml`](../config/examples/v1.1.0/rolling_shutter_diagnosis.yaml)，
 所有字段、默认值和范围见
-[`all_params/rolling_shutter_diagnosis_full.yaml`](../config/examples/v1.0.0/all_params/rolling_shutter_diagnosis_full.yaml)。
+[`all_params/rolling_shutter_diagnosis_full.yaml`](../config/examples/v1.1.0/all_params/rolling_shutter_diagnosis_full.yaml)。
 
 ```yaml
 schema_version: "1.0.0"
@@ -238,7 +238,7 @@ Optical Alignment RMS 和 RS 补偿配对残差，便于直接比较和绘图。
 
 ### 5.1 Optical Alignment RMS 如何计算
 
-实现位于 `src/python/kalibr_no_ros/evaluation.py` 的 `stereo_geometry()`、
+实现位于 `src/python/kalibr_no_ros/results/evaluation.py` 的 `stereo_geometry()`、
 `rectified_points()` 和 `_stereo_pair_metrics()`：
 
 1. 从最终使用的左右帧中按共同 `corner_id` 配对检测角点；
@@ -297,7 +297,7 @@ $$
 `fit_dependent: true` 的诊断量，`independent_validation: false`。它能说明联合模型解释了多少
 已拟合观测，却不能单独证明模型可泛化；仍需固定 0、反方向、多初值、knot 敏感性以及独立
 测试数据。最终结果 YAML 只保存两个 RMS 标量，完整 count、mean、p95、max 等统计保存在各组
-`metrics.json`。诊断工具的 `analysis.load_run_summary()` 读取这些结果，`reporting.py` 只负责
+`metrics.json`。诊断工具的 `analysis.load_run_summary()` 读取这些结果，工具包内的 `reporting.py` 只负责
 汇总展示，不重新计算这两个指标。
 
 ### 5.3 能否先按行时间修正角点，再计算 Alignment

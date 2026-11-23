@@ -22,7 +22,7 @@ adaptive covariance、可观性和三层默认值覆盖时，参见
 
 ## 1. 使用方法
 
-复制[简洁示例](../config/examples/v1.0.0/camera_rolling_shutter_calibration_task.yaml)，
+复制[简洁示例](../config/examples/v1.1.0/camera_rolling_shutter_calibration_task.yaml)，
 把数据路径、相机 ID、模型和行时间范围换成本机实际值。目录数据集按 `dataset.yaml`
 映射相机 ID，不填写 topic；bag 输入必须在每个相机项中填写 topic。
 
@@ -90,7 +90,7 @@ radtan5/8 不需要复制原生 shutter geometry。native 则必须把 `RollingS
   [`RsCalibrator.py`](../src/kalibr/calibration/kalibr/python/kalibr_rs_camera_calibration/RsCalibrator.py)；
 - 公开 CLI 路由和 task 适配：
   [`cli.py`](../src/python/kalibr_no_ros/cli.py) 和
-  [`task.py`](../src/python/kalibr_no_ros/task.py)；
+  [`task/solver_adapter.py`](../src/python/kalibr_no_ros/task/solver_adapter.py)；
 - 构建时由 [`ProjectBuild.cmake`](../cmake/ProjectBuild.cmake) 复制并安装到
   `libexec/kalibr`。
 
@@ -186,16 +186,16 @@ job: camera_rolling_shutter_calibration
 ```text
 kalibr-noros calibrate cameras-rs
   → cli.py
-  → task.run_task(..., solver_backend=system)
-  → task._rs_camera_arguments()
+  → task.runner.run_task(..., solver_backend=system)
+  → task.solver_adapter._rs_camera_arguments()
   → kalibr_calibrate_rs_camera_system
   → SystemRsCalibrator
   → 联合 LM、可观性检查、正式结果
 
 kalibr-noros calibrate native-rs-cameras
   → cli.py 设置 _rs_solver_backend=native
-  → task.run_task(..., solver_backend=native)
-  → task._native_rs_camera_arguments()
+  → task.runner.run_task(..., solver_backend=native)
+  → task.solver_adapter._native_rs_camera_arguments()
   → kalibr_calibrate_rs_cameras
   → RsCalibrator
   → 原生 DogLeg、adaptive knot、单目对照结果
@@ -495,8 +495,10 @@ $$
   $\tau' = \tau/s_y$；
 - 从原图第 $y_0$ 行开始裁剪时，行时间不变，但新第 0 行时间戳应为
   $t'_{row0}=t_{row0}+y_0\tau$；
-- 高度为 $H$ 的图像上下翻转后 $y'=(H-1)-y$，等价于
-  $\tau'=-\tau$、$t'_{row0}=t_{row0}+(H-1)\tau$。
+- 对当前手册确认的双翻转配置，纵坐标关系为 $y'=2184-y$，代入上式得到
+  $\tau'=-\tau$、$t'_{row0}=t_{row0}+2184\tau$。主点与各模型 D 的处理统一见
+  [相机双翻转内参转换](CAMERA_FLIP_CONVERSION_ZH.md)。这是以输出图像第 0 行为时间参考时
+  的换算，仍需与采集时间戳的实际参考行一致。
 
 如果只变换像素而不相应调整行时间 seed 和第 0 行时间戳，优化器可能用轨迹或行时间吸收
 这部分时间定义错误。普通纯视觉任务对公共常量时移不敏感，但扫描方向和行间相对时差仍会
@@ -670,7 +672,7 @@ knot 网格相对观测的相位，可能使行时间与轨迹出现数值共振
 可信，仍需检查行时间范围、样条／先验敏感性和可观性。
 
 完整字段、默认值、单位和范围见
-[完整注释示例](../config/examples/v1.0.0/all_params/camera_rolling_shutter_calibration_task_full.yaml)。
+[完整注释示例](../config/examples/v1.1.0/all_params/camera_rolling_shutter_calibration_task_full.yaml)。
 
 ## 7. 初始化
 

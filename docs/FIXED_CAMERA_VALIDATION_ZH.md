@@ -5,12 +5,12 @@
 
 ## 1. 独立测试集验证
 
-`kalibr-noros verify cameras` 在测试集上重新检测标定板，但固定已有结果中的相机内参
+`kalibr-noros tools fixed-stereo-validation` 在测试集上重新检测标定板，但固定已有结果中的相机内参
 $\mathbf K$、畸变 $\mathbf D$ 和相邻外参 $\mathbf T$。该命令不调用标定优化器，因而
 不会把测试集重新拟合成一套相机参数。
 
 ```bash
-kalibr-noros verify cameras \
+kalibr-noros tools fixed-stereo-validation \
   --calibration 2136=/path/to/camera_calibration_2136.yaml \
   --calibration 2152=/path/to/camera_calibration_2152.yaml \
   --dataset /path/to/stereo_test_YYMMDD_hhmm \
@@ -56,7 +56,7 @@ visualizations/<标签>/
 └── cam0_cam1/      # 固定该标签 K/D/T 后的双目极线对齐图及逐对 Alignment RMS
 ```
 
-`--max-frames-per-camera` 和 `--max-pairs` 均为正整数，默认 30，采用稳定的时间顺序均匀
+`--max-frames-per-camera` 和 `--max-pairs` 均为正整数，默认 20，采用稳定的时间顺序均匀
 抽样，只限制图片数量，不限制统计使用的数据。单目去畸变默认保留最大视场，可能有黑边；
 传入 `--undistortion-crop` 后缩放并裁去无效边。`cam0_cam1` 使用绿色 3 px 极线，左上角
 显示该图对的 Alignment RMS 和有效共同角点数。
@@ -90,7 +90,7 @@ $$
 \sqrt{\frac{N_0\operatorname{RMS}_0^2+N_1\operatorname{RMS}_1^2}{N_0+N_1}}.
 $$
 
-实现位于 `fixed_camera_validation.py` 的 `combined_reprojection_rms()`：先累加两目的
+实现位于 `kalibr_tools/fixed_stereo_validation.py` 的 `combined_reprojection_rms()`：先累加两目的
 `squared_error_px2` 和 `corner_count`，再计算上式。因此代码与公式一致，而且两目角点
 数量不同时也不会把两个相机 RMS 简单取平均。
 
@@ -110,12 +110,12 @@ $$
 因此正式结果 YAML 中每目的 `rms` 来自同一个最终联合问题：右目残差同时受共享板位姿
 和双目外参约束。项目当前没有另行发布一个“双目标定综合 RMS”字段。若用最终联合问题中
 两目的有效角点数和每目 RMS 代入上式，可以得到该联合问题的合并 RMS；但它仍不同于
-`verify cameras` 的 `stereo_combined_rms_px`，因为后者允许左右目各自估计板位姿。
+`tools fixed-stereo-validation` 的 `stereo_combined_rms_px`，因为后者允许左右目各自估计板位姿。
 
 若要在独立测试集上得到与标定几何含义一致的指标，应固定
 $\mathbf K_0,\mathbf D_0,\mathbf K_1,\mathbf D_1,{}^{cam1}_{cam0}\mathbf T$，每个同步图像对
 只联合估计一个 ${}^{cam0}_{target}\mathbf T_i$，然后合并两目的残差。当前
-`verify cameras` 尚未计算这个“固定 K/D/T 的联合双目重投影 RMS”。在完全相同角点上，
+`tools fixed-stereo-validation` 尚未计算这个“固定 K/D/T 的联合双目重投影 RMS”。在完全相同角点上，
 独立 PnP 比共享位姿拥有更多自由度，理论最优残差通常不大于联合残差；若比较的是训练集
 与新测试集、或使用角点集合不同，则两者没有固定的大小关系。
 
@@ -405,6 +405,6 @@ numActiveBatches > min_views_for_outlier_statistics * numCameras
 Camera-IMU 标定时读取 `imu.yaml` 中已经准备好的噪声密度、随机游走等参数；它不会从静态
 IMU 数据自动生成这些参数。
 
-因此 Allan 方差分析目前是标定工程外部的前置流程。若以后集成，应作为独立的 IMU 噪声
-分析命令输出候选参数和分析报告，再由人工审核后写入 `imu.yaml`，不要把 Allan 静态数据
-误当作同步 Camera-IMU 标定数据。
+因此 Allan 方差分析目前是标定工程外部的前置流程。后续集成边界为
+`kalibr_tools/imu_allan/`，作为独立的 IMU 噪声分析命令输出候选参数和分析报告，再由人工
+审核后写入 `imu.yaml`，不要把 Allan 静态数据误当作同步 Camera-IMU 标定数据。

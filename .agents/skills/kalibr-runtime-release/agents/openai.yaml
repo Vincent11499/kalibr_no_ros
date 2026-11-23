@@ -1,0 +1,6 @@
+interface:
+  display_name: "Kalibr 运行包发布"
+  short_description: "构建、校验并安全覆盖版本化 Kalibr 运行包"
+  default_prompt: "Use $kalibr-runtime-release to publish the user-specified Kalibr runtime version while preserving installed configuration and writing the release README."
+policy:
+  allow_implicit_invocation: true

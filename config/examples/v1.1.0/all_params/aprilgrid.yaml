@@ -1,5 +1,5 @@
 # 有固定默认值的字段填写程序默认值；无固定默认值的物理字段填写合法示例并注明范围。
-schema_version: "1.0.0" # 必填，无默认值；唯一合法值为字符串"1.0.0"。
+schema_version: "1.0.0" # 必填，无默认值；规范写出值为字符串"1.0.0"。
 kind: calibration_target # 默认calibration_target；本例显式写出文档种类。
 target_type: aprilgrid # 必填，无默认值；可选aprilgrid/checkerboard/circlegrid，本文件选aprilgrid并使用对应字段。
 tagRows: 8 # 必填，无默认值；可选任意整数>=3，本例取8。

@@ -38,8 +38,8 @@
 公共 task、目录数据集转接、模型门控和参数映射位于：
 
 - [`src/python/kalibr_no_ros/cli.py`](../src/python/kalibr_no_ros/cli.py)；
-- [`src/python/kalibr_no_ros/task.py`](../src/python/kalibr_no_ros/task.py)；
-- [`src/python/kalibr_no_ros/rolling_shutter.py`](../src/python/kalibr_no_ros/rolling_shutter.py)。
+- [`src/python/kalibr_no_ros/task/solver_adapter.py`](../src/python/kalibr_no_ros/task/solver_adapter.py)；
+- [`src/python/kalibr_no_ros/task/rolling_shutter_config.py`](../src/python/kalibr_no_ros/task/rolling_shutter_config.py)。
 
 两条命令使用同一个 `job: camera_rolling_shutter_calibration`。CLI 子命令决定后端：
 
@@ -97,7 +97,7 @@ calibrate native-rs-cameras -> native 单目后端
 ```
 
 这个入口保留了上游算法的主要结构，但项目已增加 no-ROS 输入、公开模型映射、显式 seed、
-线程预算、失败检查、观测归档和 v1.0.0 输出，所以不能把它描述为完全未改动的上游脚本。
+线程预算、失败检查、观测归档和 v1.1.0 输出，所以不能把它描述为完全未改动的上游脚本。
 
 ## 3. 正式 `cameras-rs` 的输入与初始化
 
@@ -562,7 +562,7 @@ $d\tau/dq=b(1-\tanh^2q)$，接近边界时从 latent 信息强度直接推断物
 
 ### 11.2 当前没有输出参数后验协方差
 
-`observability.py` 确实另有 `analyze_with_covariance()`，但正式 `cameras-rs` 当前调用的是
+`native_bridge/observability.py` 确实另有 `analyze_with_covariance()`，但正式 `cameras-rs` 当前调用的是
 不请求 covariance 的 `analyze()` 路径。因此当前结果和 `observability.yaml` 不包含 K/D/T/
 行时间的完整后验 covariance 或标准差。
 
@@ -807,7 +807,7 @@ $$
 - inverse covariance 由 `feature_sigma_px` 转换为 `1/sigma²`；
 - 行时间 seed 总是显式传入。
 
-所以用户实际行为必须从 `task.py -> kalibr_calibrate_rs_cameras -> RsCalibrator.py` 整条调用
+所以用户实际行为必须从 `task/solver_adapter.py -> kalibr_calibrate_rs_cameras -> RsCalibrator.py` 整条调用
 链判断，不能只读配置类属性。
 
 ## 17. 输出指标和限制
@@ -834,7 +834,7 @@ native 公共入口没有多目外参、alignment、正式 reduced-Fisher 可观
 - [`cameras-rs` 连续轨迹、样条与运动先验入门](ROLLING_SHUTTER_SPLINE_TUTORIAL_ZH.md)；
 - [任务参数](TASK_PARAMETERS_ZH.md)；
 - [源码导读](SOURCE_CODE_DEEP_DIVE_ZH.md)；
-- [完整注释 RS task](../config/examples/v1.0.0/all_params/camera_rolling_shutter_calibration_task_full.yaml)。
+- [完整注释 RS task](../config/examples/v1.1.0/all_params/camera_rolling_shutter_calibration_task_full.yaml)。
 
 当前关键默认值、正式固定轨迹网格、native adaptive knot、行时间参数化、公开模型范围和
 停止失败语义与代码一致。需要额外澄清、并由本文补足的内容是：

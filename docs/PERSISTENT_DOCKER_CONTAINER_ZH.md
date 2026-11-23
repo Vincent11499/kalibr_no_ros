@@ -4,7 +4,7 @@
 
 ```text
 /home/sti/kalibr_cedarobo/
-├── install/kalibr_cedarobo_v1.0.0/
+├── install/kalibr_cedarobo_v1.1.0/
 ├── data/
 └── tools/
 ```
@@ -15,8 +15,8 @@
   OpenCV、Boost、TBB 等运行依赖，不包含 Kalibr 项目代码或安装包。
 - `kalibr-cedarobot-runtime:ubuntu22.04-gs` 在依赖镜像上只增加 UID/GID 1000
   的 `gs` 用户、主目录和默认工作目录，也不包含 Kalibr 安装包。
-- Kalibr 程序来自主机的 `install/kalibr_cedarobo_v1.0.0`，通过绑定挂载
-  出现在容器的 `/opt/cedarobot/kalibr_cedarobo_v1.0.0`。
+- Kalibr 程序来自主机的 `install/kalibr_cedarobo_v1.1.0`，通过绑定挂载
+  出现在容器的 `/opt/cedarobot/kalibr_cedarobo_v1.1.0`。
 - `docker-image/` 是离线镜像归档。执行 `docker load` 后，正在运行的容器不再读取
   该目录；保留它可以在 Docker 镜像丢失时离线恢复。
 - `tools/release/kalibr_docker.sh` 用于构建依赖镜像、检查安装包，以及启动用完即删的临时
@@ -38,7 +38,7 @@
 
 | 主机路径 | 容器路径 | 权限 |
 |---|---|---|
-| `/home/sti/kalibr_cedarobo/install/kalibr_cedarobo_v1.0.0` | `/opt/cedarobot/kalibr_cedarobo_v1.0.0` | 读写 |
+| `/home/sti/kalibr_cedarobo/install/kalibr_cedarobo_v1.1.0` | `/opt/cedarobot/kalibr_cedarobo_v1.1.0` | 读写 |
 | `/home/sti/kalibr_cedarobo/data` | `/data` | 读写 |
 
 查看当前配置，不修改容器：
@@ -71,10 +71,10 @@ gs@kalibr:/opt/cedarobot$
 ```bash
 sed -i.bak \
   's#^machine_dir:.*#machine_dir: /data/EVT320-01/1102#' \
-  kalibr_cedarobo_v1.0.0/config/user.yaml
+  kalibr_cedarobo_v1.1.0/config/user.yaml
 
-kalibr_cedarobo_v1.0.0/bin/kalibr-cedarobot machine \
-  --config kalibr_cedarobo_v1.0.0/config/user.yaml
+kalibr_cedarobo_v1.1.0/bin/kalibr-cedarobot machine \
+  --config kalibr_cedarobo_v1.1.0/config/user.yaml
 ```
 
 结果同时出现在主机：
@@ -105,7 +105,7 @@ docker image rm kalibr-cedarobot-runtime:ubuntu22.04-gs
 ```
 
 也不要删除主机上的 `install/` 和 `data/`。升级 Kalibr 时，在没有标定进程运行的
-情况下覆盖主机的 `install/kalibr_cedarobo_v1.0.0`；容器会直接看到新内容。
+情况下覆盖主机的 `install/kalibr_cedarobo_v1.1.0`；容器会直接看到新内容。
 
 ## 5. 仅在容器确实不存在时创建
 
@@ -135,7 +135,7 @@ else
     --shm-size 2g \
     --env HOME=/home/gs \
     --env MPLCONFIGDIR=/tmp/matplotlib \
-    --mount type=bind,src=/home/sti/kalibr_cedarobo/install/kalibr_cedarobo_v1.0.0,dst=/opt/cedarobot/kalibr_cedarobo_v1.0.0 \
+    --mount type=bind,src=/home/sti/kalibr_cedarobo/install/kalibr_cedarobo_v1.1.0,dst=/opt/cedarobot/kalibr_cedarobo_v1.1.0 \
     --mount type=bind,src=/home/sti/kalibr_cedarobo/data,dst=/data \
     --workdir /opt/cedarobot \
     --entrypoint /bin/bash \
@@ -148,5 +148,5 @@ fi
 
 ```bash
 docker exec kalibr-cedarobot bash -lc \
-  'whoami; id; pwd; test -w /opt/cedarobot/kalibr_cedarobo_v1.0.0 && echo INSTALL_RW_OK; test -w /data && echo DATA_RW_OK'
+  'whoami; id; pwd; test -w /opt/cedarobot/kalibr_cedarobo_v1.1.0 && echo INSTALL_RW_OK; test -w /data && echo DATA_RW_OK'
 ```

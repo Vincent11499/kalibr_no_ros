@@ -21,11 +21,11 @@ kalibr-noros calibrate cameras-baselink \
 ```
 
 双目模板是
-[stereo_camera_baselink_calibration_task.yaml](../config/examples/v1.0.0/stereo_camera_baselink_calibration_task.yaml)，
+[stereo_camera_baselink_calibration_task.yaml](../config/examples/v1.1.0/stereo_camera_baselink_calibration_task.yaml)，
 单目／USB 模板是
-[mono_camera_baselink_calibration_task.yaml](../config/examples/v1.0.0/mono_camera_baselink_calibration_task.yaml)，
+[mono_camera_baselink_calibration_task.yaml](../config/examples/v1.1.0/mono_camera_baselink_calibration_task.yaml)，
 全部字段见
-[完整注释模板](../config/examples/v1.0.0/all_params/camera_baselink_calibration_task_full.yaml)。
+[完整注释模板](../config/examples/v1.1.0/all_params/camera_baselink_calibration_task_full.yaml)。
 
 ## 输入契约
 

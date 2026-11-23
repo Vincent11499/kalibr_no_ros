@@ -1,7 +1,7 @@
 # 产线测试组标定 SOP：双目与双目＋IMU
 
-文档版本：1.0.0；日期：2026-09-21。适用软件：calib_capture 1.0.0、Kalibr no-ROS 1.0.0。
-滚动快门功能对应标定软件 tag `v1.0.0-rolling-shutter`。
+文档版本：1.1.0；日期：2026-11-12。适用软件：calib_capture 1.0.0、Kalibr no-ROS 1.1.0。
+滚动快门功能已纳入 Kalibr no-ROS 1.1.0；采集端仍使用 calib_capture 1.0.0。
 
 适用对象：采集操作员、标定测试员、测试负责人。本文以 `mechine-00`、4K 双目、
 `pinhole-equi`、8×10 AprilGrid 为示例。设备号、路径和时间后缀按工单填写；
@@ -283,8 +283,8 @@ mkdir -p "$TASK_DIR" "$RESULT_DIR"
 "$CALIB_BIN" --version
 ```
 
-版本应为 `kalibr-noros 1.0.0`。软件路径由工位维护人员给定，版本号之外还需记录 tag/commit；
-同为 1.0.0 的旧包可能没有 `calibrate imu-camera-rs`。产线常规使用已安装的 release，
+版本应为 `kalibr-noros 1.1.0`。软件路径由工位维护人员给定，版本号之外还需记录 tag/commit；
+旧的 1.0.0 包可能没有 `calibrate imu-camera-rs`。产线常规使用已安装的 release，
 无需操作员编译。只有研发排查耗时时才换用 project-profile。
 
 在 `TASK_DIR` 中保存本次配置。下文所有 YAML 中的示例日期和设备路径都必须填写为实际值；
@@ -560,6 +560,29 @@ HTML/PDF 不内嵌角点检测图作为五组样本；角点图另在子目录�
                      + (角点行号 − 参考行) × line_delay_s
 ```
 
+通俗地说，这不是两块钟走得不一样，而是相机和 IMU 把同一时钟源的时间戳贴在了
+采集链路中的不同事件上。本机型的图像 PTS 表示首行曝光结束，IMU 时间戳则在驱动接收时
+产生；中间还包含参考行的逐行读出时间、IMU 内部滤波、缓存和传输延迟。
+
+例如，两类数据共用同一时间轴，但某次转动在图像消息中的 PTS 是 `12.000000000 s`，
+与该图像参考行最匹配的 IMU 样本时刻是 `12.016412789 s`，则：
+
+```text
+timeshift_cam_imu = 12.016412789 - 12.000000000
+                  = +0.016412789 s
+t_imu             = 12.000000000 + 0.016412789
+                  = 12.016412789 s
+```
+
+正值表示运行时向相机时间戳做加法，负值表示做减法；它描述的是两种测量时刻定义之间的有效映射，
+不能只凭正负号判定哪个传感器“物理上先发生”，也不能把它全部归因于时钟不同步。机器汇总文件中的 `td_cam_to_imu`
+是同一数值的下游字段名，不取反号：
+
+```text
+td_cam_to_imu = timeshift_cam_imu
+t_imu = t_cam + td_cam_to_imu
+```
+
 它不等于通信耗时，也不是必须为 10 ms 整数倍的配对间隔。
 相机 50 Hz 的 20 ms 帧周期、IMU 100 Hz 的 10 ms 采样周期，不构成这个偏移的数值上限。
 同一时钟源只能在时间基准一致时排除不同时间基准的偏差，不能排除采样／接收延迟。
@@ -582,7 +605,7 @@ HTML/PDF 不内嵌角点检测图作为五组样本；角点图另在子目录�
 操作员记录曝光时长、PTS 和 IMU 打戳事件、整体时间偏移、估计行时间及所用机型配置即可。
 程序目前没有单独输入曝光时长并作半曝光补偿；下游按本标定公式使用原 PTS 时不要再重复补偿。
 不要根据显示的小数位推断时间精度，也不要把 8～9 ms 写成通用放行阈值。
-完整推导、时刻表及边界见[滚动快门时间偏移说明](../docs/ROLLING_SHUTTER_ZH.md#timeshift-cam-imu)。
+完整推导、时刻表及边界见[滚动快门时间偏移说明](../docs/ROLLING_SHUTTER_ZH.md#联合模型与状态)。
 
 ## 10. 怎么评估与放行
 
@@ -728,5 +751,5 @@ output:
   `capture.py`、`config.py`；细节见该工程 `doc/使用操作说明.md`。
 - [标定使用说明](../docs/USER_GUIDE_ZH.md)、[数据与输出说明](../docs/DATASET_WORKFLOW_ZH.md)。
 - [滚动快门配置与模型](../docs/ROLLING_SHUTTER_ZH.md)、[参数说明](../docs/TASK_PARAMETERS_ZH.md)。
-- CLI：`src/python/kalibr_no_ros/cli.py`；结果命名与保护：`delivery.py`；参考评级与规则：`evaluation.py`；
-  图像与报告：`reporting.py`、`report_plots.py`。
+- CLI：`src/python/kalibr_no_ros/cli.py`；结果命名与保护：`results/delivery.py`；参考评级与规则：`results/evaluation.py`；
+  图像与报告：`results/reporting.py`、`results/plots.py`。

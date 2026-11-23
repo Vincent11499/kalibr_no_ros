@@ -3,7 +3,7 @@
 本文档适用于交付目录 `kalibr-cedarobot-docker`。交付包已经包含：
 
 - Ubuntu 22.04 amd64 Docker 运行镜像；
-- 完整的 `kalibr_cedarobo_v1.0.0` 安装目录；
+- 完整的 `kalibr_cedarobo_v1.1.0` 安装目录；
 - Docker 运行脚本和镜像构建文件；
 - 可编辑的 `config/user.yaml`；
 - 文件完整性校验清单。
@@ -35,7 +35,7 @@ kalibr-cedarobot-docker/
 ├── docker-image/
 │   └── kalibr-cedarobot-runtime_ubuntu22.04_amd64.tar.gz
 ├── install/
-│   └── kalibr_cedarobo_v1.0.0/
+│   └── kalibr_cedarobo_v1.1.0/
 └── tools/
     └── release/
         ├── kalibr_docker.sh
@@ -43,7 +43,7 @@ kalibr-cedarobot-docker/
             └── Dockerfile.runtime
 ```
 
-完整包内已经包含展开后的 `install/kalibr_cedarobo_v1.0.0`。使用 tar 包是为了保留 `install/lib` 中 Linux 动态库的权限和符号链接；不要使用 Windows 资源管理器单独解压、复制或修改 `install`。
+完整包内已经包含展开后的 `install/kalibr_cedarobo_v1.1.0`。使用 tar 包是为了保留 `install/lib` 中 Linux 动态库的权限和符号链接；不要使用 Windows 资源管理器单独解压、复制或修改 `install`。
 
 对外传递时请复制整个 Windows 交付目录，不要只复制 Docker 镜像。
 
@@ -139,7 +139,7 @@ kalibr-cedarobot-runtime:ubuntu22.04
 ```bash
 cd "$HOME/kalibr-cedarobot-docker"
 
-INSTALL_DIR="$PWD/install/kalibr_cedarobo_v1.0.0"
+INSTALL_DIR="$PWD/install/kalibr_cedarobo_v1.1.0"
 
 tools/release/kalibr_docker.sh check "$INSTALL_DIR"
 ```
@@ -225,7 +225,7 @@ config/user.yaml
 ```bash
 cd "$HOME/kalibr-cedarobot-docker"
 
-INSTALL_DIR="$PWD/install/kalibr_cedarobo_v1.0.0"
+INSTALL_DIR="$PWD/install/kalibr_cedarobo_v1.1.0"
 USER_CONFIG="$PWD/config/user.yaml"
 BATCH_DIR="/mnt/d/machine_data/EVT312-02/1104-docker"
 ```
@@ -250,7 +250,7 @@ tools/release/kalibr_docker.sh machine \
 
 | 主机内容 | 容器路径 | 权限 |
 |---|---|---|
-| `install/kalibr_cedarobo_v1.0.0` | `/opt/kalibr` | 只读 |
+| `install/kalibr_cedarobo_v1.1.0` | `/opt/kalibr` | 只读 |
 | `config/user.yaml` | `/config/source-user.yaml` | 只读 |
 | 整个机器批次目录 | `/data/<机器>/<批次>` | 读写 |
 
@@ -280,12 +280,12 @@ Docker 镜像只包含运行依赖，Kalibr 程序始终来自主机外挂的 `i
 
 1. 确认没有标定任务正在运行；
 2. 备份交付包顶层的 `config/user.yaml`；
-3. 用发布方提供的新内容覆盖 `install/kalibr_cedarobo_v1.0.0`，按发布要求保留其现有 `config/`；
+3. 用发布方提供的新内容覆盖 `install/kalibr_cedarobo_v1.1.0`，按发布要求保留其现有 `config/`；
 4. 重新执行：
 
 ```bash
 tools/release/kalibr_docker.sh check \
-  "$HOME/kalibr-cedarobot-docker/install/kalibr_cedarobo_v1.0.0"
+  "$HOME/kalibr-cedarobot-docker/install/kalibr_cedarobo_v1.1.0"
 ```
 
 只有当 `check` 报告新的缺失动态库、Python ABI 或系统依赖不兼容时，才需要发布方提供更新后的 Docker 镜像。
@@ -341,9 +341,9 @@ tar -xzf kalibr-cedarobot-docker_bundle.tar.gz \
 cd "$HOME/kalibr-cedarobot-docker"
 sha256sum -c SHA256SUMS
 docker load -i docker-image/kalibr-cedarobot-runtime_ubuntu22.04_amd64.tar.gz
-tools/release/kalibr_docker.sh check "$PWD/install/kalibr_cedarobo_v1.0.0"
+tools/release/kalibr_docker.sh check "$PWD/install/kalibr_cedarobo_v1.1.0"
 tools/release/kalibr_docker.sh machine \
-  "$PWD/install/kalibr_cedarobo_v1.0.0" \
+  "$PWD/install/kalibr_cedarobo_v1.1.0" \
   "$PWD/config/user.yaml" \
   "/绝对路径/机器型号-编号/新批次"
 ```

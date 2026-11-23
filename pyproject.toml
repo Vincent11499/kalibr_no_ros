@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kalibr-noros"
-version = "1.0.0"
+version = "1.1.0"
 description = "ROS-free ETHZ Kalibr calibration application"
 requires-python = ">=3.8"
 dependencies = [

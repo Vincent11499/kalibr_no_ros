@@ -1,10 +1,11 @@
 # 标定 Task 参数与超参数完整说明
 
-本文基于 v1.0.0 接口源码，逐项说明
+本文基于 v1.1.0 接口源码，逐项说明
 `camera_calibration`、`camera_baselink_calibration`、`camera_rolling_shutter_calibration`、
 `camera_imu_calibration` 与 `camera_imu_rolling_shutter_calibration` task 中真正受支持的字段、默认值、
-CLI 映射、作用阶段、内部算法和有效范围。字段校验以当前 `validation.py`、
-`task.py`、`initialization.py` 和 `reporting.py` 为准。
+CLI 映射、作用阶段、内部算法和有效范围。字段校验以当前 `task/validation.py`、
+`task/initialization.py`、`task/rolling_shutter_config.py` 和 `results/evaluation.py` 为准；
+原生参数映射见 `task/solver_adapter.py`，执行优先级见 `task/execution.py`。
 
 需要先区分六类配置：
 
@@ -20,7 +21,7 @@ CLI 映射、作用阶段、内部算法和有效范围。字段校验以当前 
 本文中的“默认值”指不在 task 和 CLI 中指定该字段时，当前程序最终采用的值。
 下方“完整示例”用于展示字段位置，也包含数据区间、`shuffle: false` 和 4/4 线程预算等
 显式操作值，并不是默认值清单；各字段真实默认值以对应参数表为准。
-[`config/examples/v1.0.0/all_params/`](../config/examples/v1.0.0/all_params/)
+[`config/examples/v1.1.0/all_params/`](../config/examples/v1.1.0/all_params/)
 对有固定默认值的字段直接填写默认值；没有固定数值默认的字段填写一个合法示例并列出
 可选集合或范围。
 “有效范围”分为：
@@ -33,7 +34,7 @@ CLI 映射、作用阶段、内部算法和有效范围。字段校验以当前 
 
 ### 1.1 `camera_calibration`
 
-以下列出求解参数和基本输出控制。完整输出、归档和评估配置见 [v1.0.0 接口](V1_INTERFACE_ZH.md) 及逐行注释示例。实际任务不需要把默认值全部展开。
+以下列出求解参数和基本输出控制。完整输出、归档和评估配置见 [v1.1.0 接口](V1_INTERFACE_ZH.md) 及逐行注释示例。实际任务不需要把默认值全部展开。
 
 ```yaml
 schema_version: "1.0.0"
@@ -168,7 +169,7 @@ execution:
 | `target` | mapping，必填 | 标定板配置 |
 | `initialization` | mapping，可省略 | 独立物理初值文件；seed 始终作为可优化起点 |
 | `calibration` | mapping，可省略 | 当前 job 支持的算法参数 |
-| `output` | mapping，可省略 | 日志、显示、观测归档、结果导出和评估控制；完整字段见 [v1.0.0 接口](V1_INTERFACE_ZH.md) |
+| `output` | mapping，可省略 | 日志、显示、观测归档、结果导出和评估控制；完整字段见 [v1.1.0 接口](V1_INTERFACE_ZH.md) |
 | `execution` | mapping，可省略 | 进程、线程、队列和 profiling 配置 |
 
 相机任务额外要求 `cameras`；`camera_baselink_calibration` 还要求
@@ -963,13 +964,13 @@ solver_mode
 本文的参数行为可从以下文件复核：
 
 - task 校验、字段到 CLI 的映射和执行优先级：
-  `src/python/kalibr_no_ros/task.py`；
+  `src/python/kalibr_no_ros/task/validation.py`、`task/solver_adapter.py` 和 `task/execution.py`；
 - 两类公共初值 YAML 的严格校验、相机模型维数和 IMU 模型门控：
-  `src/python/kalibr_no_ros/initialization.py`；
+  `src/python/kalibr_no_ros/task/initialization.py`；
 - 最终标定块可观性报告、机器 epsilon hard rank 失败门和
   `epsSVD=1e-6` operational 弱可观警告：
-  `src/python/kalibr_no_ros/observability.py`；
-- 公共 CLI 和 task 生成器：`src/python/kalibr_no_ros/cli.py`；
+  `src/python/kalibr_no_ros/native_bridge/observability.py`；
+- 公共 CLI 和 task 生成器：`src/python/kalibr_no_ros/cli.py` 与 `conversion/job.py`；
 - 相机标定参数、增量流程和 outlier 逻辑：
   `src/kalibr/calibration/kalibr/python/kalibr_calibrate_cameras`；
 - 相机初始化各阶段固定 Optimizer2 设置：

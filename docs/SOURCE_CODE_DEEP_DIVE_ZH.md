@@ -37,16 +37,25 @@ flowchart LR
     Evidence --> Report
     Evidence --> Evaluate[离线 evaluate]
     Result --> Evaluate
-    TestData[独立测试集] --> Verify[固定 K/D/T verify cameras]
+    TestData[独立测试集] --> Verify[固定 K/D/T tools fixed-stereo-validation]
     Result --> Verify
 ```
 
-`task.py` 处理路径与执行参数，`validation.py` 检查输入契约；`artifacts.py`
-收集已发生的观测与筛选事件；`evaluation.py` 计算指标和规则判定；`reporting.py`
-生成报告和图像。正式输出不依赖性能诊断开关。
+`kalibr_no_ros` 内的职责如下：
 
-`fixed_camera_validation.py` 处理独立测试集验证。它重新运行标定板检测和逐帧 PnP，
-固定结果中的 K/D/T，不进入 `task.run_task()`，也不调用标定优化器。
+| 子目录 | 职责 |
+|---|---|
+| `task/` | `document.py` 管理 YAML、版本与相对路径；`validation.py` 加载并校验任务；`initialization.py` 管理 seed 与阶段决策；`execution.py` 合并执行预算；`solver_adapter.py` 适配原生参数和结果；`runner.py` 编排暂存、执行、失败保护与交付 |
+| `native_bridge/` | 原生数据读取适配、运行证据与可观性；`camera_geometry.py` 构造相机模型，`target_detector.py` 接收该模型创建标定板检测与位姿估计器 |
+| `results/` | 指标、规则判定、观测归档、图像、HTML/PDF 报告和受管发布 |
+| `conversion/` | 相机结果与 OpenCV/Kalibr 参数格式互操作；`job.py` 将旧命令参数转换成新版 task |
+| `machine/` | 配置、数据发现、task 模板、安全结果核验、状态与锁、历史参数复用及阶段调度 |
+
+`native_bridge/evidence.py` 收集已发生的观测与筛选事件；正式输出不依赖性能诊断开关。
+标准相机与 Camera–IMU 初始化仍由原生算法负责，不改用固定 K/D 的 geometry 构造路径。
+
+`kalibr_tools/fixed_stereo_validation.py` 处理独立测试集验证。它重新运行标定板检测和逐帧 PnP，
+固定结果中的 K/D/T，不进入 `task.runner.run_task()`，也不调用标定优化器。
 
 ## 2. 坐标、时间与输入
 
@@ -107,8 +116,8 @@ ${}^{A}_{B}\mathbf T$ 将 B 系点变到 A 系。`T_cam_imu` 将 IMU 点变到�
 多目系统，并在一个问题中联合优化 K/D、相邻 `T_cn_cnm1`、每目行时间和共享的连续
 标定板轨迹。
 
-`src/python/kalibr_no_ros/rolling_shutter.py` 校验逐目 `line_delay_s`、`estimate` 与
-`max_abs_line_delay_s`；`task.py` 将公开相机 ID 映射为原生位置 ID、选择正式或临时后端，
+`src/python/kalibr_no_ros/task/rolling_shutter_config.py` 校验逐目 `line_delay_s`、`estimate` 与
+`max_abs_line_delay_s`；`task/solver_adapter.py` 将公开相机 ID 映射为原生位置 ID、选择正式或临时后端，
 并把求解结果统一为第 0 行时间戳语义。目录数据仍按各相机自己的时间戳流读取，多目
 view 同时要求同步容差和共同全局角点 ID。第三台及后续相机的位姿使用从 cam0 开始的
 累计相邻变换，不能只使用最后一段 baseline。
@@ -158,7 +167,7 @@ C++ 的 distortion、projection 与 camera 类型位于
 
 模型扩展需要投影/反投影、输入和参数 Jacobian、design variable、误差项、
 Boost.Python pickle 与 YAML 维数处理同时一致。OpenCV 纯文件转换位于
-`kalibr_no_ros/opencv_io.py` 和 `opencv_fisheye_io.py`，不依赖启动求解器。
+`kalibr_no_ros/conversion/opencv_io.py` 和同目录 `opencv_fisheye_io.py`，不依赖启动求解器。
 
 原生优化器以误差项构建加权残差和 Jacobian，经变量缩放和稀疏线性代数求出更新。
 LM 的阻尼、更新接受/回滚和停止规则由原生实现负责。Schur 消元用于分离局部位姿
@@ -192,3 +201,12 @@ Python 修改后重新 configure。profile 的 `check` 目标显式执行功能�
 模型维数/alpha 丢失查模型和转换；使用帧变化查 detector、view 与增量状态；
 纯视觉 RS 结果异常还要核对第 0 行时间戳语义、扫描方向、行覆盖、轨迹 knot 和行时间
 可观性；Camera–IMU 结果异常查坐标、时钟和运动可观性；输出缺项查观测证据与输出配置。
+
+## 8. 后续 IMU 功能的代码边界
+
+当前尚未实现 Allan、六面法、十二面法或 `imu_tk` 标定。后续 Allan 噪声分析放在
+`src/python/kalibr_tools/imu_allan/`，输出候选噪声参数和报告，不自动改写 `imu.yaml`。
+正式六面法、十二面法和 `imu_tk` backend 放在独立同级包
+`src/python/kalibr_imu_calibration/`；需要 C++ 时由 `src/imu_calibration/` 承载。
+六面法与十二面法是否共用求解器，以各自实际数学模型为准，不按采集姿态数机械合并。
+这些是扩展边界，不表示当前安装包已提供对应目录或命令。
