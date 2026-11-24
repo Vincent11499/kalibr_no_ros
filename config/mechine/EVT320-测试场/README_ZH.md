@@ -13,7 +13,9 @@
 
 - `cam0`、`cam1` 双目相机，模型为 `pinhole-equi`；
 - 另一个独立单目模组，其局部 ID 为 `cam0`，模型为 `pinhole-equi`；
-- 可选 `imu0`，模型为 `calibrated`；
+- 可选 `imu0`；普通与 RS Camera–IMU 模板均支持 `calibrated`、
+  `scale-misalignment`、`scale-misalignment-size-effect`，由各模板的
+  `imus[0].model` 选择；
 - 省略 `user.yaml.targets` 中某一角色时，该任务使用自身模板的 `target.path`；显式 target
   从当前 `EVT320/` 目录按文件名 stem 选择。
 
@@ -24,6 +26,8 @@
 `mechine_base_param.yaml` 保存尚未完成 Camera–IMU 或 BaseLink 时的显式默认 T、时间偏移、
 行时间、bias 和 pitch，并保存固定 IMU/odom/lidar 参数；交付 YAML 另用 `*_calibrated`
 布尔字段区分这些默认值与真实标定结果。
+后两种模型完成后，机器汇总、跨电脑参数复用和阶段 HTML/PDF 报告都会保留完整 IMU
+内参；size-effect 模型还保留三组加速度计杠杆臂。
 
 占位符 `__DATASET_PATH__`、`__CAMERA_CALIBRATION_PATH__` 和
 `__OUTPUT_NAME__` 只用于防止模板被误当作真实任务运行。不要在产线手工替换这些值；
