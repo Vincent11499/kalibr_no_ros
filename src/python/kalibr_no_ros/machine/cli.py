@@ -252,7 +252,7 @@ class _ConsoleProgress:
         if event == "workflow_start":
             self._write("机器标定：{}，批次 {}".format(
                 details["machine"], details["batch"]))
-            self._write("正在搜索数据集目录…")
+            self._write("正在搜索数据集目录或 ROS bag…")
         elif event == "dataset_complete":
             prefix = "  数据集搜索 [{}/{}] {}：".format(
                 details["index"], details["total"],
@@ -265,10 +265,10 @@ class _ConsoleProgress:
                             + details["dataset"])
             else:
                 pattern = {
-                    "stereo": "stereo_YYMMDD_HHMM",
-                    "stereo_imu": "stereo_imu_YYMMDD_HHMM",
+                    "stereo": "stereo_YYMMDD_HHMM 或同名 .bag",
+                    "stereo_imu": "stereo_imu_YYMMDD_HHMM 或同名 .bag",
                     "stereo_baselink": "stereo_base_link_YYMMDD_HHMM",
-                    "mono": "usb_YYMMDD_HHMM",
+                    "mono": "usb_YYMMDD_HHMM 或同名 .bag",
                     "mono_baselink": "usb_base_link_YYMMDD_HHMM",
                 }.get(details["role"], details["role"])
                 self._write(prefix + self._paint("[未发现]", "yellow")
@@ -304,6 +304,15 @@ class _ConsoleProgress:
                     "已核对 {} 张图像清单，SHA-256 校验 {} 个结构文件"
                     "（{}）；未读取图像内容".format(
                         details.get("image_count", 0), hashed,
+                        _byte_size(details.get("hashed_bytes", 0))))
+            elif details.get("mode") == "bag_content_hash":
+                label = self._paint("[完成]", "green")
+                text = (
+                    "已校验 {} 张图像消息并对 {} {} 的全部 {} 个文件执行 "
+                    "SHA-256（{}）".format(
+                        details.get("image_count", 0),
+                        str(details.get("storage_format", "ROS bag")).upper(),
+                        "bag", hashed,
                         _byte_size(details.get("hashed_bytes", 0))))
             elif details.get("mode") == "metadata_snapshot":
                 label = self._paint("[快照]", "green")

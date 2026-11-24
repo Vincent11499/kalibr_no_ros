@@ -100,8 +100,10 @@ target:
 camera_calibration:
   path: camchain.yaml
 
+camera_topics: {cam0: /current/cam0/image_raw, cam1: /current/cam1/image_raw}
+
 imus:
-  - {path: imu.yaml, model: scale-misalignment}
+  - {path: imu.yaml, model: scale-misalignment, rostopic: /imu0}
 
 calibration:
   window_half_size_px: 2
@@ -176,7 +178,8 @@ execution:
 `camera_calibration` 与 `base_link`，且不接受 `initialization`。Camera–IMU 任务可以省略 `camera_calibration`，运行时先从
 `--output-dir` 查找唯一匹配的双目/多目结果；没有或存在多个候选时须显式填写路径。
 单独运行 `validate` 没有输出目录上下文，需要显式路径。Camera–IMU 还要求
-`imus`。顶层未知字段会被拒绝。
+`imus`，bag 输入可选 `camera_topics` 显式重绑上游相机 ID 到当前输入话题。顶层未知
+字段会被拒绝。
 
 ### 2.2 `initialization`
 
@@ -209,6 +212,8 @@ parameter，也不增加先验残差；无 seed 时不进入新路径。
 时间戳**的秒数，而不是绝对时间戳。`frequency_hz` 使用保序贪心选择：保留第一帧，
 之后仅保留与上一保留帧间隔至少为 $1/f$ 的帧。它会减少检测和视觉误差项数量，
 因此不仅影响耗时，也会改变最终数值。
+各后端的消息类型、图像编码、`header.stamp` 时间语义与目录图像格式见
+[数据输入说明](DATASET_WORKFLOW_ZH.md)。
 
 ### 2.4 `target`
 
@@ -519,6 +524,20 @@ camera_calibration: {path: camchain.yaml}
 - 相机 topic；
 - 相邻相机 baseline 初值。
 
+Camera–IMU bag 默认使用上游相机结果记录的 topic。若当前采集使用不同话题，可显式写：
+
+```yaml
+camera_topics: {cam0: /current/cam0/image_raw, cam1: /current/cam1/image_raw}
+```
+
+该字段仅允许用于 Camera–IMU 的 `dataset.type: bag`；键必须与上游结果的全部相机 ID
+完全一致，值必须是非空唯一话题。它只重绑当前数据流，不改内参、畸变、分辨率、baseline
+或任何优化状态，也不会按连接或字典顺序猜测。
+
+| 字段 | 默认值 | 单位与合法范围 | 内部作用 |
+|---|---|---|---|
+| `camera_topics` | 省略；沿用上游结果话题 | 无单位；仅 bag，可选非空映射，键集等于上游相机 ID，值为唯一非空字符串 | 按 ID 替换临时原生 camchain 的 `rostopic`，不修改被引用结果或几何 |
+
 Camera–IMU 标定中，相机内参和畸变始终固定，不会被联合优化。默认情况下，相邻相机
 baseline 也固定；只有 `recompute_camera_chain_extrinsics: true` 才将 cam1 及后续
 baseline 设为 active。无论该开关为何值，$\mathbf T_{\mathrm{cam0}\leftarrow\mathrm{imu}}$
@@ -533,15 +552,21 @@ ${}^{C_0}_{I_0}\mathbf T$、每相机时间偏移、重力、bias、IMU intrinsi
 
 ```yaml
 imus:
-  - {path: imu.yaml, model: scale-misalignment}
+  - {path: imu.yaml, model: scale-misalignment, rostopic: /imu0}
 ```
 
 `path` 指向包含 `schema_version: "1.0.0"`、噪声密度、随机游走和采样率的
 IMU YAML；`kind` 若提供，必须为 `imu_configuration`。第一个 IMU 是参考 IMU。
-bag 输入的 IMU YAML 必须填写 `rostopic`；目录输入可省略，按 task 的 IMU ID
-在 dataset.yaml 中查找 CSV。显式提供 rostopic 时会核验一致性。
+`imus[].rostopic` 是可选的 task 级覆盖。bag 输入必须在该字段或 IMU YAML
+的 `rostopic` 至少一处提供非空话题；两处同时提供时必须完全相同，否则报错。
+目录输入可全部省略并按 IMU ID 在 `dataset.yaml` 中查找 CSV；显式提供时核验
+其与 manifest 一致。
 `id` 可省略，默认按列表顺序使用 `imu0`、`imu1` 等编号；显式提供时必须与该顺序
 编号一致，否则在运行前报错。
+
+| 字段 | 默认值 | 范围 | 作用 |
+|---|---:|---|---|
+| `imus[].rostopic` | 无 | 可选非空字符串 | 覆盖 IMU YAML 话题；两处同时配置必须相同 |
 
 | `model` | 额外参与联合优化的 IMU 参数 | 初始化 |
 |---|---|---|

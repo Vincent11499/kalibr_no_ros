@@ -11,7 +11,10 @@ from ..version import (
     supports_schema_version,
 )
 from .initialization import CAMERA_MODEL_DIMENSIONS, _inverse_transform, _transform
-from .jobs import CAMERA_RS_JOB, CAMERA_IMU_RS_JOB, CAMERA_CALIBRATION_JOBS, ROLLING_SHUTTER_JOBS
+from .jobs import (
+    CAMERA_RS_JOB, CAMERA_IMU_RS_JOB, CAMERA_IMU_JOBS,
+    CAMERA_CALIBRATION_JOBS, ROLLING_SHUTTER_JOBS,
+)
 from .rolling_shutter_config import CAMERA_RS_MODELS
 from .jobs import CAMERA_BASELINK_JOB
 from .document import TaskError, load_yaml, require_document_version, resolve_task_path
@@ -60,6 +63,32 @@ def _camera_id(value, seen, label):
     seen.add(value)
 
 
+def _camera_topic_overrides(task, expected_ids=None):
+    """Validate an explicit Camera-IMU bag stream mapping."""
+    value = task.get("camera_topics")
+    if value is None:
+        return None
+    if task.get("job") not in CAMERA_IMU_JOBS:
+        raise TaskError("camera_topics is only supported by Camera-IMU tasks")
+    if task.get("dataset", {}).get("type") != "bag":
+        raise TaskError("camera_topics is only supported for dataset.type: bag")
+    if not isinstance(value, dict) or not value:
+        raise TaskError("camera_topics must be a non-empty camera ID mapping")
+    camera_ids = set()
+    for camera_id in value:
+        _camera_id(camera_id, camera_ids, "camera_topics key")
+    if expected_ids is not None and set(value) != set(expected_ids):
+        raise TaskError(
+            "camera_topics must contain exactly the upstream camera IDs: {}"
+            .format(", ".join(expected_ids)))
+    topics = list(value.values())
+    if (any(not isinstance(topic, str) or not topic.strip()
+            for topic in topics)
+            or len(set(topics)) != len(topics)):
+        raise TaskError("camera_topics values must be non-empty and unique")
+    return value
+
+
 def _quality_summary(value, label, rms=False):
     if value is None:
         return
@@ -102,6 +131,7 @@ def validate_options(task):
             _positive(value, "dataset.time_range_s", zero=True)
         if interval[1] <= interval[0]:
             raise TaskError("dataset.time_range_s end must be after start")
+    _camera_topic_overrides(task)
     calibration = task.get("calibration") or {}
     common = {"window_half_size_px", "max_displacement_px"}
     camera_fields = {
@@ -245,11 +275,15 @@ def validate_options(task):
         if "camera_calibration" in task:
             _input_path(task["camera_calibration"], "camera_calibration")
         for index, imu in enumerate(task["imus"]):
-            _fields(imu, {"id", "path", "model"}, "imus")
+            _fields(imu, {"id", "path", "model", "rostopic"}, "imus")
             if imu.get("id", "imu{}".format(index)) != "imu{}".format(index):
                 raise TaskError("IMU IDs must follow the task order imu0..imuN")
             if not isinstance(imu.get("path"), str) or not imu["path"].strip():
                 raise TaskError("imus.path is required")
+            if ("rostopic" in imu
+                    and (not isinstance(imu["rostopic"], str)
+                         or not imu["rostopic"].strip())):
+                raise TaskError("imus.rostopic must be a non-empty string")
             if (not isinstance(imu.get("model", "calibrated"), str)
                     or imu.get("model", "calibrated") not in IMU_MODELS):
                 raise TaskError("unsupported IMU model")
@@ -310,7 +344,7 @@ def _directory_reader(task):
 
 
 def load_imu(task, block):
-    _fields(block, {"id", "path", "model"}, "imus")
+    _fields(block, {"id", "path", "model", "rostopic"}, "imus")
     path = _input_path(block.get("path"), "imus")
     value = load_yaml(resolve_task_path(task, path))
     require_document_version(value, "IMU", "imu_configuration")
@@ -318,6 +352,17 @@ def load_imu(task, block):
     _fields(value, {"schema_version", "kind", "rostopic"} | numeric_fields, "IMU document")
     for name in numeric_fields:
         _positive(value.get(name), "IMU." + name)
+    configured_topic = block.get("rostopic")
+    document_topic = value.get("rostopic")
+    if configured_topic is not None:
+        if (not isinstance(configured_topic, str)
+                or not configured_topic.strip()):
+            raise TaskError("imus.rostopic must be a non-empty string")
+        if document_topic is not None and document_topic != configured_topic:
+            raise TaskError(
+                "imus.rostopic conflicts with IMU.rostopic in {}"
+                .format(path))
+        value["rostopic"] = configured_topic
     reader = _directory_reader(task)
     if (reader is None or "rostopic" in value) and (not isinstance(value.get("rostopic"), str) or not value["rostopic"].strip()):
         raise TaskError("IMU.rostopic is required")
@@ -497,6 +542,11 @@ def load_cameras(task):
                 "camera_calibration is missing requested camera IDs: {}"
                 .format(", ".join(missing)))
         cameras = [by_id[camera_id] for camera_id in requested]
+    camera_topics = _camera_topic_overrides(
+        task, [camera["id"] for camera in cameras])
+    if camera_topics is not None:
+        return [dict(camera, topic=camera_topics[camera["id"]])
+                for camera in cameras]
     reader = _directory_reader(task)
     return [dict(camera, topic=(reader.sensor_topic(camera["id"], "camera")
                                 if reader is not None else camera["rostopic"]))
@@ -636,8 +686,10 @@ _JOB_TASK_KEYS = {
     "camera_calibration": {"cameras"},
     CAMERA_RS_JOB: {"cameras", "rolling_shutter"},
     CAMERA_BASELINK_JOB: {"camera_calibration", "cameras", "base_link"},
-    "camera_imu_calibration": {"camera_calibration", "imus"},
-    CAMERA_IMU_RS_JOB: {"camera_calibration", "imus", "rolling_shutter"},
+    "camera_imu_calibration": {
+        "camera_calibration", "camera_topics", "imus"},
+    CAMERA_IMU_RS_JOB: {
+        "camera_calibration", "camera_topics", "imus", "rolling_shutter"},
 }
 
 

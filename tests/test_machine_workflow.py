@@ -183,6 +183,8 @@ class MachineWorkflowTest(unittest.TestCase):
         if content_hashes:
             legacy_record = dict(
                 current, fingerprint_type="content", sha256="a" * 64)
+            legacy_record.pop("dataset_type", None)
+            legacy_record.pop("storage_format", None)
         else:
             legacy_record = machine_datasets._metadata_fingerprint(
                 Path(current["path"]), role, current["dataset_id"], files)
@@ -617,6 +619,8 @@ class MachineWorkflowTest(unittest.TestCase):
             dataset, "stereo")
         legacy_record = dict(
             current, fingerprint_type="content", sha256="a" * 64)
+        legacy_record.pop("dataset_type", None)
+        legacy_record.pop("storage_format", None)
         legacy = deepcopy(entry)
         legacy["record"] = legacy_record
         legacy["files"]["meta/retired-diagnostic.json"] = {

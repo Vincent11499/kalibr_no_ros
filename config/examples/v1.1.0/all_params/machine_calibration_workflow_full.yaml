@@ -14,12 +14,23 @@ targets: # 可选；按任务覆盖标定板；未列出的任务使用对应tas
   stereo_baselink: 测试场_aprilgrid_8x8
   mono: 测试场_aprilgrid_8x8
   mono_baselink: 测试场_aprilgrid_8x8
-datasets: # 可省略或部分填写；填写的角色强制使用指定目录，其余角色仍自动选择唯一候选。
-  stereo: stereo_261021_1500
-  stereo_imu: stereo_imu_261021_1600
+datasets: # 可省略或部分填写；填写的角色强制使用指定直接子输入项，其余仍自动选择唯一候选。
+  stereo: stereo_261021_1500.bag # ROS1必须使用<role>_YYMMDD_HHMM.bag；结果名去掉.bag。
+  stereo_imu: stereo_imu_261021_1600 # 此例假定为含metadata.yaml的ROS2目录；directory也使用同名无扩展目录。
   stereo_baselink: stereo_base_link_261021_1630 # 只接受严格的 stereo_base_link_YYMMDD_HHMM。
-  mono: usb_261021_1510 # 独立单目模组；清单只能包含局部 cam0，无 IMU。
+  mono: usb_261021_1510.bag # 独立单目ROS1；只映射本模组局部cam0。
   mono_baselink: usb_base_link_261021_1640 # 目录固定 usb_base_link_YYMMDD_HHMM；只引用上面单目结果。
+bag_topics: # 仅bag角色需要；每个角色的键集必须与下例完全相同，值为bag中的非空唯一话题。
+  stereo:
+    cam0: /cam0/image_raw
+    cam1: /cam1/image_raw
+  stereo_imu: # cam0/cam1按ID复用上游相机几何；话题是当前bag实际值，可与stereo阶段不同。
+    cam0: /cam0/image_raw
+    cam1: /cam1/image_raw
+    imu0: /imu0
+  mono:
+    cam0: /usb/image_raw
+# BaseLink只接受directory，不得出现在bag_topics。同一角色跨directory/ROS1/ROS2多候选会报冲突。
 stereo:
   mode: standard # 默认standard；standard|rolling_shutter；控制双目相机阶段，不影响独立单目阶段。
 stereo_imu:

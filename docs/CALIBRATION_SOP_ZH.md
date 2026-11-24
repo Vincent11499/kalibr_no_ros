@@ -233,12 +233,21 @@ Q:\File\machine_data\kalibr_no_ros\mechine-00\
 ```
 
 `dataset.yaml` 把 `cam0/cam1/imu0` 映射到实际路径，**不可删除**。目录任务按 ID 找数据，
-不需要再填相机 topic；bag 输入才需要话题。IMU CSV 的时间戳为 ns、角速度为 rad/s、加速度为 m/s²。
+不需要再填相机 topic。IMU CSV 的时间戳为 ns、角速度为 rad/s、加速度为 m/s²。
 不要手工平移时间戳、换轴、改单位或删除个别图像来规避检查。
 
-Kalibr 不检查 `meta/`，但采集追溯、采集端校验及 bag 导出仍需要它，产线归档保留完整目录。
+底层 `kalibr-noros validate` 不检查 `meta/`，但 machine 入口会在存在时读取
+`meta/session.json` 等采集证据作完整性门控。采集追溯、采集端校验及 bag
+导出也需要 `meta/`，产线归档保留完整目录。
 目录数据可直接标定，**不需要先导出 bag**。独立 `imu-continuous` 的 Allan 数据不能代替
 具有同步图像的 `camera-imu` 会话；Allan 分析也不会自动产生可直接放行的 IMU 噪声参数。
+
+如工位交付的是 bag，machine 的双目、Camera–IMU 和独立单目也可直接读取：
+ROS1 使用 `<role>_YYMMDD_HHMM.bag`，ROS2 保留整个含 `metadata.yaml` 的
+`<role>_YYMMDD_HHMM/` 目录。维护人员必须在 `user.yaml.bag_topics` 中按
+`cam0/cam1/imu0` 绑定各阶段实际话题。Camera–IMU 按相机 ID 复用上游几何，
+因此双目与 Camera–IMU 阶段的话题字符串可以不同。
+BaseLink 仍只能使用上述文件名携带位置的目录数据。
 
 ## 6. PC 运行机器级标定
 
@@ -256,7 +265,8 @@ CALIB_ROOT=/home/gs/kalibr_cedarobo/branch
 - 后续复制 `stereo_imu_*` 后重复同一命令，程序校验并复用双目结果，继续 Camera–IMU。
 - 独立单目模组使用 `usb_*`，单目 BaseLink 使用 `usb_base_link_*`；仍运行同一命令。
   单目 BaseLink 只复用独立单目标定结果，缺少双目或 IMU 数据不会阻止它。
-- 同类目录超过一个时不会猜测，联系维护人员在 `user.yaml` 指定目录。
+- 同一角色跨目录、ROS1 或 ROS2 合计超过一个候选时不会猜测，联系维护
+  人员在 `user.yaml.datasets` 指定直接子项。
 - 已完成且来源一致时不会重新标定；重新采集或来源变化时新建批次目录，并由维护人员修改 `user.yaml.machine_dir`。
 - 普通或滚动快门 Camera–IMU 由 `user.yaml` 明确选择，操作员不得根据一次 RMS 切换。
 
@@ -314,7 +324,8 @@ tagStartId: 0
 | `accelerometer_noise_density`、`accelerometer_random_walk` | 本机型确认的加速度噪声参数 |
 | `gyroscope_noise_density`、`gyroscope_random_walk` | 本机型确认的角速度噪声参数 |
 
-目录输入可省略 `rostopic`。不能将仓库 `imu.yaml` 示例中的数字当作每台设备的测量值；
+目录输入可省略 `rostopic`。bag 输入可在 task `imus[].rostopic` 或 IMU YAML
+中填写，两处同时存在必须相同。不能将仓库 `imu.yaml` 示例中的数字当作每台设备的测量值；
 没有确认的噪声配置时先联系测试负责人。`model: calibrated` 并不表示程序不再估计 bias。
 
 ### 7.3 双目任务

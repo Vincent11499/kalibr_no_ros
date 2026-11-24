@@ -76,7 +76,9 @@ ${}^{A}_{B}\mathbf T$ 将 B 系点变到 A 系。`T_cam_imu` 将 IMU 点变到�
 `kalibr_bag_io` 支持 ROS1、ROS2 与目录。目录读取器使用 `dataset.yaml` 将
 相机/IMU ID 解析为文件路径；bag 读取器以 topic 选择流。Camera–IMU 读取已生成的
 相机结果，使用结果中的相机 ID 对应当前目录 manifest；适配到原生 camchain
-只在内部进行，不改写输入结果。
+只在内部进行，不改写输入结果。bag 输入可用 Camera–IMU task 的可选
+`camera_topics` 按相机 ID 重绑当前数据流；该映射只作用于 I/O 和临时 camchain，
+不改变 K/D/T、分辨率或正式上游结果。
 
 图像索引与解码分开，避免主进程提前保留所有图像。原生
 `kalibr_common/TargetExtractor.py` 组织检测 worker、有界在途任务与结果回收。

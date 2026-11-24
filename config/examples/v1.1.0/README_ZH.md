@@ -27,7 +27,9 @@ cam0 表示左目、cam1 表示右目；单目示例只使用 cam0。
 | 标定板和 IMU 物理量 | 满足行内范围的实测正数 | 当前板／IMU 示例值 |
 
 目录任务按 dataset.yaml 中的传感器 ID 读取，不需要 topic 或 IMU rostopic。
-改成 bag 输入时，须补齐相机 topic 和 imu.yaml 的 rostopic，值对应 bag 中的话题。
+改成 bag 输入时，相机标定 task 须补齐每目 topic；Camera–IMU 默认沿用
+上游结果话题，也可用 `camera_topics` 重绑。IMU topic 可写在 task 的
+`imus[].rostopic` 或 `imu.yaml` 的 `rostopic`，两处同时填写必须相同。
 
 | 任务 | 最简版 | 完整版 | 主要结果 |
 |---|---|---|---|
@@ -59,9 +61,12 @@ baseline。`freeze_intrinsics: true` 仍只适用于至少双目且每目提供�
 
 `all_params/` 中的 `aprilgrid.yaml`、`imu.yaml`、`evaluation.yaml` 保留参数解释与规则示例。
 机器 workflow 的 `datasets` 可完全省略或部分填写；未填写角色从 `machine_dir` 自动选择
-唯一的严格命名候选，显式填写仅用于强制选择。非规范名称（包括追加 `_bk` 的旧数据）
-静默跳过；删除或改名旧数据后加入唯一的新规范目录会自动重跑相关任务并保留旧数据集
-结果。严格目录名和同名下游的安全替换规则见机器工作流文档。
+唯一规范候选。`stereo/stereo_imu/mono` 支持 directory、ROS1 `.bag` 和
+ROS2 bag 目录，两种 BaseLink 角色只支持 directory；同一角色跨格式多候选
+也会报冲突。非规范名称（包括追加 `_bk` 的旧数据）静默跳过；删除或改名
+旧数据后加入唯一新候选会自动重跑相关任务并保留旧结果。完整注释示例给出
+`bag_topics`；BaseLink 不在其中。Camera–IMU 按 `cam0/cam1` ID 把上游相机几何映射到
+当前 bag 话题，不要求两个阶段的 topic 字符串相同。
 相机与 Camera–IMU 的 job 分开，不把完整相机标定嵌入 Camera–IMU 任务。
 
 `camera_baselink_calibration` 只接受目录数据，读取已有 `camera_calibration.path` 的
@@ -80,16 +85,20 @@ baseline。`freeze_intrinsics: true` 仍只适用于至少双目且每目提供�
 ## 准备输入
 
 将本目录复制到自己的可写运行目录，保持根目录与 `all_params/` 的相对位置。完整任务所需的板、IMU 和评价配置也保存在 `all_params/`。
-task 的 `dataset.path` 都指向根目录下的占位数据目录
-`data/stereo_imu_YYMMDD_hhmm`（完整版使用 `../data/…`），必须替换为本次采集的真实新格式目录。
-可以把实际数据放到本目录下的 `data/`，也可以填写相对 task 文件的其他路径。
+task 的 `dataset.path` 都指向根目录下的占位目录
+`data/stereo_imu_YYMMDD_hhmm`（完整版使用 `../data/…`），必须替换为真实输入。
+`dataset.type: directory` 时指向含 `dataset.yaml` 的根目录；`bag` 时可指向
+ROS1 `.bag` 文件或含 `metadata.yaml` 的完整 ROS2 目录。
 不要用旧整数 schema 数据改版本号假装新数据。
 
 本示例目录及 `all_params/` 不再放置 `dataset.yaml` 模板。
 真实数据集根目录中的 `dataset.yaml` 由采集工程自动生成，目录输入必须保留它。
-它记录数据集 ID、相机／IMU 话题、图像目录、时间戳 CSV 和 IMU CSV 路径，
+它记录数据集 ID、图像目录、时间戳 CSV 和 IMU CSV 路径；相机／IMU topic
+只是可选追溯元数据，目录 task 按传感器 ID 取流，不依赖话题。
 程序据此找到数据；它不是标定任务，也不保存标定结果。
 task 的 `dataset.path` 应指向包含该清单的真实数据集目录，无需手动复制示例清单。
+bag 消息、图像编码、`header.stamp` 和目录图像格式契约见
+[数据输入说明](../../../docs/DATASET_WORKFLOW_ZH.md)。
 
 根目录 AprilGrid 参数来自现有 EVT3.1 数据旁的配置：8×8、tagSize 0.065 m、
 tagSpacing 0.3、tagStartId 80。`all_params/aprilgrid.yaml` 为展示程序默认值，将
@@ -115,8 +124,11 @@ kalibr-noros calibrate imu-camera --config all_params/camera_imu_calibration_tas
 对照结果会增加 `native_` 前缀。
 IMU task 省略 `camera_calibration`，运行时从输出目录查找唯一匹配双目/多目结果。
 有多个结果时填写显式路径；单独运行 `validate` 时也需要该路径，因为该命令没有输出目录上下文。
-IMU 任务要求相机结果的模型、尺寸、
-相机顺序和话题与本次数据匹配。完整／最简 task 是可替换方案，不必重复标定；
+IMU 任务要求相机结果的模型、尺寸和相机顺序与本次数据匹配。
+Camera–IMU bag 默认使用上游结果话题；当本次 bag 不同时，可在 task 使用
+`camera_topics` 按相机 ID 显式重绑，不修改上游结果或相机几何。IMU 话题可在
+task 或 `imu.yaml` 配置，两处并存必须同值。
+完整／最简 task 是可替换方案，不必重复标定；
 应使用新的输出目录保留已有运行记录。
 
 最简版关闭观测归档和图像可视化，仍生成结果、指标和判定文件。完整版打开最终

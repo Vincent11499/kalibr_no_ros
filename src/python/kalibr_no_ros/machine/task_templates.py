@@ -258,9 +258,14 @@ def _absolute_profile_paths(task, profile):
 def build_task(profile_dir, stage, dataset, output_name,
                camera_result=None, mode="standard", camera_baselink=None,
                camera_mode="standard", recompute_extrinsics=False,
-               target_path=None):
+               target_path=None, dataset_type="directory", bag_topics=None):
     """Materialize a normal low-level task from the fixed internal profile."""
     profile = Path(profile_dir).resolve()
+    if dataset_type not in {"directory", "bag"}:
+        raise TaskError("machine dataset_type must be directory or bag")
+    if dataset_type == "bag" and stage in {
+            "camera_baselink", "mono_camera_baselink"}:
+        raise TaskError("machine BaseLink calibration requires a directory dataset")
     if stage == "camera" and camera_mode in {"standard", "rolling_shutter"}:
         template_key = ("camera" if camera_mode == "standard"
                         else "camera_rolling_shutter")
@@ -315,7 +320,8 @@ def build_task(profile_dir, stage, dataset, output_name,
                 task.get("rolling_shutter", {})) != {"cam0", "cam1"}:
             raise TaskError(
                 "machine rolling-shutter template must define cam0 and cam1")
-    task["dataset"] = {"type": "directory", "path": str(Path(dataset).resolve())}
+    task["dataset"] = {
+        "type": dataset_type, "path": str(Path(dataset).resolve())}
     output = task.setdefault("output", {})
     output["name"] = output_name
     if output.get("save_diagnostics") is not True:
@@ -330,6 +336,29 @@ def build_task(profile_dir, stage, dataset, output_name,
             raise TaskError("camera_result is required for the {} stage".format(stage))
         task["camera_calibration"] = {
             "path": str(Path(camera_result).resolve())}
+    if dataset_type == "bag":
+        expected_ids = (
+            ["cam0"] if stage == "mono_camera" else
+            ["cam0", "cam1", "imu0"] if stage == "camera_imu" else
+            ["cam0", "cam1"])
+        if (not isinstance(bag_topics, dict)
+                or set(bag_topics) != set(expected_ids)
+                or any(not isinstance(bag_topics.get(sensor_id), str)
+                       or not bag_topics[sensor_id].strip()
+                       for sensor_id in expected_ids)
+                or len({bag_topics[sensor_id]
+                        for sensor_id in expected_ids}) != len(expected_ids)):
+            raise TaskError(
+                "machine {} bag_topics must define unique non-empty topics for {}"
+                .format(stage, ", ".join(expected_ids)))
+        if stage in {"camera", "mono_camera"}:
+            for camera in task["cameras"]:
+                camera["topic"] = bag_topics[camera["id"]]
+        elif stage == "camera_imu":
+            task["imus"][0]["rostopic"] = bag_topics["imu0"]
+            task["camera_topics"] = {
+                camera_id: bag_topics[camera_id]
+                for camera_id in ("cam0", "cam1")}
     if stage in {"camera_baselink", "mono_camera_baselink"}:
         if camera_baselink is None:
             raise TaskError("camera_baselink configuration is required")

@@ -89,7 +89,9 @@ def _preflight_profile_recalibration(profile, targets, config, datasets,
             camera_mode=config["camera_mode"],
             recompute_extrinsics=config[
                 "camera_imu_recompute_extrinsics"],
-            target_path=targets.get(stage))
+            target_path=targets.get(stage),
+            dataset_type=record.get("dataset_type", "directory"),
+            bag_topics=record.get("bag_topics"))
 
 
 def _stage_summary(status, result=None, action=None, message=None):
@@ -130,7 +132,8 @@ def _verify_stage_inputs_unchanged(
                 stage=stage, **details)
 
     current_dataset, entry, statistics = _fingerprint_dataset(
-        dataset_record["path"], dataset_record["role"], progress=report)
+        dataset_record["path"], dataset_record["role"],
+        bag_topics=dataset_record.get("bag_topics"), progress=report)
     if current_dataset != dataset_record:
         raise DatasetChangedError(
             "dataset changed during calibration; keep capture files immutable "
@@ -617,7 +620,9 @@ def run_machine_workflow(prefix, config_path, runner=None, progress=None):
                     index=index, total=len(found), **details)
 
             record, entry, unused_statistics = _fingerprint_dataset(
-                dataset_path, role, progress=report)
+                dataset_path, role,
+                bag_topics=config.get("bag_topics", {}).get(role),
+                progress=report)
             datasets[role] = record
 
             expected = stored_datasets.get(role)
@@ -831,7 +836,9 @@ def run_machine_workflow(prefix, config_path, runner=None, progress=None):
                     camera_mode=config["camera_mode"],
                     recompute_extrinsics=config[
                         "camera_imu_recompute_extrinsics"],
-                    target_path=target_paths.get(stage))
+                    target_path=target_paths.get(stage),
+                    dataset_type=record.get("dataset_type", "directory"),
+                    bag_topics=record.get("bag_topics"))
                 delivery, action = _run_stage(
                     prefix=prefix, runner=runner, output=output, tasks=tasks,
                     state_path=state_path, state=state,

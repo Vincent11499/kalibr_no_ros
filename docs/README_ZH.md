@@ -6,13 +6,13 @@
 |---|---|
 | [v1.1.0 版本更新说明](RELEASE_NOTES_V1.1.0_ZH.md) | 新增能力、版本兼容性、配置迁移、发布路径与验收结果 |
 | [版本兼容说明](VERSION_COMPATIBILITY_ZH.md) | 软件、配置、数据集、结果、状态、机器汇总和标定行为如何独立演进 |
-| [机器级一键标定](MACHINE_CALIBRATION_WORKFLOW_ZH.md) | 产线主入口、标定批次目录、分阶段续跑、数据发现与结果复用规则 |
+| [机器级一键标定](MACHINE_CALIBRATION_WORKFLOW_ZH.md) | 产线主入口、目录/ROS1/ROS2 输入、分阶段续跑、数据发现与结果复用规则 |
 | [机器工作流防护暂缓清单](MACHINE_WORKFLOW_PROTECTION_BACKLOG_ZH.md) | 测试阶段关闭的 provenance 防护、仍保留的硬安全规则及收敛后恢复条件 |
 | [长期 Docker 容器简明操作](PERSISTENT_DOCKER_CONTAINER_ZH.md) | 运行镜像与外挂程序边界、长期容器日常使用、保护性创建及禁止删除命令 |
 | [产线标定 SOP](CALIBRATION_SOP_ZH.md) | 采集、机器入口、结果检查、评估、放行与封存 |
-| [使用指南](USER_GUIDE_ZH.md) | 任务配置、目录数据集、运行与转换 |
+| [使用指南](USER_GUIDE_ZH.md) | 任务配置、目录与 ROS1/ROS2 bag 数据集、运行与转换 |
 | [`kalibr-noros tools` 工具总览](TOOLS_ZH.md) | 正式诊断与实验工具的用途、命令、输入输出、指标口径和覆盖规则 |
-| [输入与输出说明](DATASET_WORKFLOW_ZH.md) | 相机 ID、四份配置依赖、输出各文件含义 |
+| [输入与输出说明](DATASET_WORKFLOW_ZH.md) | 后端支持范围、话题/消息/时间戳、目录图像格式与输出文件含义 |
 | [v1.1.0 软件的 v1.0.0 契约](V1_INTERFACE_ZH.md) | 数据格式、观测归档、指标与判定 |
 | [任务参数](TASK_PARAMETERS_ZH.md) | 字段、默认值、单位、范围与算法作用 |
 | [相机模型](CAMERA_MODELS_ZH.md) | 参数顺序、投影公式、各阶段是否参与优化 |
@@ -42,7 +42,8 @@ before/after 完成后可用同一工具的 `diagnose-extrinsics` 在三组 afte
 
 产线常规运行使用 `kalibr-cedarobot machine`（默认读取安装根的 `config/user.yaml`），由程序依次完成或复用
 双目、双目 Camera–IMU、双目 BaseLink，以及独立单目与单目 BaseLink 阶段，见
-[机器级一键标定](MACHINE_CALIBRATION_WORKFLOW_ZH.md)。
+[机器级一键标定](MACHINE_CALIBRATION_WORKFLOW_ZH.md)。双目、Camera–IMU 和独立单目可用
+directory、ROS1 `.bag` 或 ROS2 bag；BaseLink 仍仅支持 directory。
 研发维护时再按[工程 README](../README.md)构建 `release`、复制
 [配置示例](../config/examples/v1.1.0/README_ZH.md)，并直接使用 `kalibr-noros`。
 需要定位耗时时使用 `project-profile`，通过 task 或 CLI 显式请求计时。

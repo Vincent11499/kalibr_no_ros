@@ -14,6 +14,17 @@ kalibr-cedarobot machine
 机器工作流只编排既有求解器，不改变各任务的阶段顺序、残差、活动
 参数、优化器和异常点逻辑。
 
+| 工作流角色 | 目录数据集 | ROS1 `.bag` | ROS2 bag 目录 |
+|---|---:|---:|---:|
+| `stereo` | ✓ | ✓ | ✓ |
+| `stereo_imu` | ✓ | ✓ | ✓ |
+| `mono` | ✓ | ✓ | ✓ |
+| `stereo_baselink` | ✓ | — | — |
+| `mono_baselink` | ✓ | — | — |
+
+bag 支持普通与滚动快门求解。BaseLink 必须从每张图像文件名取得平台位置，所以不能用
+ROS1/ROS2 bag 代替目录输入。
+
 ## 1. 操作员只需要做什么
 
 工位维护人员把 `user.yaml` 放到 `<prefix>/config/user.yaml`。操作员完成采集和数据复制后，在 WSL/Linux 中
@@ -62,15 +73,15 @@ kalibr-cedarobot machine
 ## 2. 机器与批次目录约定
 
 机器目录名固定为 `<machine_version>-<machine_num>`；其下每次标定使用一个独立批次
-目录。`machine_dir` 指向批次目录，workflow 只扫描该目录的直接子目录，不递归进入
+目录。`machine_dir` 指向批次目录，workflow 只扫描该目录的直接子项，不递归进入
 `result/`：
 
 ```text
 EVT312-02/
 ├── user.yaml
 └── 1029/                             本次标定批次；名称可为安全字母、数字、下划线或连字符
-    ├── stereo_260916_2136/           双目内外参数据
-    ├── stereo_imu_260916_2200/       双目＋IMU 数据，可以稍后加入同一批次
+    ├── stereo_260916_2136.bag        双目 ROS1 示例；也可为同名 directory/ROS2 目录
+    ├── stereo_imu_260916_2200/       双目＋IMU ROS2 或目录数据，可以稍后加入
     ├── stereo_base_link_261021_1630/ 可选：固定姿态平台平移数据
     ├── stereo_test_260916_2211/      独立验证数据，不参与自动标定
     ├── usb_261021_1510/              独立单目模组内参数据，仅 cam0
@@ -78,36 +89,37 @@ EVT312-02/
     └── result/                        本批次程序创建或复用
 ```
 
-同一工单内因精度不足重新采集时，删除旧数据集或把目录改成不满足下表的名称（例如
-追加 `_bk`），再放入唯一的新规范目录；工作流会自动重跑对应任务和依赖任务。真正的
+同一工单内因精度不足重新采集时，删除旧输入或把它改成不满足下表的名称（例如
+追加 `_bk`），再放入唯一的新规范候选；工作流会自动重跑对应任务和依赖任务。真正的
 新工单仍新建批次目录并修改 `user.yaml.machine_dir`，不同批次不自动复用结果。批次名不承担时间解析，只需匹配
 `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`，例如 `1029`、`20261030` 或 `run_02`。
 
 自动候选只接受严格名称：
 
-| 名称 | 用途 |
-|---|---|
-| `stereo_YYMMDD_hhmm` | 双目相机标定 |
-| `stereo_imu_YYMMDD_hhmm` | Camera–IMU 标定 |
-| `stereo_base_link_YYMMDD_HHMM` | Camera–BaseLink |
-| `usb_YYMMDD_HHMM` | 独立单目模组内参标定 |
-| `usb_base_link_YYMMDD_HHMM` | 单目 Camera–BaseLink |
-| `stereo_test_YYMMDD_hhmm` | 固定参数验证，不被本入口选择 |
+| 名称 | 后端 | 用途 |
+|---|---|---|
+| `stereo_YYMMDD_HHMM`／`stereo_YYMMDD_HHMM.bag` | directory 或 ROS2／ROS1 | 双目相机标定 |
+| `stereo_imu_YYMMDD_HHMM`／`stereo_imu_YYMMDD_HHMM.bag` | directory 或 ROS2／ROS1 | Camera–IMU 标定 |
+| `stereo_base_link_YYMMDD_HHMM` | directory | Camera–BaseLink |
+| `usb_YYMMDD_HHMM`／`usb_YYMMDD_HHMM.bag` | directory 或 ROS2／ROS1 | 独立单目模组内参标定 |
+| `usb_base_link_YYMMDD_HHMM` | directory | 单目 Camera–BaseLink |
+| `stereo_test_YYMMDD_HHMM` | directory | 固定参数验证，不被本入口选择 |
 
-目录名只用于角色选择；传感器映射仍由各目录的 `dataset.yaml` 决定。双目数据必须提供
-`cam0`、`cam1` 且没有 IMU；BaseLink 数据相同；双目＋IMU 数据必须提供 `cam0`、`cam1`、`imu0`。
-双目清单中的相机顺序必须是 `[cam0, cam1]`。`usb_*` 和 `usb_base_link_*` 清单
-必须且只能包含 `[cam0]`，不能包含 IMU。当前机器 profile 不自动处理此前 USB 棋盘格、
-bag 或三目任务；纯视觉 RS 双目通过 `stereo.mode: rolling_shutter` 显式启用，其他任务继续使用底层 `kalibr-noros`。
-`.inprogress`、`.failed`、`*_bk`、旧名、缺少时间后缀的目录、隐藏目录和其他任意
+名称只用于角色选择，实际后端由内容检测：目录中的 `dataset.yaml` 表示 directory，
+`metadata.yaml` 表示 ROS2，`.bag` 普通文件表示 ROS1。目录双目必须提供 `cam0/cam1`
+且没有 IMU，双目＋IMU 必须提供 `cam0/cam1/imu0`，USB 目录只含局部 `cam0`。
+bag 没有项目 manifest，传感器映射由 `user.yaml.bag_topics` 明确指定；不根据连接顺序
+猜左右目。当前 machine 仍不自动处理此前 USB 棋盘格或三目任务；纯视觉 RS 双目通过
+`stereo.mode: rolling_shutter` 显式启用。
+`.inprogress`、`.failed`、`*_bk`、旧名、缺少时间后缀的输入、隐藏项和其他任意
 非规范名称都静默跳过，不影响正常标定；严格命名的符号链接会被明确拒绝并停止运行，
 防止输入跳出机器目录。
 
-每类只有一个候选时可以自动选择。出现两个或更多同类候选时，程序停止并列出候选，
-不根据目录时间、mtime 或字典顺序猜测；开发者应清理或重命名旧候选，也可以在
-`user.yaml` 中显式指定本工单使用的目录名。
+每类只有一个候选时可以自动选择。directory、ROS1、ROS2 跨格式合计出现两个或更多
+同类候选时，程序停止并列出候选，不根据时间、mtime、格式或字典顺序猜测；开发者应
+清理或重命名旧候选，也可以在 `user.yaml` 中显式指定本工单使用的直接子项名。
 
-### 2.1 每套目录数据的内部格式
+### 2.1 目录数据的内部格式
 
 内部路径可自定义，但必须与 `dataset.yaml` 一致。推荐：
 
@@ -180,6 +192,22 @@ IMU CSV 表头为 `timestamp_ns,wx,wy,wz,ax,ay,az`，角速度单位 `rad/s`，�
 平移方向；每目都需看到本 profile 指定的标定板。完整契约见
 [目录数据说明](DATASET_WORKFLOW_ZH.md)和[BaseLink 任务说明](CAMERA_BASELINK_CALIBRATION_ZH.md)。
 
+### 2.2 ROS1／ROS2 bag 的内部要求
+
+ROS1 候选是单个 `.bag` 文件；ROS2 候选是含 `metadata.yaml` 的完整 rosbag2 目录，
+SQLite3 和 MCAP 均可。不要把 ROS2 内部单个 `.db3`／`.mcap` 文件当成 ROS1 候选。
+
+相机话题只接受 `sensor_msgs/msg/Image` 或 `sensor_msgs/msg/CompressedImage`，IMU
+话题只接受 `sensor_msgs/msg/Imu`。消息按 `header.stamp` 排序和同步；bag record time
+只在显式时钟同步配置下使用。相机和 IMU 必须处于正确时基，Camera–IMU 的 IMU 时间段
+必须覆盖全部选中相机观测。原始与压缩图像的编码、位深和解码限制见
+[数据输入说明](DATASET_WORKFLOW_ZH.md#3-ros1ros2-bag-输入契约)。
+
+machine 对 ROS1 文件和 ROS2 目录中的全部普通文件内容计算 SHA-256，并在求解发布前
+复核；符号链接、运行中增加／删除／修改文件都会阻止发布。ROS1 的逻辑数据集名使用
+文件 stem，例如 `stereo_261021_1500.bag` 的结果名为 `stereo_261021_1500`，不会带
+`.bag`。
+
 ## 3. `user.yaml` 是开发者接口
 
 `user.yaml` 由开发者或工位维护人员生成并随机器交付，不要求产线操作员填写。可从
@@ -217,24 +245,44 @@ targets:
 每个角色独立记录最终生效的标定板。只修改 `stereo_baselink` 不会改变双目或
 Camera–IMU 的 target；模板和标定板有效内容变化时，仅重跑实际依赖阶段。
 
-同类数据存在多个候选时，明确指定直接子目录名：
+同类数据存在多个候选时，明确指定直接子项名；ROS1 值包含 `.bag`：
 
 ```yaml
 datasets:
-  stereo: stereo_260916_2136
+  stereo: stereo_260916_2136.bag
   stereo_imu: stereo_imu_260916_2200
   stereo_baselink: stereo_base_link_261021_1630
   mono: usb_261021_1510
   mono_baselink: usb_base_link_261021_1640
 ```
 
-`datasets` 可完全省略或只填写部分角色。显式指定的角色强制使用该直接子目录，即使同类
-还有其他合法候选；未指定角色仍自动发现唯一候选，没有候选则等待。指定目录必须已存在，
-分阶段采集时不要提前填写尚未复制到当前批次目录的目录名。
+`datasets` 可完全省略或只填写部分角色。显式指定的角色强制使用该直接子项，即使同类
+还有其他合法候选；未指定角色仍自动发现唯一候选，没有候选则等待。指定子项必须已存在，
+分阶段采集时不要提前填写尚未复制到当前批次目录的名称。
 
-USB 单目目录统一使用上述 `usb_` / `usb_base_link_` 前缀，`HHMM` 为四位小时、分钟。
+只要任一 `stereo`、`stereo_imu` 或 `mono` 候选是 bag，就必须为该角色填写精确话题：
+
+```yaml
+bag_topics:
+  stereo:
+    cam0: /cam0/image_raw
+    cam1: /cam1/image_raw
+  stereo_imu:
+    cam0: /cam0/image_raw
+    cam1: /cam1/image_raw
+    imu0: /imu0
+  mono:
+    cam0: /usb/image_raw
+```
+
+每个角色的键集合是固定的，不能缺少、增加或换名；话题必须为非空字符串。只需配置
+实际使用 bag 的角色，directory 角色不要求配置。Camera–IMU 阶段按 `cam0/cam1` ID
+把上游相机几何映射到当前 `stereo_imu` bag，两个阶段的话题字符串可以不同。BaseLink
+只接受 directory，因此 `bag_topics` 不允许 `stereo_baselink` 或 `mono_baselink`。
+
+USB 单目输入统一使用上述 `usb_` / `usb_base_link_` 前缀，`HHMM` 为四位小时、分钟。
 不再识别 `stereo_baselink_*`、`usb_baselink_*`、`mono_*`、`mono_base_link_*` 或
-`mono_baselink_*` 目录名称；这类旧名及形似任务但后缀不合法的目录会被静默跳过。
+`mono_baselink_*` 名称；这类旧名及形似任务但后缀不合法的输入会被静默跳过。
 `datasets`、`targets`、顶层任务配置和 `reuse_calib_params` 统一使用
 `stereo/stereo_imu/stereo_baselink/mono/mono_baselink`；各任务默认使用模板中的
 AprilGrid，也可由 `targets` 分别覆盖。
@@ -248,10 +296,11 @@ AprilGrid，也可由 `targets` 分别覆盖。
 | `template` | 必填；安全的 `config/mechine/` 直接子目录名，本次为 `EVT320`；所有 task、target、初始化和 IMU YAML 都必须留在该目录内 |
 | `machine_dir` | 本次标定批次目录；相对路径以 `user.yaml` 所在目录为基准；父目录必须严格使用 `<machine_version>-<machine_num>`，批次名匹配安全名称规则；例如 `EVT312-02/1029` 从父目录得到 `EVT312` 和字符串编号 `"02"` |
 | `targets` | 可选映射；键为 `stereo/stereo_imu/stereo_baselink/mono/mono_baselink`，值为当前模板目录内的文件名 stem；支持 Unicode 字母/数字、下划线和连字符，不允许空格、点号或路径分隔符；未列出的角色使用自身 task 模板的 `target.path` |
-| `datasets.stereo` | 可选；指定双目数据的直接子目录名 |
-| `datasets.stereo_imu` | 可选；指定双目＋IMU 数据的直接子目录名 |
+| `datasets.stereo` | 可选；指定双目直接子项；directory/ROS2 写无扩展名目录，ROS1 写 `.bag` 文件名 |
+| `datasets.stereo_imu` | 可选；指定双目＋IMU 直接子项，格式同上 |
 | `datasets.stereo_baselink` | 可选；强制指定严格命名的双目 BaseLink 数据直接子目录 |
-| `datasets.mono` | 可选；指定 `usb_YYMMDD_HHMM` 单目内参数据的直接子目录名 |
+| `datasets.mono` | 可选；指定 `usb_YYMMDD_HHMM` 目录或 `usb_YYMMDD_HHMM.bag` |
+| `bag_topics` | 仅 bag 角色需要；可含 `stereo/stereo_imu/mono`，每个角色必须精确映射其 `cam0/cam1/imu0` 键；BaseLink 键非法 |
 | `datasets.mono_baselink` | 可选；指定 `usb_base_link_YYMMDD_HHMM` 单目 BaseLink 数据的直接子目录名 |
 | `stereo.mode` | 可选；`standard` 或 `rolling_shutter`，默认 `standard`；控制双目相机阶段 |
 | `stereo_imu.mode` | 必填；`standard` 或 `rolling_shutter`，程序不自动切换 |
@@ -271,7 +320,7 @@ AprilGrid，也可由 `targets` 分别覆盖。
 参数、相机模型、IMU 噪声或 RS 行时间边界属于开发者发布内容，不应由操作员临时改值；
 操作员只在已安装标定板之间通过 `targets` 选择。
 
-运行时先一次性搜索五类规范数据集目录；找到时显示目录名，未找到时立即以黄色
+运行时先一次性搜索五类规范输入候选；找到时显示直接子项名，未找到时立即以黄色
 `[未发现]` 显示对应命名规则。随后只校验实际找到的数据集。数据集搜索仍显示
 `[1/5]` 至 `[5/5]`，标定任务则按本次实际数据数量编号，例如只有双目和双目 BaseLink
 时显示 `[1/2]`、`[2/2]`。没有数据的阶段不占任务编号，任务之间保留两个空行。
@@ -280,18 +329,21 @@ AprilGrid，也可由 `targets` 分别覆盖。
 行延时或 BaseLink pitch 等摘要。终端不重复打印结果、HTML、PDF 的完整路径；完整原生
 求解输出仍保存在对应任务目录的 `stdout.log`，正式文件位置遵循本文第 5 节目录约定。
 
-每次数据集校验都会重新解析 manifest 和相机时间戳 CSV，检查传感器组成、时间戳顺序、
-引用路径及图像清单。`dataset.yaml`、各相机时间戳 CSV 和 IMU CSV 按内容计算精确
-SHA-256；图像只记录相机 ID、CSV 顺序、时间戳、相对文件名和文件大小，不读取像素
-内容。因此单纯查看图片或执行 `touch` 不会触发重标定，atime/mtime、ctime、inode 和
+目录数据每次校验都会重新解析 manifest 和相机时间戳 CSV，检查传感器组成、时间戳
+顺序、引用路径及图像清单。`dataset.yaml`、各相机时间戳 CSV 和 IMU CSV 按内容计算
+SHA-256；图像按相机 ID、CSV 顺序、时间戳、相对文件名和大小登记，指纹阶段不解码
+像素。因此单纯查看图片或执行 `touch` 不会触发重标定，atime/mtime、ctime、inode 和
 device 也不参与数据身份；图像被增加、删除、改名、改变顺序、时间戳或大小时则视为
-数据集变化。缓存位于 `result/.kalibr-cedarobot/input_hash_cache.json`。
+数据集变化。随后底层 task 的正式输入校验仍会解码选中图像并检查分辨率。
 
-求解器先写私有 staging。staging 完成后、任何正式结果目录移动或替换前，普通任务与
-Camera–BaseLink 都重新计算上述结构文件哈希和图像清单。若结构文件或清单在运行期间
-变化，本阶段记为失败，本次 staging 不发布，旧成功结果仍按原清单校验并保留；仅图像
-时间属性变化则允许发布。新缓存只有在复核通过、发布完成且正式交付完整性验证成功后才
-绑定为可信记录。
+ROS1/ROS2 bag 校验话题、标准消息类型和消息数，并对 ROS1 文件或 ROS2 目录中的全部
+普通文件内容计算 SHA-256；不会只依赖 `metadata.yaml`、文件大小或时间属性。缓存位于
+`result/.kalibr-cedarobot/input_hash_cache.json`。
+
+求解器先写私有 staging。staging 完成后、任何正式结果目录移动或替换前，所有任务都
+按其后端重新计算上述目录指纹或 bag 全内容哈希。输入在运行期间变化时，本阶段记为
+失败，本次 staging 不发布，旧成功结果仍按原记录校验并保留；仅目录图像时间属性变化
+允许发布。新缓存只有在复核通过、发布完成且正式交付完整性验证成功后才绑定为可信记录。
 
 旧缓存升级时，若旧记录保存了与既有成功结果绑定的结构文件内容 SHA-256，可在核对
 图像路径与大小后直接迁移，图像无需补算哈希。若旧缓存只有路径、大小和时间属性，则
@@ -353,7 +405,7 @@ mono_baselink:
 `cam0`。若发现单目 BaseLink 数据却缺少单目数据，该分支显示黄色等待；双目、双目
 Camera–IMU 和双目 BaseLink 等独立分支继续执行，命令不因此返回失败。
 
-### 3.2 跨电脑复用已有参数
+### 3.3 跨电脑复用已有参数
 
 同一设备部分任务已在另一台电脑完成时，只需将其 `result/calib_params/` 复制到当前
 批次的 `result/`；不需要原始数据集、任务目录、HTML/PDF、metrics 或原电脑的状态文件。
@@ -449,8 +501,8 @@ stereo_imu:
 
 ```text
 <machine_root>/<batch>/
-├── stereo_YYMMDD_HHMM/
-├── stereo_imu_YYMMDD_HHMM/
+├── stereo_YYMMDD_HHMM.bag          # ROS1 示例；directory/ROS2 用同名目录
+├── stereo_imu_YYMMDD_HHMM/         # directory 或 ROS2 示例
 ├── stereo_base_link_YYMMDD_HHMM/
 ├── usb_YYMMDD_HHMM/
 ├── usb_base_link_YYMMDD_HHMM/
@@ -754,8 +806,8 @@ Camera–IMU 和 BaseLink 结果始终记录并复核实际引用的对应模组
 核对数据集、profile、软件、task、上游依赖和受管交付摘要。只存在同名 YAML 不足以
 视为已完成。
 
-批次一旦产生 state，同名数据目录的内容、软件、BaseLink 配置和受管结果必须保持不变。
-已有数据目录消失并出现唯一的新规范目录时，程序把它识别为受控重标定。已安装 profile
+批次一旦产生 state，同名输入的内容、软件、BaseLink 配置和受管结果必须保持不变。
+已有输入消失并出现唯一的新规范候选时，程序把它识别为受控重标定。已安装 profile
 的 YAML 字节变化时，程序比较最终生成 task 及其 target、initialization、IMU 输入文档
 的 YAML 语义；只改注释、空白或键顺序仍复用，有效字段变化则按依赖重跑。名称不变的
 交付在完整性校验后由内部使用 `force` 安全替换，失败时保留旧结果。改变软件、工艺配置
@@ -796,8 +848,11 @@ Camera–IMU 和 BaseLink 结果始终记录并复核实际引用的对应模组
 引用双目初始化文件。
 可选标定板 YAML 位于 EVT320 目录，由 `user.yaml.targets.<数据角色>` 以 stem 选择。
 profile 必须可移植，不能写机器名、数据绝对路径或输出绝对路径。机器入口以结构化 YAML
-修改注入 `dataset.path`、`output.name`、精确的 `camera_calibration.path`，以及明确配置的
-`base_link` 和每目平移，不做文本替换。
+修改注入 `dataset.type/path`、`output.name`、精确的 `camera_calibration.path`，以及
+明确配置的 `base_link` 和每目平移，不做文本替换。bag 任务还会按
+`bag_topics` 为相机注入 `cameras[].topic`；Camera–IMU 使用 `camera_topics` 按 ID
+重绑相机输入，并注入 `imus[].rostopic`。directory 任务仍按 manifest 中的 ID 取流，
+不需要这些话题字段。
 
 task 中的 `target.path`、`initialization.path` 和 `imus[].path` 必须写相对文件名，以该
 task 所在的 EVT320 目录为基准，并且解析后必须仍位于同一模板目录。例如：

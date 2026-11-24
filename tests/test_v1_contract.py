@@ -502,6 +502,43 @@ class V1ContractTest(unittest.TestCase):
         dump_yaml(valid, path)
         self.assert_validation_failed("rostopic.*unique")
 
+    def test_camera_imu_bag_camera_topics_only_remap_io_streams(self):
+        self.camera_imu_task()
+        self.task["dataset"] = {"type": "bag", "path": "capture.bag"}
+        self.task["camera_topics"] = {"cam0": "/capture/left/image"}
+        self.write_inputs()
+
+        camera = load_cameras(load_task(self.task_path))[0]
+        self.assertEqual(camera["topic"], "/capture/left/image")
+        self.assertEqual(camera["rostopic"], "/cam0/image_raw")
+        self.assertEqual(camera["intrinsics"], [7.0, 7.0, 5.0, 4.0])
+        from kalibr_no_ros.task.solver_adapter import _legacy_camchain
+        native = self.root / "native"
+        native.mkdir()
+        camchain = load_yaml(_legacy_camchain(
+            load_task(self.task_path), native))
+        self.assertEqual(camchain["cam0"]["rostopic"], "/capture/left/image")
+        self.assertEqual(camchain["cam0"]["intrinsics"], [7.0, 7.0, 5.0, 4.0])
+
+        self.task["dataset"]["type"] = "directory"
+        self.write_inputs()
+        with self.assertRaisesRegex(TaskError, "only supported.*bag"):
+            load_task(self.task_path)
+
+        self.task["dataset"]["type"] = "bag"
+        for topics, pattern in (
+                ({"other": "/capture/left/image"}, "upstream camera IDs"),
+                ({"cam0": " "}, "non-empty and unique")):
+            with self.subTest(topics=topics):
+                self.task["camera_topics"] = topics
+                self.write_inputs()
+                if "cam0" in topics:
+                    with self.assertRaisesRegex(TaskError, pattern):
+                        load_task(self.task_path)
+                else:
+                    with self.assertRaisesRegex(TaskError, pattern):
+                        load_cameras(load_task(self.task_path))
+
     def test_camera_imu_result_publishes_exact_inverse_transform(self):
         transform = np.eye(4)
         transform[:3, :3] = cv2.Rodrigues(np.asarray([.13, -.21, .08]))[0]

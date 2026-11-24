@@ -13,9 +13,11 @@ target: # AprilGrid 参数独立维护，复用同一块实体板。
 
 # camera_calibration: # 可选，无固定默认值；省略时从--output-dir查找唯一匹配结果。
 #   path: ../output/camera_calibration_cam0_cam1.yaml # 多个候选时须显式指定；不能填初始化模板。
+# camera_topics: {cam0: /current/cam0/image_raw, cam1: /current/cam1/image_raw} # 仅bag可选；默认沿用上游话题；键须与上游结果ID完全一致，值须为非空且互不重复的字符串；只重绑当前输入流，不改几何。
 imus: # 本例一台IMU，收到的原始样本全部进入读取流程。
   - id: imu0 # 默认按列表位置为imu0；目录输入须与dataset.yaml传感器ID对应。
     path: imu.yaml # 必填，无默认值；可选任意有效IMU配置YAML路径。
+    # rostopic: /imu0 # bag输入须在此处或imu.yaml至少配置一处；两处同时配置必须相同；directory可省略。
     model: calibrated # 默认calibrated；已校正六轴模型，不添加尺度或轴不正交参数。
 
 # initialization: # 默认不启用；必须先用真实可信物理参数替换模板占位值。

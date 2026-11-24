@@ -243,8 +243,16 @@ class MachineParamReuseTest(unittest.TestCase):
                     "job": "camera_imu_calibration",
                     "dataset": {"type": "bag", "path": "unused.bag"},
                     "camera_calibration": {"path": str(path)},
+                    "camera_topics": {
+                        camera["id"]: "/capture/{}/image".format(camera["id"])
+                        for camera in seed["cameras"]
+                    },
                 })
                 self.assertEqual(len(cameras), 1 if mono else 2)
+                self.assertEqual(
+                    [camera["topic"] for camera in cameras],
+                    ["/capture/{}/image".format(camera["id"])
+                     for camera in cameras])
                 self.assertEqual(cameras[0]["distortion_coeffs"], patch["camera"]["distortion"]
                                  if mono else patch["camera"]["cam0"]["distortion"])
 

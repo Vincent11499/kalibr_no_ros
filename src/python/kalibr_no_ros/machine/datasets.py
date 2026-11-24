@@ -12,7 +12,8 @@ import re
 import stat as stat_mode
 import time
 
-from kalibr_bag_io.directory import DirectoryReader
+from kalibr_bag_io import BagReader, DirectoryReader, detect_dataset_format
+from kalibr_bag_io.reader import IMAGE_TYPES, IMU_TYPE
 
 from ..filesystem import file_sha256 as _sha256
 from ..task.document import TaskError
@@ -21,7 +22,7 @@ from ..version import (
     SUPPORTED_STATE_SCHEMA_VERSIONS,
     supports_schema_version,
 )
-from .config import _DATASET_PATTERNS
+from .config import _BAG_TOPIC_KEYS, _DATASET_PATTERNS
 from .state import _atomic_json
 
 
@@ -32,6 +33,9 @@ INPUT_HASH_CACHE_KIND = "machine_input_hash_cache"
 
 
 INVENTORY_FINGERPRINT_TYPE = "structured_content_image_inventory"
+
+
+BAG_FINGERPRINT_TYPE = "content"
 
 
 class DatasetChangedError(TaskError):
@@ -48,12 +52,15 @@ def _discover_dataset_path(machine_dir, role, selected=None, children=None):
         if (not isinstance(selected, str) or Path(selected).name != selected
                 or not pattern.fullmatch(selected)):
             raise TaskError(
-                "selected {} dataset is not a valid directory name".format(
+                "selected {} dataset is not a valid directory name or ROS1 "
+                ".bag filename".format(
                     role))
         candidate = machine / selected
         if candidate.is_symlink():
             raise TaskError("dataset must not be a symlink: {}".format(candidate))
-        if not candidate.is_dir():
+        expected_file = candidate.suffix.lower() == ".bag"
+        valid = candidate.is_file() if expected_file else candidate.is_dir()
+        if not valid:
             raise TaskError("selected dataset does not exist: {}".format(candidate))
         return candidate.resolve()
 
@@ -63,7 +70,9 @@ def _discover_dataset_path(machine_dir, role, selected=None, children=None):
             continue
         if candidate.is_symlink():
             raise TaskError("dataset must not be a symlink: {}".format(candidate))
-        if candidate.is_dir():
+        expected_file = candidate.suffix.lower() == ".bag"
+        if ((expected_file and candidate.is_file())
+                or (not expected_file and candidate.is_dir())):
             candidates.append(candidate.resolve())
     candidates.sort(key=lambda item: item.name)
     if not candidates:
@@ -75,11 +84,11 @@ def _discover_dataset_path(machine_dir, role, selected=None, children=None):
     return candidates[0]
 
 
-def discover_dataset(machine_dir, role, selected=None):
+def discover_dataset(machine_dir, role, selected=None, bag_topics=None):
     """Return the unique validated direct-child dataset or ``None``."""
     candidate = _discover_dataset_path(machine_dir, role, selected)
     if candidate is not None:
-        _validate_dataset_role(candidate, role)
+        _validate_dataset_role(candidate, role, bag_topics=bag_topics)
     return candidate
 
 
@@ -106,9 +115,42 @@ def _safe_child(root, relative, label, *, directory=False):
     return resolved
 
 
-def _validate_dataset_role(dataset, role):
-    """Validate the directory manifest and its fixed workflow sensor role."""
-    dataset = Path(dataset).resolve()
+def _dataset_format(dataset):
+    try:
+        return detect_dataset_format(dataset)
+    except (OSError, ValueError, RuntimeError) as error:
+        raise TaskError("invalid dataset {}: {}".format(dataset, error)) from error
+
+
+def _validate_bag_topics(role, bag_topics):
+    expected = _BAG_TOPIC_KEYS[role]
+    if not isinstance(bag_topics, dict) or set(bag_topics) != set(expected):
+        raise TaskError(
+            "bag input for {} requires bag_topics.{} with exactly {}".format(
+                role, role, ", ".join(expected)))
+    values = [bag_topics[sensor_id] for sensor_id in expected]
+    if any(not isinstance(topic, str) or not topic.strip()
+           for topic in values):
+        raise TaskError(
+            "bag_topics.{} values must be non-empty strings".format(role))
+    if len(set(values)) != len(values):
+        raise TaskError("bag_topics.{} values must be unique".format(role))
+    return {sensor_id: bag_topics[sensor_id] for sensor_id in expected}
+
+
+def _validate_dataset_role(dataset, role, bag_topics=None):
+    """Validate the dataset container and its fixed workflow sensor role."""
+    source = Path(dataset)
+    if source.is_symlink():
+        raise TaskError("dataset must not be a symlink: {}".format(source))
+    dataset = source.resolve()
+    storage_format = _dataset_format(dataset)
+    if storage_format != "directory":
+        if role not in _BAG_TOPIC_KEYS:
+            raise TaskError("{} only supports directory datasets".format(role))
+        if bag_topics is not None:
+            _validate_bag_topics(role, bag_topics)
+        return BagReader(dataset)
     _safe_child(dataset, "dataset.yaml", "dataset manifest")
     try:
         reader = DirectoryReader(dataset)
@@ -342,7 +384,7 @@ def _validate_capture_contract(
                     camera, ", ".join(extras[:5])))
 
 
-def _inventory(dataset, role):
+def _directory_inventory(dataset, role):
     reader = _validate_dataset_role(dataset, role)
     manifest = reader.manifest
     session = _capture_session(dataset)
@@ -464,6 +506,8 @@ def _inventory(dataset, role):
         "path": str(dataset),
         "name": dataset.name,
         "dataset_id": reader.dataset_id,
+        "dataset_type": "directory",
+        "storage_format": "directory",
         "sha256": digest.hexdigest(),
         "fingerprint_type": INVENTORY_FINGERPRINT_TYPE,
         "file_count": len(snapshots),
@@ -494,6 +538,126 @@ def _inventory(dataset, role):
     }
 
 
+def _bag_message_counts(reader, role, bag_topics):
+    try:
+        available = reader.topics()
+    except (OSError, ValueError, RuntimeError) as error:
+        raise TaskError("could not inspect bag topics: {}".format(error)) from error
+    image_counts = {}
+    imu_counts = {}
+    for sensor_id in _BAG_TOPIC_KEYS[role]:
+        topic = bag_topics[sensor_id]
+        matches = [item for item in available if item.name == topic]
+        if not matches:
+            raise TaskError(
+                "bag topic for {} is missing: {}".format(sensor_id, topic))
+        allowed = IMAGE_TYPES if sensor_id.startswith("cam") else {IMU_TYPE}
+        unsupported = sorted({item.msgtype for item in matches
+                              if item.msgtype not in allowed})
+        if unsupported:
+            raise TaskError(
+                "bag topic {} for {} has unsupported type(s): {}".format(
+                    topic, sensor_id, ", ".join(unsupported)))
+        count = sum(int(item.message_count) for item in matches)
+        if count < 1:
+            raise TaskError(
+                "bag topic for {} contains no messages: {}".format(
+                    sensor_id, topic))
+        target = image_counts if sensor_id.startswith("cam") else imu_counts
+        target[sensor_id] = count
+    return image_counts, imu_counts
+
+
+def _bag_files(dataset, storage_format):
+    if storage_format == "ros1":
+        return {dataset.name: {
+            "path": dataset,
+            "metadata": _file_metadata(dataset),
+        }}
+    scanned = _scan_dataset_files(dataset)
+    symlinks = sorted(
+        relative for relative, value in scanned.items()
+        if value.get("symlink"))
+    if symlinks:
+        raise TaskError(
+            "bag input must not contain symlinks: {}".format(
+                ", ".join(symlinks[:5])))
+    return scanned
+
+
+def _bag_inventory(dataset, role, storage_format, reader, bag_topics):
+    scanned_files = _bag_files(dataset, storage_format)
+    image_counts, imu_counts = _bag_message_counts(
+        reader, role, bag_topics)
+    snapshots = {}
+    digest = hashlib.sha256()
+    for relative in sorted(scanned_files):
+        scanned = scanned_files[relative]
+        path = scanned["path"]
+        before = scanned["metadata"]
+        content_hash = _sha256(path)
+        after = _file_metadata(path)
+        if after != before:
+            raise DatasetChangedError(
+                "bag input changed while it was being hashed: {}".format(path))
+        snapshots[relative] = {
+            **after, "kind": "structured", "sha256": content_hash}
+        digest.update(b"B\0")
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(content_hash.encode("ascii"))
+        digest.update(b"\n")
+
+    name = dataset.stem if storage_format == "ros1" else dataset.name
+    record = {
+        "role": role,
+        "path": str(dataset),
+        "name": name,
+        "dataset_id": None,
+        "dataset_type": "bag",
+        "storage_format": storage_format,
+        "bag_topics": dict(bag_topics),
+        "sha256": digest.hexdigest(),
+        "fingerprint_type": BAG_FINGERPRINT_TYPE,
+        "file_count": len(snapshots),
+        "structured_file_count": len(snapshots),
+        "image_count": sum(image_counts.values()),
+        "image_counts": image_counts,
+        "imu_counts": imu_counts,
+    }
+    entry = {
+        "role": role,
+        "dataset_id": None,
+        "record": record,
+        "files": snapshots,
+    }
+    total_bytes = sum(value["size"] for value in snapshots.values())
+    return record, entry, {
+        "file_count": len(snapshots),
+        "total_bytes": total_bytes,
+        "image_count": record["image_count"],
+        "image_counts": image_counts,
+        "imu_counts": imu_counts,
+        "hashed_files": len(snapshots),
+        "hashed_bytes": total_bytes,
+        "image_hashed_files": 0,
+        "image_hashed_bytes": 0,
+        "mode": "bag_content_hash",
+        "storage_format": storage_format,
+    }
+
+
+def _inventory(dataset, role, bag_topics=None):
+    storage_format = _dataset_format(dataset)
+    if storage_format == "directory":
+        return _directory_inventory(dataset, role)
+    if role not in _BAG_TOPIC_KEYS:
+        raise TaskError("{} only supports directory datasets".format(role))
+    topics = _validate_bag_topics(role, bag_topics)
+    reader = _validate_dataset_role(dataset, role, bag_topics=topics)
+    return _bag_inventory(dataset, role, storage_format, reader, topics)
+
+
 def _metadata_fingerprint(dataset, role, dataset_id, snapshots):
     digest = hashlib.sha256()
     for relative in sorted(snapshots):
@@ -516,10 +680,11 @@ def _metadata_fingerprint(dataset, role, dataset_id, snapshots):
 
 
 def _valid_cached_record(value, dataset, role, dataset_id, file_count):
+    expected_name = dataset.stem if dataset.suffix.lower() == ".bag" else dataset.name
     return (isinstance(value, dict)
             and value.get("role") == role
             and value.get("path") == str(dataset)
-            and value.get("name") == dataset.name
+            and value.get("name") == expected_name
             and value.get("dataset_id") == dataset_id
             and value.get("file_count") == file_count
             and value.get("fingerprint_type", "content")
@@ -567,6 +732,9 @@ def _write_input_hash_cache(path, value):
 def cache_entry_can_migrate(cached, expected_record, current):
     """Prove an old successful record from per-file historical evidence."""
     if (not isinstance(cached, dict)
+            or not isinstance(expected_record, dict)
+            or "dataset_type" in expected_record
+            or "storage_format" in expected_record
             or cached.get("record") != expected_record
             or not isinstance(cached.get("files"), dict)
             or not isinstance(current, dict)
@@ -611,13 +779,17 @@ def cache_entry_is_bound(entry, stage, delivery, record):
 
 def _fingerprint_dataset(
         dataset, role, cached=None, progress=None, expected_record=None,
-        force_content=False):
-    """Hash structured inputs and inventory images without reading image bytes."""
+        force_content=False, bag_topics=None):
+    """Fingerprint one directory dataset or complete ROS bag input."""
     started = time.monotonic()
-    dataset = Path(dataset).resolve()
+    source = Path(dataset)
+    if source.is_symlink():
+        raise TaskError("dataset must not be a symlink: {}".format(source))
+    dataset = source.resolve()
     if progress is not None:
         progress("start", {"dataset": dataset.name, "role": role})
-    record, entry, statistics = _inventory(dataset, role)
+    record, entry, statistics = _inventory(
+        dataset, role, bag_topics=bag_topics)
     statistics["elapsed_s"] = time.monotonic() - started
     if progress is not None:
         progress("complete", {
@@ -625,6 +797,7 @@ def _fingerprint_dataset(
     return record, entry, statistics
 
 
-def dataset_fingerprint(dataset, role):
-    """Validate structured content and image inventory without reading images."""
-    return _fingerprint_dataset(dataset, role)[0]
+def dataset_fingerprint(dataset, role, bag_topics=None):
+    """Validate and fingerprint a machine workflow input."""
+    return _fingerprint_dataset(
+        dataset, role, bag_topics=bag_topics)[0]

@@ -42,11 +42,18 @@ _STRICT_PROVENANCE = False
 
 
 _DATASET_PATTERNS = {
-    "stereo": re.compile(r"^stereo_\d{6}_\d{4}$"),
-    "stereo_imu": re.compile(r"^stereo_imu_\d{6}_\d{4}$"),
+    "stereo": re.compile(r"^stereo_\d{6}_\d{4}(?:\.bag)?$"),
+    "stereo_imu": re.compile(r"^stereo_imu_\d{6}_\d{4}(?:\.bag)?$"),
     "stereo_baselink": re.compile(r"^stereo_base_link_\d{6}_\d{4}$"),
-    "mono": re.compile(r"^usb_\d{6}_\d{4}$"),
+    "mono": re.compile(r"^usb_\d{6}_\d{4}(?:\.bag)?$"),
     "mono_baselink": re.compile(r"^usb_base_link_\d{6}_\d{4}$"),
+}
+
+
+_BAG_TOPIC_KEYS = {
+    "stereo": ("cam0", "cam1"),
+    "stereo_imu": ("cam0", "cam1", "imu0"),
+    "mono": ("cam0",),
 }
 
 
@@ -129,7 +136,7 @@ def load_workflow_config(path):
     allowed = {
         "schema_version", "kind", "template", "machine_dir", "datasets",
         "targets", "stereo", "stereo_imu", "stereo_baselink", "mono",
-        "mono_baselink", "reuse_calib_params",
+        "mono_baselink", "reuse_calib_params", "bag_topics",
     }
     if "target" in value:
         raise TaskError(
@@ -206,9 +213,34 @@ def load_workflow_config(path):
                 or Path(name).name != name
                 or not _DATASET_PATTERNS[role].fullmatch(name)):
             raise TaskError(
-                "datasets.{} must be a matching direct-child directory name".format(
+                "datasets.{} must be a matching direct-child dataset name".format(
                     role))
         selected[role] = name
+
+    bag_topics = value.get("bag_topics", {})
+    if not isinstance(bag_topics, dict):
+        raise TaskError("bag_topics must be a mapping")
+    unknown_bag_topics = sorted(set(bag_topics) - set(_BAG_TOPIC_KEYS))
+    if unknown_bag_topics:
+        raise TaskError("unknown bag_topics fields: {}".format(
+            ", ".join(unknown_bag_topics)))
+    normalized_bag_topics = {}
+    for role, topics in bag_topics.items():
+        expected = _BAG_TOPIC_KEYS[role]
+        if not isinstance(topics, dict) or set(topics) != set(expected):
+            raise TaskError(
+                "bag_topics.{} must contain exactly {}".format(
+                    role, ", ".join(expected)))
+        values = [topics[sensor_id] for sensor_id in expected]
+        if any(not isinstance(topic, str) or not topic.strip()
+               for topic in values):
+            raise TaskError(
+                "bag_topics.{} values must be non-empty strings".format(role))
+        if len(set(values)) != len(values):
+            raise TaskError(
+                "bag_topics.{} values must be unique".format(role))
+        normalized_bag_topics[role] = {
+            sensor_id: topics[sensor_id] for sensor_id in expected}
 
     targets = value.get("targets", {})
     if not isinstance(targets, dict):
@@ -301,6 +333,7 @@ def load_workflow_config(path):
         "template": template,
         "machine_dir": str(machine),
         "datasets": selected,
+        "bag_topics": normalized_bag_topics,
         "targets": targets,
         "reuse_calib_params": {
             role: reuse_config.get(role, False) for role in _TARGET_STAGES
@@ -325,6 +358,7 @@ def load_workflow_config(path):
         "machine_version": identity["machine_version"],
         "machine_num": identity["machine_num"],
         "datasets": selected,
+        "bag_topics": normalized_bag_topics,
         "targets": targets,
         "reuse_calib_params": reuse,
         "camera": {"mode": camera_mode},

@@ -73,6 +73,18 @@ kalibr-cedarobot machine
 同一机器的独立单目模组使用 `usb_*` 标定内参，使用 `usb_base_link_*` 和
 `mono_baselink` 配置复用单目结果求旋转；不会混用双目 `cam0`。两模组共用当前
 AprilGrid，均使用 `pinhole-equi`。
+
+机器入口当前输入能力如下。ROS1/ROS2 bag 只用于普通或 RS 相机、Camera–IMU；
+BaseLink 的平台位置来自图像文件名，因此仍只接受目录数据集。
+
+| 机器角色 | 目录数据集 | ROS1 `.bag` | ROS2 bag 目录 |
+|---|---:|---:|---:|
+| `stereo` | ✓ | ✓ | ✓ |
+| `stereo_imu` | ✓ | ✓ | ✓ |
+| `mono` | ✓ | ✓ | ✓ |
+| `stereo_baselink` | ✓ | — | — |
+| `mono_baselink` | ✓ | — | — |
+
 `user.yaml` 必须用 `template: EVT320` 选择 `config/mechine/EVT320/`，可用
 `stereo.mode: rolling_shutter` 选择 RS 双目，用
 `stereo_imu.recompute_extrinsics: true` 控制 Camera–IMU 联合阶段重新优化相机链外参；
@@ -86,18 +98,20 @@ AprilGrid，均使用 `pinhole-equi`。
 填写相对文件名；绝对路径、`../` 跨模板引用和符号链接均会被拒绝。
 数据发现、批次目录、重名处理和输出
 位置见[机器级一键标定工作流](docs/MACHINE_CALIBRATION_WORKFLOW_ZH.md)。
-`datasets` 可省略或部分填写：未填写的双目、Camera–IMU、双目 BaseLink、USB 单目和
-USB BaseLink 角色都从 `machine_dir` 自动选择唯一候选；填写的角色才强制使用指定目录。
-只有严格匹配 `*_YYMMDD_HHMM` 约定的直接子目录才是候选，`*_bk`、旧名和其他非规范
-目录静默跳过。重复的规范候选会在任何求解启动前报错；缺少上游数据只让对应下游分支
-等待，其他独立分支继续执行；BaseLink 有数据但缺配置时只阻塞该分支并返回非零状态。
-目录搜索先显示五类角色的找到/未找到状态；实际任务进度只计算本次存在的数据集。每次
-校验都会对 `dataset.yaml`、相机时间戳 CSV 和 IMU CSV 计算 SHA-256；图像只核对
-相机 ID、CSV 顺序、时间戳、相对文件名和大小，不读取像素内容，也不把 atime/mtime、
-ctime 或 inode 作为数据身份。校验记录保存在
-`result/.kalibr-cedarobot/input_hash_cache.json`。求解完成后、任何正式结果替换前会再次
-执行同样的轻量复核；只修改图像时间属性不会重标定，清单或结构文件变化则拒绝发布。
-精度不足时可删除旧数据集或将它改为非规范名称，再加入唯一的新规范目录；工作流自动
+`datasets` 可省略或部分填写：未填写的五类角色从 `machine_dir` 的直接子项自动选择
+唯一候选；填写的角色才强制使用指定名称。目录数据集和 ROS2 bag 使用
+`<角色>_YYMMDD_HHMM/`，ROS1 使用同名加 `.bag`。同一角色同时出现目录、ROS1 或
+ROS2 候选时按多个候选报错，不猜测优先级；`*_bk`、旧名和其他非规范名称静默跳过。
+使用 bag 的 `stereo`、`stereo_imu` 或 `mono` 时，`user.yaml.bag_topics` 必须按角色、
+传感器 ID 精确给出话题；Camera–IMU task 会按 ID 将上游相机几何绑定到当前 bag 话题，
+两个阶段的实际 topic 可以不同。
+缺少上游数据只让对应下游分支等待；BaseLink 有数据但缺配置时只阻塞该分支并返回非零状态。
+
+目录数据集指纹对 `dataset.yaml`、相机时间戳 CSV 和 IMU CSV 计算 SHA-256，图像记录
+相机 ID、顺序、时间戳、相对文件名和大小；ROS1/ROS2 bag 则对 bag 的全部普通文件内容
+计算 SHA-256。这里的轻量目录指纹不解码像素，随后正式 task 输入校验仍会解码选中图像并
+检查分辨率。缓存位于 `result/.kalibr-cedarobot/input_hash_cache.json`；求解完成后、
+正式结果替换前再次复核。精度不足时可删除旧数据集或将它改为非规范名称，再加入唯一的新规范候选；工作流自动
 重跑该任务及其下游依赖，保留旧数据集结果，同名下游结果仅在新求解成功后安全替换。
 `machine_dir` 指向 `<机型>-<编号>/<批次名>`，例如 `EVT312-02/1029`；新一批数据新建
 批次目录并修改该字段，不跨批次复用。机器入口把每个任务的
@@ -134,7 +148,9 @@ kalibr-noros calibrate imu-camera \
 ```
 
 目录数据集通过 `dataset.yaml` 将相机 ID 映射到图像与 CSV 路径，任务中可省略相机
-`topic` 和 IMU `rostopic`。ROS1/ROS2 bag 输入仍需填写话题。任务内相对路径以任务
+`topic` 和 IMU `rostopic`。ROS1/ROS2 bag 的相机标定 task 在 `cameras[].topic`
+填写话题；Camera–IMU 默认沿用上游结果话题，也可用 `camera_topics` 按 ID 重绑。
+IMU 话题可写在 task `imus[].rostopic` 或 IMU YAML，两处并存必须相同。任务内相对路径以任务
 YAML 所在目录为基准。软件版本为 `1.1.0`；任务、初始化、目录清单、结果和机器状态
 的规范 schema 分别独立维护，当前均写为字符串 `"1.0.0"`。读取时兼容曾经误写的
 字符串 `"1.1.0"`，不兼容旧整数 schema。详见

@@ -1,6 +1,7 @@
 # Kalibr no-ROS 使用与配置指南
 
-本文说明底层 task YAML、目录数据集、相机模型和运行命令，主要供开发和维护使用。
+本文说明底层 task YAML、目录与 ROS1/ROS2 bag 数据集、相机模型和运行命令，
+主要供开发和维护使用。
 产线操作员不需要编辑这些 task，直接使用
 [`kalibr-cedarobot machine`](MACHINE_CALIBRATION_WORKFLOW_ZH.md)。
 算法原理与源码调用链见
@@ -29,6 +30,12 @@ K/D 运行 BaseLink 旋转标定；不需要 IMU 数据，平移由配置明确�
 `usb_base_link_YYMMDD_HHMM` 和 `mono_baselink` 配置
 标定其 BaseLink 旋转。单目与双目都使用当前 profile 的 AprilGrid、`pinhole-equi`；
 单目清单只含局部 `cam0`，后续只复用本模组结果，不与双目合成三目任务。
+
+machine 的 `stereo/stereo_imu/mono` 支持目录、ROS1 `.bag` 文件和含
+`metadata.yaml` 的 ROS2 bag 目录；两种 BaseLink 角色仍只支持目录。bag
+话题由 `user.yaml.bag_topics` 按角色和传感器 ID 精确绑定；Camera–IMU 按 ID 将
+上游相机几何映射到当前 bag，两个阶段的 topic 可以不同。同一角色跨格式有多个候选时
+必须显式选择，不按时间或格式猜测。
 
 以下场景才直接使用本指南中的 `kalibr-noros`：
 
@@ -83,8 +90,11 @@ dataset: {type: bag, path: /data/imu_camera_bag}
 target: {path: aprilgrid.yaml}
 camera_calibration: {path: output/camera_calibration_cam0_cam1.yaml}
 imus:
-  - {id: imu0, path: imu.yaml, model: calibrated}
+  - {id: imu0, path: imu.yaml, model: calibrated, rostopic: /imu0}
 ```
+
+bag 的 IMU 话题可写在 task 的 `imus[].rostopic`，也可写在
+`imu.yaml` 的 `rostopic`；两处同时存在时必须相同。目录输入通常都省略。
 
 task 文件名只表达任务类型，例如 `mono_camera_calibration_task.yaml`、
 `stereo_camera_calibration_task.yaml`、`camera_rolling_shutter_calibration_task.yaml`、
@@ -266,12 +276,20 @@ Optimizer2、IncrementalEstimator、超参数和停止条件均未改变。
 
 | 输入 | 检测结果 |
 |---|---|
-| 普通文件 | `ros1` |
+| ROS1 `.bag` 文件 | `ros1` |
 | 含 `metadata.yaml` 的目录 | `ros2` |
 | 含 `dataset.yaml` 的目录 | `directory` |
 
 一个目录同时包含 `metadata.yaml` 和 `dataset.yaml` 会被判定为歧义并拒绝，防止
 程序静默选择错误后端。
+
+bag 相机流只接受 `sensor_msgs/msg/Image` 或
+`sensor_msgs/msg/CompressedImage`，IMU 流只接受
+`sensor_msgs/msg/Imu`。排序、裁剪与同步使用消息 `header.stamp`；bag record time
+只在显式时钟同步时用于时钟映射。原始 `Image` 可移植支持的编码为
+`mono8/8UC1/mono16/16UC1/bgr8/8UC3/rgb8/bgra8/8UC4` 和四种 8 位 Bayer；
+`CompressedImage` 使用 OpenCV `imdecode`。详细编码、时间范围与降频语义见
+[数据输入说明](DATASET_WORKFLOW_ZH.md#3-ros1ros2-bag-输入契约)。
 
 ## 5. 推荐目录结构
 
@@ -327,15 +345,21 @@ imus:
 | `imus[].data` | IMU 表，相对根目录 |
 
 目录任务通过 `id` 选择上述条目，图像目录与 CSV 路径只在 manifest 中定义一次。
-相机任务使用 `id/model`，IMU task 使用 `id/path/model`，对应噪声 YAML 可省略
-`rostopic`。bag 任务仍要求相机 `topic` 和 IMU `rostopic`。
+相机任务使用 `id/model`，IMU task 使用 `id/path/model`，可选增加
+`imus[].rostopic`。bag 相机标定 task 要求每目 `topic`；Camera–IMU 默认沿用
+上游结果话题，需要时可用 `camera_topics` 重绑。IMU 话题可由 task 该字段
+或噪声 YAML 的 `rostopic` 提供，两处同时填写时必须相同。目录输入两处都可省略。
 
 目录 manifest 的 `topic` 仅是可选元数据。若填写，必须非空且各流唯一；若目录任务
-仍显式填写 `topic` 或噪声 YAML 填写 `rostopic`，它必须与该 ID 的数据流一致，
+仍显式填写 `topic`、task `rostopic` 或噪声 YAML `rostopic`，它必须与该 ID 的数据流一致，
 冲突时报错。省略时内部自动生成读取键，不需要用户配置 ROS。
 
 `timestamps`、`images` 和 `data` 只允许相对路径。绝对路径、`..` 越出数据集根
 目录以及解析后指向根目录之外的符号链接都会被拒绝。
+
+底层 `kalibr-noros validate` 和目录 reader 不读取 `meta/`，只验证
+`dataset.yaml` 及其引用文件。machine 入口还会在存在时读取
+`meta/session.json` 等采集状态作完整性门控；这不改变底层目录 schema。
 
 ## 7. 相机时间戳 CSV
 
@@ -439,6 +463,9 @@ kalibr-noros calibrate cameras \
 Camera–IMU task 同样将 `dataset.path` 指向目录。相机结果和 IMU task 中的传感器
 ID 必须对应 manifest；相机结果的原话题不会决定目录路径。程序读取相机结果的
 内外参，并在内部按当前目录 ID 生成读取键，不改写被引用的相机结果。
+Camera–IMU bag 默认使用上游相机结果中记录的每目 topic；当前 bag 不同时可用
+`camera_topics: {<camera_id>: <topic>}` 显式重绑。键必须与上游相机 ID 完全一致，
+值非空且唯一；该映射只改变读取流，不改相机几何。
 
 AprilGrid 的标签若不是从 0 开始，可在 `target.path` 指向的 target YAML 中增加：
 

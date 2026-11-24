@@ -42,6 +42,24 @@ CLI 的 `--output-dir`、初始化覆盖和重定位 `--dataset` 以执行命令
 独立 IMU `imu`。日期是设备本地墙钟，只用于目录命名。同名前缀一分钟内冲突报错，
 不追加秒数、不覆盖正式或 `.inprogress/.failed` 数据。session 另存 UTC 时间。
 
+machine 入口只扫描批次目录的直接子项，其中 `stereo/stereo_imu/mono`
+支持 directory、ROS1 和 ROS2，两种 BaseLink 角色仅支持 directory。directory
+与 ROS2 使用 `<role>_YYMMDD_HHMM/`，ROS1 使用
+`<role>_YYMMDD_HHMM.bag`；ROS1 的逻辑数据集名和输出名去掉 `.bag`。同一
+角色跨格式合计有多个候选时报冲突，不按格式或时间猜测。
+
+machine bag 话题由 `user.yaml` 精确映射：
+
+```yaml
+bag_topics:
+  stereo: {cam0: /cam0/image_raw, cam1: /cam1/image_raw}
+  stereo_imu: {cam0: /cam0/image_raw, cam1: /cam1/image_raw, imu0: /imu0}
+  mono: {cam0: /usb/image_raw}
+```
+
+只需填实际使用 bag 的角色；BaseLink 不得出现在 `bag_topics`。Camera–IMU 按
+`cam0/cam1` ID 将上游相机几何绑定到当前 bag，因此不同阶段的话题字符串可以不同。
+
 根 manifest 必须有 `schema_version/type/dataset_id/cameras/imus`；相机条目必需
 `id/timestamps/images`，可带 `topic/frame_id/resolution/clock_source`；IMU 条目必需
 `id/data`，可带 `topic/frame_id/clock_source/angular_velocity_unit/linear_acceleration_unit`。
@@ -50,7 +68,12 @@ CLI 的 `--output-dir`、初始化覆盖和重定位 `--dataset` 以执行命令
 
 目录任务按传感器 `id` 关联路径，不需要填写相机 `topic` 或 IMU `rostopic`。
 采集器将 ROS 话题保存在 meta/ 供 bag 导出使用；新生成的公共 manifest 不重复话题。
-bag 标定仍需填写话题。文件依赖和输出含义见 [数据与输出说明](DATASET_WORKFLOW_ZH.md)。
+bag 相机 task 必须在 `cameras[].topic` 填写图像话题；Camera–IMU 的 IMU
+话题可写在 task `imus[].rostopic` 或 IMU YAML `rostopic`，两处同时填写时必须
+相同。Camera–IMU bag 默认沿用上游相机结果的话题，也可用键集与上游相机 ID 完全
+一致的 `camera_topics` 显式映射当前 bag；映射值必须为非空且互不重复的话题。
+该字段只重绑输入流，不改相机几何。
+文件依赖和输出含义见 [数据与输出说明](DATASET_WORKFLOW_ZH.md)。
 
 规范同时固定以下语义：
 
@@ -65,11 +88,16 @@ bag 标定仍需填写话题。文件依赖和输出含义见 [数据与输出�
   连同空值保留于采集 JSONL；空值回退产生警告，有效 frame ID 在会话内改变即失败。
 - `meta/pairs.csv` 保留左右原始时间戳、序号和采集配对，不用平均时间覆盖原时间。
   双目采集默认同步容差 200 µs；Camera–IMU 默认保留图像窗前后各至少 1 s 的真实 IMU 覆盖。
-- 默认不计算逐帧 SHA-256；结构检查不能保证发现所有等长度或仍可解码的像素修改。
+- machine 目录输入不计算逐图像内容 SHA-256；它对结构 YAML/CSV 做内容
+  hash，对图像做路径、顺序、时间戳和大小 inventory，因此结构检查不能发现
+  所有等长度像素修改。ROS1 则对整个 `.bag` 内容 hash，ROS2 对 bag 目录中
+  全部普通文件内容 hash。
 
 `kalibr-noros validate --config task.yaml` 检查输入与任务契约、话题、尺寸、时间范围和
 相机–IMU覆盖，不加载角点检测器或优化器。验证通过只证明输入结构与基本时序可用，
-不能据此判定标定精度或可观性。现有 EVT3.1 目录包含多代旧格式，本版不会将其原地升级。
+不能据此判定标定精度或可观性。底层 `validate` 不消费目录的 `meta/`；
+machine inventory 才会在存在时读取 `meta/session.json`、`meta/pairs.csv` 等采集证据作
+额外完整性门控。现有 EVT3.1 目录包含多代旧格式，本版不会将其原地升级。
 
 ## 3. 求解边界与可选观测记录
 
@@ -201,7 +229,7 @@ bias spline 的三轴均值和标准差，并单独显示重力向量与模长�
 结果不再写 transform_convention 文本。
 诊断文件由 `output.save_diagnostics` 开启，指标 JSON 由 `output.save_metrics` 开启，
 均默认 false；保存到 `<名称>/`，不会覆盖同目录其他任务。详细规范见
-[输出说明](DATASET_WORKFLOW_ZH.md#4-命名与精简交付)。
+[输出说明](DATASET_WORKFLOW_ZH.md#6-machine-命名与精简交付)。
 
 标定命令在调用求解器前自动运行输入验证，启用诊断保存后才交付 `validation.json`；
 不需要先手工执行一次 `validate`。输入验证失败会阻止

@@ -2,12 +2,26 @@
 
 产线机器的单次标定批次目录优先使用
 [`kalibr-cedarobot machine`](MACHINE_CALIBRATION_WORKFLOW_ZH.md)。该入口默认读取安装根的 `config/user.yaml`，
-根据直接子目录名称严格区分 `stereo_*`、`stereo_imu_*`、`stereo_base_link_*`，
-以及独立单目模组的 `usb_*`、`usb_base_link_*`，
-忽略独立测试集，但数据流的
-真实映射仍以每个目录内的 `dataset.yaml` 为准。本文件其余部分说明底层数据与输出契约。
+根据批次目录的直接子项名称区分 `stereo_*`、`stereo_imu_*`、`stereo_base_link_*`，
+以及独立单目模组的 `usb_*`、`usb_base_link_*`。普通相机、Camera–IMU 和单目阶段可
+直接读取目录数据集、ROS1 bag 或 ROS2 bag；BaseLink 仍依赖目录图像文件名中的平台
+位置。本文件说明三种输入后端、机器入口和底层 task 共用的数据与输出契约。
 
-## 1. 目录相机如何选择
+## 1. 输入后端与支持范围
+
+| 入口／任务 | 目录数据集 | ROS1 `.bag` | ROS2 bag 目录 |
+|---|---:|---:|---:|
+| `kalibr-noros` 相机、纯视觉 RS | ✓ | ✓ | ✓ |
+| `kalibr-noros` 普通／RS Camera–IMU | ✓ | ✓ | ✓ |
+| `kalibr-cedarobot machine` 的 `stereo/stereo_imu/mono` | ✓ | ✓ | ✓ |
+| Camera–BaseLink | ✓ | — | — |
+
+task 必须显式填写 `dataset.type: directory|bag`。`directory` 要求根目录含
+`dataset.yaml`；`bag` 自动区分 ROS1 文件和含 `metadata.yaml` 的 ROS2 目录。一个目录
+同时含 `dataset.yaml` 与 `metadata.yaml` 会因后端歧义被拒绝。相对 `dataset.path`
+以 task YAML 所在目录为基准。
+
+## 2. 目录相机如何选择
 
 目录任务只填写数据集根路径和相机 ID，不需要 topic，也不重复填写相机目录：
 
@@ -28,10 +42,10 @@ cameras:
 cameras:
   - id: cam0
     timestamps: cameras/cam0/timestamps.csv
-    images: cameras/cam0
+    images: cameras/cam0/images
   - id: cam1
     timestamps: cameras/cam1/timestamps.csv
-    images: cameras/cam1
+    images: cameras/cam1/images
 imus:
   - id: imu0
     data: imu/imu0.csv
@@ -43,11 +57,35 @@ task 中相对路径以 task 所在目录为基准；manifest 路径以数据集
 相机 CSV 的 filename 则相对该相机 images 目录。相机编号仍按任务顺序为 cam0、cam1，
 IMU 同理。ID 不存在、类型不对或显式 topic 与 ID 冲突时直接报错。
 
-bag 输入没有这份目录映射，因此任务仍须填写相机 topic，IMU 噪声 YAML 仍须填写
-rostopic。目录 manifest 可以保留可选 topic 元数据；新采集将原话题仅保留在 meta/
-中，用于追溯和导出 bag。目录任务及噪声 YAML 推荐省略话题。
+目录 manifest 可以保留可选 topic 元数据；新采集通常将原话题仅保留在 `meta/`，用于
+追溯和导出 bag。目录 task 及 IMU 噪声 YAML 推荐省略话题。
 
-## 2. 四份 YAML 是否足够
+## 3. ROS1／ROS2 bag 输入契约
+
+- ROS1：`dataset.path` 指向一个 `.bag` 普通文件。
+- ROS2：`dataset.path` 指向完整 rosbag2 目录，根目录必须含 `metadata.yaml`，存储可为
+  SQLite3 或 MCAP；不能只复制其中的 `.db3`／`.mcap` 文件。
+- 相机流只接受标准 `sensor_msgs/msg/Image` 或
+  `sensor_msgs/msg/CompressedImage`，IMU 流只接受
+  `sensor_msgs/msg/Imu`；不需要 `/camera_info`、TF 或里程计。
+- bag 相机 task 的每目 `topic` 必须非空且互不重复。Camera–IMU 默认沿用上一阶段相机
+  结果的话题，也可用 `camera_topics` 按上游相机 ID 显式映射当前 bag；该映射只改变输入
+  流，不改相机几何。IMU 话题可写在 `imus[].rostopic`，也可写在 `imu.yaml`。两处同时
+  填写时必须相同，bag 输入最终必须得到一个非空话题。
+- 图像和 IMU 按消息 `header.stamp` 排序、裁剪和同步。bag record time 单独保留，只在
+  显式 `calibration.synchronize_clocks: true` 时参与时钟映射；它不能替代 Camera–IMU
+  联合优化中的时间偏移。
+- `dataset.time_range_s` 相对每个数据流第一条 header 时间，`frequency_hz` 只对图像
+  做保序降频，不对 IMU 降频。bag 读取器会按 header 时间排序，但不会像目录 CSV 一样
+  拒绝源数据中的重复或回退时间戳；采集仍应保证非零、单调且共用正确时基。
+
+原始 `Image` 支持 `mono8`、`8UC1`、`mono16`、`16UC1`、`bgr8`、`8UC3`、
+`rgb8`、`bgra8`、`8UC4` 以及四种 8 位 Bayer 编码
+`bayer_rggb8/bayer_bggr8/bayer_gbrg8/bayer_grbg8`。读取时校验 stride、payload 和
+endianness，随后转灰度；16 位输入按原生检测约定缩放为 8 位。
+`CompressedImage` 由当前 OpenCV `imdecode` 解码，通常使用 PNG 或 JPEG。
+
+## 4. 四份 YAML 是否足够
 
 没有显式初始化时，以下四份文件足够描述一次“双目 → Camera–IMU”的任务配置：
 
@@ -70,7 +108,7 @@ bag 输入需要实际 bag，ROS2 bag 需保留整个目录。数据不能由这
 pinhole-equi 和 calibrated IMU；根据硬件与镜头选择模型。输出路径由 CLI 的
 `--output-dir` 指定。
 
-## 3. 输入数据目录
+## 5. 输入数据目录
 
 ```text
 dataset.yaml                  公共数据入口：身份、传感器、路径、尺寸、单位
@@ -86,10 +124,20 @@ meta/imu_full.jsonl            原始完整 IMU 消息，含姿态、协方差�
 meta/validation.json          采集端结构与时序校验，含质量警告
 ```
 
-Kalibr 的目录读取、`validate` 和标定前输入校验只读取公共 `dataset.yaml` 与其
-引用的数据，不读取或检查 `meta/`。`meta/` 缺失、采集报告中的警告或其中的文件损坏，
-均不影响标定端的输入校验；公共 manifest、图像和 CSV 本身仍须满足格式、分辨率、
-纳秒时间戳及 IMU 时间覆盖要求。
+项目正式测试覆盖 PNG、JPEG/JPG 和 BMP。实际文件由当前 OpenCV `imdecode` 解码；
+接受 `uint8` 与 `uint16`，16 位除以 256 转为 8 位；灰度、1、3、4 通道可用，BGR/BGRA
+自动转灰度。其他 OpenCV 可能支持的格式不属于可移植输入保证。同一路相机的所有选中
+图像必须具有一致分辨率；manifest 写有 `resolution` 时还必须与实际解码尺寸一致。
+
+底层 `kalibr-noros validate` 和目录 reader 只读取公共 `dataset.yaml` 与其引用的数据，
+不依赖 `meta/`。machine 入口另有一层采集合同检查：存在 `meta/session.json` 时会解析其
+状态和计数，并按情况核对 `meta/pairs.csv`、临时文件及未引用 BMP；这些可选文件损坏会
+阻止 machine，但不改变底层目录 schema。公共 manifest、图像和 CSV 始终必须满足格式、
+分辨率、纳秒时间戳及 IMU 时间覆盖要求。
+
+machine 建立目录输入指纹时不解码像素：结构化 YAML/CSV 按内容哈希，图像按传感器、
+顺序、时间戳、相对路径和大小登记。随后生成的正式 task 仍会解码选中图像并检查分辨率；
+“指纹阶段不读像素”不表示损坏图像能通过标定输入校验。
 
 采集端自己的校验、追溯和 bag 导出仍依赖 `meta/`，因此完整采集交付保留这些文件。
 仅提供标定输入时可以不包含 `meta/`。纯双目采集可以没有 IMU 文件。
@@ -98,25 +146,40 @@ Kalibr 的目录读取、`validate` 和标定前输入校验只读取公共 `dat
 新采集目录命名为 `<前缀>_YYMMDD_hhmm`。读取以 manifest 的身份和路径为准，
 移动数据集不改变采集来源；迁移已有目录时保留原始采集元数据。
 
-## 4. 命名与精简交付
+## 6. machine 命名与精简交付
 
-机器级入口要求输入目录使用以下角色名称：
+机器级入口只检查批次目录的直接子项。目录数据集与 ROS2 bag 使用无扩展名目录，ROS1
+使用同名 `.bag` 文件：
 
-| 目录名 | 角色 |
-|---|---|
-| `stereo_YYMMDD_hhmm` | 双目相机标定候选 |
-| `stereo_imu_YYMMDD_hhmm` | 双目＋IMU 标定候选 |
-| `stereo_base_link_YYMMDD_HHMM` | 可选 Camera–BaseLink；需在 `user.yaml` 明确配置位置比例与每目平移 |
-| `usb_YYMMDD_HHMM` | 独立单目模组内参候选，仅局部 `cam0`，无 IMU |
-| `usb_base_link_YYMMDD_HHMM` | 单目 BaseLink；需 `mono_baselink` 配置，仅引用本模组单目结果 |
-| `stereo_test_YYMMDD_hhmm` | 独立验证数据，不参与自动标定 |
+| 名称 | 可用后端 | 角色 |
+|---|---|---|
+| `stereo_YYMMDD_HHMM`／`stereo_YYMMDD_HHMM.bag` | directory、ROS2／ROS1 | 双目相机标定候选 |
+| `stereo_imu_YYMMDD_HHMM`／`stereo_imu_YYMMDD_HHMM.bag` | directory、ROS2／ROS1 | 双目＋IMU 标定候选 |
+| `stereo_base_link_YYMMDD_HHMM` | directory | 可选 Camera–BaseLink；需配置位置比例与每目平移 |
+| `usb_YYMMDD_HHMM`／`usb_YYMMDD_HHMM.bag` | directory、ROS2／ROS1 | 独立单目模组内参标定候选，仅局部 `cam0` |
+| `usb_base_link_YYMMDD_HHMM` | directory | 单目 BaseLink；仅引用本模组单目结果 |
+| `stereo_test_YYMMDD_HHMM` | directory | 独立验证数据，不参与自动标定 |
 
 独立单目 `cam0` 与双目左相机 `cam0` 不表示同一传感器；两模组有独立数据、task、结果
 名称和上游路径，不做三目联合标定。它们共用当前机型 profile 的 AprilGrid。
 
-它只扫描 `<设备目录>` 的直接子目录。同一角色只有一个候选时自动选择；多个候选必须由
-开发者在 `user.yaml` 指定，不能按时间戳或 mtime 猜测。只先准备 `stereo_*` 是合法的：
+同一角色只有一个候选时自动选择。目录数据集、ROS1 和 ROS2 跨格式合计出现多个规范
+候选时同样报冲突；显式 `datasets.<role>` 只能选择其中一个，不能按时间戳、mtime 或
+格式优先级猜测。只先准备 `stereo_*` 是合法的：
 完成双目后可在未来加入 `stereo_imu_*`，再次运行机器命令继续第二阶段。
+
+machine 读取 bag 时要求 `user.yaml.bag_topics` 精确映射：
+
+```yaml
+bag_topics:
+  stereo: {cam0: /cam0/image_raw, cam1: /cam1/image_raw}
+  stereo_imu: {cam0: /cam0/image_raw, cam1: /cam1/image_raw, imu0: /imu0}
+  mono: {cam0: /usb/image_raw}
+```
+
+只需填写实际使用 bag 的角色；BaseLink 不出现在 `bag_topics`。Camera–IMU task 会把
+上游 `cam0/cam1` 几何按 ID 显式映射到当前角色的话题，因此两个阶段的 topic 字符串可
+不同；程序不会根据 topic 字典序或连接出现顺序猜左右目。
 
 多个任务可以使用同一个 `--output-dir`。默认文件名由任务类型与 task 中按顺序排列的
 真实传感器 ID 组成；右目单目标定可以只写 `cameras: [{id: cam1, model: pinhole-equi}]`。
@@ -125,10 +188,10 @@ Kalibr 的目录读取、`validate` 和标定前输入校验只读取公共 `dat
 
 ```text
 EVT312-02/
-  stereo_YYMMDD_hhmm/             双目输入数据
-  stereo_imu_YYMMDD_hhmm/         双目＋IMU 输入数据
+  stereo_YYMMDD_HHMM.bag          双目 ROS1 示例；也可为 directory/ROS2 同名目录
+  stereo_imu_YYMMDD_HHMM/         双目＋IMU ROS2 或目录示例
   stereo_base_link_YYMMDD_HHMM/   双目 BaseLink 平移数据
-  usb_YYMMDD_HHMM/               独立单目内参数据
+  usb_YYMMDD_HHMM/                独立单目内参目录数据
   usb_base_link_YYMMDD_HHMM/      独立单目 BaseLink 平移数据
   result/
     <数据集名>.report.html        HTML 报告
@@ -145,6 +208,11 @@ EVT312-02/
       mono_camera/usb_mono_calib.yaml
       vision/stereo_imu_calib.yaml
 ```
+
+ROS1 文件的逻辑数据集名和 `output.name` 使用文件 stem，例如
+`stereo_261021_1500.bag` 生成 `stereo_261021_1500`，不会把点号或 `.bag` 带入正式
+结果名。machine 对 ROS1 文件和 ROS2 目录中的全部普通文件内容计算 SHA-256；符号链接
+或运行中内容变化会阻止发布。
 
 机器入口自动使用 `<设备目录>/result`；直接使用底层 CLI 时才需要显式传入
 `--output-dir <设备目录>/result`。machine workflow 把正式 YAML 和启用的观测、
@@ -272,7 +340,7 @@ RMS、相邻外参、alignment 和双目校正矩阵，双目 BaseLink 更新
 | <名称>/poses.csv | 显式请求时导出的标定板位姿序列 |
 | <名称>/timing.json | profile 构建且显式请求时的阶段计时 |
 
-## 5. observations/：可重算的观测证据
+## 7. observations/：可重算的观测证据
 
 通过 `output.archive_observations: true` 开启，默认关闭。CSV.gz 是 gzip 压缩的
 CSV，每个单元格按 JSON 编码，保留整数纳秒、数组、布尔值和 null。
@@ -292,7 +360,7 @@ CSV，每个单元格按 JSON 编码，保留整数纳秒、数组、布尔值�
 是否最终使用角点，应读取表中的状态字段，不能仅凭“文件存在”判断。空表表示该流程
 没有对应证据，不表示误差为零。不能独立修改这些表，否则校验和不再匹配。
 
-## 6. visualizations/、images/ 与 opencv/
+## 8. visualizations/、images/ 与 opencv/
 
 `output.visualizations.enabled: true` 才生成图像诊断，默认关闭：
 
@@ -326,7 +394,7 @@ radtan 系列的角点反畸变采用最多 100 次迭代、收敛容差 1e-12�
 离线 `evaluate` 只从已有证据重算指标和展示，不重跑检测或优化。绘图需要原图或
 images/ 副本；仅算已有残差指标时不需要原图。
 
-## 7. 采集与标定交付边界
+## 9. 采集与标定交付边界
 
 采集端交付公共 `dataset.yaml`、图像、时间戳 CSV 和 IMU CSV。两端共同使用
 v1.1.0 的传感器 ID、纳秒时间戳与物理单位约定。采集配置、SDK、原始话题和完整

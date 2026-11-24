@@ -177,14 +177,17 @@ Kalibr Docker runtime check passed.
 
 ```text
 1104-docker/
-├── stereo_YYMMDD_HHMM/
-├── stereo_imu_YYMMDD_HHMM/
+├── stereo_YYMMDD_HHMM.bag          # ROS1 示例
+├── stereo_imu_YYMMDD_HHMM/         # directory 或 ROS2 示例
 ├── stereo_base_link_YYMMDD_HHMM/
 ├── usb_YYMMDD_HHMM/
 └── usb_base_link_YYMMDD_HHMM/
 ```
 
-不要求五类数据集全部存在。每个目录数据集必须包含项目规定的 `dataset.yaml`、时间戳/IMU CSV 和图像文件。
+不要求五类数据集全部存在。`stereo`、`stereo_imu`、`mono` 可为含
+`dataset.yaml` 的目录数据集、ROS1 `.bag` 文件，或含 `metadata.yaml` 的完整
+ROS2 bag 目录。`stereo_baselink` 和 `mono_baselink` 只接受目录数据集。
+同一角色跨格式出现多个规范候选仍会报冲突。
 
 当前交付是算法测试版本，允许软件版本、主机/Docker路径、模式、profile、BaseLink配置和
 同名数据变化后在原批次重算。生产防护恢复计划见
@@ -214,7 +217,13 @@ config/user.yaml
 - `stereo.mode`；
 - `stereo_imu.mode`；
 - `stereo_imu.recompute_extrinsics`；
+- 使用 bag 时的 `bag_topics.stereo/stereo_imu/mono`；
 - BaseLink 相机与平移参数。
+
+`bag_topics` 的键必须精确为 `stereo: {cam0, cam1}`、
+`stereo_imu: {cam0, cam1, imu0}` 和 `mono: {cam0}` 中实际使用的角色；
+BaseLink 不出现在该映射中。Camera–IMU 按 `cam0/cam1` ID 把上游相机几何
+映射到当前 bag，`stereo` 与 `stereo_imu` 的实际话题可以不同。
 
 运行脚本会在容器临时目录中把 `machine_dir` 自动改成稳定的容器路径，因此不需要为每台电脑手工修改配置中的主机绝对路径。原始 `config/user.yaml` 不会被容器修改。
 
@@ -234,7 +243,7 @@ BATCH_DIR="/mnt/d/machine_data/EVT312-02/1104-docker"
 
 ```bash
 test -d "$BATCH_DIR"
-find "$BATCH_DIR" -maxdepth 1 -mindepth 1 -type d -printf '%f\n'
+find "$BATCH_DIR" -maxdepth 1 -mindepth 1 -printf '%f\n'
 ```
 
 开始运行：
